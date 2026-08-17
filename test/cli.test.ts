@@ -28,7 +28,7 @@ test("installer merges plugin and MCPs while preserving existing entries", async
   const mcp = config.mcp as Record<string, { url: string }>
 
   assert.ok(text.includes("// keep this comment"))
-  assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra"])
+  assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest"])
   assert.equal(mcp.context7?.url, "https://custom.invalid")
   assert.deepEqual(mcp["codebase-memory"], {
     type: "local",
@@ -85,6 +85,50 @@ test("installer preserves user-configured Supermemory entries", async () => {
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[]; mcp: Record<string, unknown> }
 
   assert.deepEqual(config.mcp.supermemory, { type: "remote", url: "https://mcp.supermemory.ai/mcp" })
-  assert.deepEqual(config.plugin, ["opencode-supermemory", "existing", "@oeronteros-1/opencode-orchestra"])
+  assert.deepEqual(config.plugin, ["opencode-supermemory", "existing", "@oeronteros-1/opencode-orchestra@latest"])
   assert.equal(result.changed.some((item) => item.startsWith("removed:")), false)
+})
+
+test("installer upgrades a bare/pinned plugin entry to @latest", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-upgrade-"))
+  const configFile = path.join(directory, "opencode.jsonc")
+
+  for (const [label, before, after] of [
+    ["bare name", "@oeronteros-1/opencode-orchestra", "@oeronteros-1/opencode-orchestra@latest"],
+    ["pinned version", "@oeronteros-1/opencode-orchestra@0.5.1", "@oeronteros-1/opencode-orchestra@latest"],
+  ] as const) {
+    await writeFile(configFile, `{"plugin":["${before}"]}\n`)
+    const result = await install({
+      configDirectory: directory,
+      context7: false,
+      codebaseMemory: false,
+      memoryGraph: false,
+      provisionDependencies: false,
+      force: false,
+      dryRun: false,
+    })
+    const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
+    assert.deepEqual(config.plugin, [after], label)
+    assert.ok(result.changed.includes("plugin"), label)
+  }
+})
+
+test("installer keeps an existing @latest entry unchanged and idempotent", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-latest-"))
+  const configFile = path.join(directory, "opencode.jsonc")
+  await writeFile(configFile, '{"plugin":["@oeronteros-1/opencode-orchestra@latest"]}\n')
+
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+  })
+  const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
+
+  assert.deepEqual(config.plugin, ["@oeronteros-1/opencode-orchestra@latest"])
+  assert.equal(result.changed.includes("plugin"), false)
 })

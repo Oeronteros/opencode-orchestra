@@ -1,5 +1,28 @@
+# dependencies
 node_modules/
+
+# build output
 dist/
 dist-test/
+dashboard-dist/
+
+# env
+.env
+.env.*
+!.env.example
+
+# runtime / logs
 .orchestra/
 *.log
+logs/
+coverage/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# accidental nested git repo
+opencode-orchestra/

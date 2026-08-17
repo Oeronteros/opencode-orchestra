@@ -1,6 +1,6 @@
 {
   "name": "@oeronteros-1/opencode-orchestra",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Additive model and subagent orchestration for OpenCode",
   "type": "module",
   "license": "MIT",
