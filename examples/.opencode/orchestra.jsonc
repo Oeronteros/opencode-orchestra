@@ -1,0 +1,56 @@
+{
+  "$schema": "../../schema/opencode-orchestra.schema.json",
+  "budget": "balanced",
+  "models": {
+    // "auto" discovers connected OpenCode providers. Any non-empty pool below wins.
+    "strategy": "auto",
+    // Exact per-agent overrides have the highest priority.
+    "agents": {
+      "orch-lead": "provider/your-lead-model"
+    },
+    "lead": [
+      {
+        "id": "provider/your-lead-model",
+        "cost": "subscription",
+        "tier": "lead",
+        "priority": 90,
+        "capabilities": ["reasoning", "code", "large-context"],
+        "scores": { "reasoning": 9, "code": 9 }
+      }
+    ],
+    "worker": {
+      "code": ["provider/your-free-code-model"],
+      "reasoning": ["provider/your-free-reasoning-model"],
+      "research": ["provider/your-free-research-model"],
+      "vision": ["provider/your-vision-model"],
+      "image": ["provider/your-image-model"]
+    },
+    "judge": [
+      {
+        "id": "provider/your-frontier-judge",
+        "cost": "paid",
+        "tier": "frontier",
+        "priority": 100,
+        "capabilities": ["reasoning", "review"]
+      }
+    ]
+  },
+  "orchestration": {
+    "parallelWorkers": 3,
+    "maxWorkers": 5,
+    "premiumEscalation": true,
+    "maxPremiumCallsPerTask": 1,
+    "confidenceThreshold": 0.72,
+    "profiles": {
+      "architecture": true,
+      "debug": true,
+      "ui": true,
+      "security": true,
+      "research": true
+    }
+  },
+  "superpowers": {
+    "compatibility": true,
+    "injectPrimaryHint": false
+  }
+}

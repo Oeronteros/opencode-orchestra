@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/@oeronteros-1/opencode-orchestra@latest/schema/opencode-orchestra.schema.json",
+  "title": "OpenCode Orchestra configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "budget": { "enum": ["eco", "balanced", "quality", "ebobo"], "default": "balanced" },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": { "enum": ["auto", "manual"], "default": "auto" },
+        "agents": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "string", "pattern": "^[^/]+/.+$" }
+        },
+        "lead": { "$ref": "#/$defs/modelPool" },
+        "worker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": { "$ref": "#/$defs/modelPool" },
+            "reasoning": { "$ref": "#/$defs/modelPool" },
+            "research": { "$ref": "#/$defs/modelPool" },
+            "vision": { "$ref": "#/$defs/modelPool" },
+            "image": { "$ref": "#/$defs/modelPool" }
+          }
+        },
+        "judge": { "$ref": "#/$defs/modelPool" }
+      }
+    },
+    "orchestration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parallelWorkers": { "type": "integer", "minimum": 1, "maximum": 8, "default": 3 },
+        "maxWorkers": { "type": "integer", "minimum": 1, "maximum": 12, "default": 5 },
+        "premiumEscalation": { "type": "boolean", "default": true },
+        "maxPremiumCallsPerTask": { "type": "integer", "minimum": 0, "maximum": 5, "default": 1 },
+        "confidenceThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.72 },
+        "exposeWorkers": { "type": "boolean", "default": false },
+        "profiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "architecture": { "type": "boolean" },
+            "debug": { "type": "boolean" },
+            "ui": { "type": "boolean" },
+            "research": { "type": "boolean" },
+            "review": { "type": "boolean" },
+            "security": { "type": "boolean" },
+            "performance": { "type": "boolean" },
+            "migration": { "type": "boolean" },
+            "ops": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "superpowers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compatibility": { "type": "boolean", "default": true },
+        "injectPrimaryHint": { "type": "boolean", "default": false }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "directory": { "type": "string", "minLength": 1, "default": ".orchestra" }
+      }
+    }
+  },
+  "$defs": {
+    "modelPool": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string", "pattern": "^[^/]+/.+$" },
+          { "$ref": "#/$defs/model" }
+        ]
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[^/]+/.+$" },
+        "cost": { "enum": ["free", "subscription", "paid"], "default": "free" },
+        "tier": { "enum": ["worker", "lead", "frontier"], "default": "worker" },
+        "priority": { "type": "number", "minimum": 0, "maximum": 100, "default": 50 },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "enum": ["code", "reasoning", "research", "vision", "image", "review", "security", "performance", "large-context"]
+          }
+        },
+        "scores": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 10 }
+        },
+        "context": { "enum": ["small", "medium", "large", "xlarge"] }
+      }
+    }
+  }
+}
