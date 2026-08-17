@@ -72,7 +72,18 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "default": true },
-        "directory": { "type": "string", "minLength": 1, "default": ".orchestra" }
+        "directory": { "type": "string", "minLength": 1, "default": ".orchestra" },
+        "storeTexts": { "type": "boolean", "default": false }
+      }
+    },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": { "type": "string", "minLength": 1 },
+        "refreshIntervalHours": { "type": "integer", "minimum": 0, "maximum": 2160, "default": 0 },
+        "estimate": { "type": "boolean", "default": true },
+        "warnThresholdUSD": { "type": "number", "minimum": 0, "default": 0.5 }
       }
     }
   },
@@ -105,7 +116,9 @@
           "type": "object",
           "additionalProperties": { "type": "number", "minimum": 0, "maximum": 10 }
         },
-        "context": { "enum": ["small", "medium", "large", "xlarge"] }
+        "context": { "enum": ["small", "medium", "large", "xlarge"] },
+        "priceInput": { "type": "number", "minimum": 0 },
+        "priceOutput": { "type": "number", "minimum": 0 }
       }
     }
   }

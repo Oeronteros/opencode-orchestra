@@ -30,8 +30,10 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   assert.equal(agents["orch-lead"]?.mode, "subagent")
   assert.equal(agents["orch-repo"]?.mode, "subagent")
   assert.ok(commands["orchestra-status"]?.template.includes("orchestra_status"))
+  assert.ok(commands["plugin-status"]?.template.includes("orchestra_plugin_status"))
   assert.ok(tools.orchestra_route)
   assert.ok(tools.orchestra_status)
+  assert.ok(tools.orchestra_plugin_status)
   assert.equal("experimental.chat.system.transform" in hooks, false)
 })
 

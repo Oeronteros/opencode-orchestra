@@ -44,6 +44,10 @@ export const modelCandidateSchema = z.union([
     capabilities: z.array(z.enum(CAPABILITY_NAMES)).default([]),
     scores: z.record(z.string(), z.number().min(0).max(10)).default({}),
     context: z.enum(["small", "medium", "large", "xlarge"]).optional(),
+    /** Explicit USD price per 1M input tokens (overrides the built-in snapshot). */
+    priceInput: z.number().min(0).optional(),
+    /** Explicit USD price per 1M output tokens (overrides the built-in snapshot). */
+    priceOutput: z.number().min(0).optional(),
   }),
 ])
 
@@ -104,8 +108,21 @@ export const orchestraConfigSchema = z.object({
     .object({
       enabled: z.boolean().default(true),
       directory: z.string().min(1).default(".orchestra"),
+      storeTexts: z.boolean().default(false),
     })
-    .default({ enabled: true, directory: ".orchestra" }),
+    .default({ enabled: true, directory: ".orchestra", storeTexts: false }),
+  pricing: z
+    .object({
+      /** Self-hosted price-list endpoint that overrides the built-in snapshot. */
+      endpoint: z.string().min(1).optional(),
+      /** Polling interval in hours; 0 disables periodic refresh. */
+      refreshIntervalHours: z.number().int().min(0).max(24 * 90).default(0),
+      /** Enable pre-run cost estimates surfaced in orchestra_route. */
+      estimate: z.boolean().default(true),
+      /** Dollar threshold above which orchestra_route emits a pre-run warning. */
+      warnThresholdUSD: z.number().min(0).default(0.5),
+    })
+    .default({ endpoint: undefined, refreshIntervalHours: 0, estimate: true, warnThresholdUSD: 0.5 }),
 })
 
 export type OrchestraConfig = z.infer<typeof orchestraConfigSchema>

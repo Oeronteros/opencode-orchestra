@@ -25,6 +25,8 @@ export interface ActivityRow {
   completedAt?: number
   finish?: string
   tokens: TokenUsage
+  prompt?: string
+  reply?: string
 }
 
 export interface DashboardConfig {
@@ -33,7 +35,31 @@ export interface DashboardConfig {
     strategy: "auto" | "manual"
     agents: Record<string, string>
   }
-  telemetry: { enabled: boolean }
+  telemetry: { enabled: boolean; storeTexts: boolean }
+}
+
+export interface DailyPoint {
+  date: string
+  cost: number
+  input: number
+  output: number
+  reasoning: number
+}
+
+export interface DailyAnomaly {
+  date: string
+  cost: number
+  baselineMean: number
+  threshold: number
+  z: number
+}
+
+export interface MonthProjection {
+  projected: number
+  monthToDate: number
+  elapsedDays: number
+  daysInMonth: number
+  isAheadOfPace: boolean
 }
 
 export interface Snapshot {
@@ -51,6 +77,8 @@ export interface Snapshot {
   models: AggregateRow[]
   agents: AggregateRow[]
   activity: ActivityRow[]
-  daily: Array<{ date: string; cost: number; input: number; output: number; reasoning: number }>
+  daily: Array<DailyPoint>
+  projection: MonthProjection
+  anomalies: DailyAnomaly[]
   mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "supermemory", boolean>
 }

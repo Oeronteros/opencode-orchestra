@@ -4,7 +4,9 @@ node_modules/
 # build output
 dist/
 dist-test/
+dist-test-tmp/
 dashboard-dist/
+*.tsbuildinfo
 
 # env
 .env

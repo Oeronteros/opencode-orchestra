@@ -10,16 +10,16 @@ import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import { z } from "zod"
 import { orchestraConfigSchema } from "../config/schema.js"
 import { openCodeConfigDirectory } from "../config/paths.js"
+import { analyzeDaily, type DailyAnomaly, type MonthProjection } from "../telemetry/analytics.js"
 import { readLedgerState, type MessageUsage, type TokenUsage } from "../telemetry/ledger.js"
 
-const PATCH_SCHEMA = z.object({
-  budget: z.enum(["eco", "balanced", "quality", "ebobo"]),
-  models: z.object({
-    strategy: z.enum(["auto", "manual"]),
-    agents: z.record(z.string(), z.string()),
-  }),
-  telemetry: z.object({ enabled: z.boolean() }),
-})
+/**
+ * Any top-level config section may be edited from the dashboard, so the input
+ * is validated against the full schema rather than a narrow hand-written
+ * subset. Every field is optional: a PUT only touches the sections it carries,
+ * and the server fills defaults by re-parsing the merged result.
+ */
+const CONFIG_INPUT_SCHEMA = orchestraConfigSchema.partial()
 
 const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
@@ -143,7 +143,32 @@ async function mcpStatus(configDirectory: string): Promise<Record<string, boolea
   }
 }
 
-async function snapshot(directory: string, configDirectory: string): Promise<Record<string, unknown>> {
+interface SnapshotData {
+  updatedAt: string
+  project: string
+  directory: string
+  configPath: string
+  config: {
+    budget: string
+    models: { strategy: string; agents: Record<string, string> }
+    telemetry: { enabled: boolean; storeTexts: boolean }
+  }
+  summary: {
+    sessions: number
+    calls: number
+    cost: number
+    tokens: TokenUsage
+  }
+  models: AggregateRow[]
+  agents: AggregateRow[]
+  activity: ActivityRow[]
+  daily: Array<{ date: string; cost: number; input: number; output: number; reasoning: number }>
+  projection: MonthProjection
+  anomalies: DailyAnomaly[]
+  mcp: Record<string, boolean>
+}
+
+async function snapshot(directory: string, configDirectory: string): Promise<SnapshotData> {
   const configPath = path.join(configDirectory, "orchestra.jsonc")
   const configText = await readTextOr(configPath, "{}\n")
   const config = orchestraConfigSchema.parse(parseJsonc(configText))
@@ -171,6 +196,8 @@ async function snapshot(directory: string, configDirectory: string): Promise<Rec
     point.reasoning += row.tokens.reasoning
     dailyMap.set(date, point)
   }
+  const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
+  const analytics = analyzeDaily(daily)
   return {
     updatedAt: ledger.updatedAt,
     project: path.basename(directory),
@@ -179,7 +206,7 @@ async function snapshot(directory: string, configDirectory: string): Promise<Rec
     config: {
       budget: config.budget,
       models: { strategy: config.models.strategy, agents: config.models.agents },
-      telemetry: { enabled: config.telemetry.enabled },
+      telemetry: { enabled: config.telemetry.enabled, storeTexts: config.telemetry.storeTexts },
     },
     summary: {
       sessions: Object.keys(ledger.sessions).length,
@@ -190,45 +217,169 @@ async function snapshot(directory: string, configDirectory: string): Promise<Rec
     models: aggregate(activity, (row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown"),
     agents: aggregate(activity, (row) => row.agent ?? "unknown"),
     activity: activity.slice(0, 5_000),
-    daily: [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-30),
+    daily: daily.slice(-30),
+    projection: analytics.projection,
+    anomalies: analytics.anomalies,
     mcp: await mcpStatus(configDirectory),
   }
 }
 
-async function updateConfig(configPath: string, input: unknown): Promise<void> {
-  const patch = PATCH_SCHEMA.parse(input)
+type ExportScope = "activity" | "models" | "agents" | "daily" | "summary"
+
+const EXPORT_SCOPES: readonly ExportScope[] = ["activity", "models", "agents", "daily", "summary"]
+
+function csvEscape(value: string | number | boolean | undefined): string {
+  const text = value === undefined || value === null ? "" : String(value)
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+}
+
+function isoOrEmpty(timestamp?: number): string {
+  return timestamp ? new Date(timestamp).toISOString() : ""
+}
+
+function rowsForScope(data: SnapshotData, scope: ExportScope): { headers: string[]; rows: unknown[][] } {
+  switch (scope) {
+    case "activity":
+      return {
+        headers: ["id", "sessionID", "agent", "provider", "model", "createdAt", "completedAt", "finish", "cost", "tokensInput", "tokensOutput", "tokensReasoning", "cacheRead", "cacheWrite"],
+        rows: data.activity.map((row) => [row.id, row.sessionID, row.agent ?? "", row.provider ?? "", row.model ?? "", isoOrEmpty(row.createdAt), isoOrEmpty(row.completedAt), row.finish ?? "", row.cost, row.tokens.input, row.tokens.output, row.tokens.reasoning, row.tokens.cache.read, row.tokens.cache.write]),
+      }
+    case "models":
+    case "agents":
+      return {
+        headers: ["id", "calls", "cost", "tokensInput", "tokensOutput", "tokensReasoning", "cacheRead", "cacheWrite"],
+        rows: data[scope].map((row) => [row.id, row.calls, row.cost, row.tokens.input, row.tokens.output, row.tokens.reasoning, row.tokens.cache.read, row.tokens.cache.write]),
+      }
+    case "daily":
+      return {
+        headers: ["date", "cost", "tokensInput", "tokensOutput", "tokensReasoning"],
+        rows: data.daily.map((row) => [row.date, row.cost, row.input, row.output, row.reasoning]),
+      }
+    case "summary":
+      return {
+        headers: ["project", "directory", "sessions", "calls", "cost", "tokensInput", "tokensOutput", "tokensReasoning", "cacheRead", "cacheWrite", "updatedAt"],
+        rows: [[data.project, data.directory, data.summary.sessions, data.summary.calls, data.summary.cost, data.summary.tokens.input, data.summary.tokens.output, data.summary.tokens.reasoning, data.summary.tokens.cache.read, data.summary.tokens.cache.write, data.updatedAt]],
+      }
+  }
+}
+
+function toCsv(headers: string[], rows: unknown[][]): string {
+  return `${headers.map((header) => csvEscape(header)).join(",")}\n${rows.map((row) => row.map((cell) => csvEscape(cell as string | number | boolean | undefined)).join(",")).join("\n")}\n`
+}
+
+function toJson(scope: ExportScope, headers: string[], rows: unknown[][]): string {
+  return `${JSON.stringify({ scope, generatedAt: new Date().toISOString(), rows: rows.map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index]]))) }, null, 2)}\n`
+}
+
+function exportFilename(scope: ExportScope, format: "csv" | "json", directory: string): string {
+  const project = path.basename(directory).replace(/[^\w.-]+/g, "-") || "orchestra"
+  const date = new Date().toISOString().slice(0, 10)
+  return `${project}-orchestra-${scope}-${date}.${format}`
+}
+
+function sendFile(response: ServerResponse, status: number, filename: string, mime: string, body: string): void {
+  response.writeHead(status, {
+    "Content-Type": mime,
+    "Content-Length": Buffer.byteLength(body),
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Cache-Control": "no-store",
+  })
+  response.end(body)
+}
+
+async function exportReport(response: ServerResponse, directory: string, configDirectory: string, searchParams: URLSearchParams): Promise<void> {
+  const scope = searchParams.get("scope") ?? "activity"
+  if (!(EXPORT_SCOPES as readonly string[]).includes(scope)) {
+    sendJson(response, 400, { error: `Unknown export scope: ${scope}` })
+    return
+  }
+  const format = searchParams.get("format")
+  if (format !== "csv" && format !== "json") {
+    sendJson(response, 400, { error: "Missing or unsupported export format (expected csv or json)" })
+    return
+  }
+  const data = await snapshot(directory, configDirectory)
+  const { headers, rows } = rowsForScope(data, scope as ExportScope)
+  const filename = exportFilename(scope as ExportScope, format, directory)
+  if (format === "csv") {
+    sendFile(response, 200, filename, "text/csv; charset=utf-8", toCsv(headers, rows))
+  } else {
+    sendFile(response, 200, filename, "application/json; charset=utf-8", toJson(scope as ExportScope, headers, rows))
+  }
+}
+
+interface ValidationIssue {
+  path: string
+  message: string
+}
+
+export interface ConfigValidationResult {
+  valid: boolean
+  issues: ValidationIssue[]
+}
+
+/** Convert a ZodError into flat, dashboard-friendly field issues. */
+function validationIssues(error: z.ZodError): ValidationIssue[] {
+  return error.issues.map((issue) => ({
+    path: issue.path.map(String).join(".") || "(root)",
+    message: issue.message,
+  }))
+}
+
+/** Validate a dashboard config patch without touching disk. */
+export function validateConfigInput(input: unknown): ConfigValidationResult {
+  const result = CONFIG_INPUT_SCHEMA.safeParse(input)
+  if (result.success) return { valid: true, issues: [] }
+  return { valid: false, issues: validationIssues(result.error) }
+}
+
+function isObjectLike(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Keys the dashboard may edit. Everything else inside the parsed config is
+ * preserved verbatim, so unknown/commented JSONC survives an update.
+ */
+const EDITABLE_SECTIONS = ["budget", "models", "orchestration", "superpowers", "telemetry", "pricing"] as const
+
+function normalizeConfigInput(input: unknown): unknown {
+  if (!isObjectLike(input) || !isObjectLike(input.models) || !isObjectLike(input.models.agents)) return input
   const agents = Object.fromEntries(
-    Object.entries(patch.models.agents)
+    Object.entries(input.models.agents)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
       .map(([name, model]) => [name, model.trim()] as const)
       .filter(([, model]) => model.length > 0),
   )
+  return { ...input, models: { ...input.models, agents } }
+}
+
+async function updateConfig(configPath: string, input: unknown): Promise<ConfigValidationResult> {
+  const parsed = CONFIG_INPUT_SCHEMA.parse(normalizeConfigInput(input))
   await mkdir(path.dirname(configPath), { recursive: true })
   const original = await readTextOr(configPath, "{}\n")
   const current = parseJsonc(original)
-  const merged = {
-    ...current,
-    budget: patch.budget,
-    models: {
-      ...(typeof current.models === "object" && current.models !== null ? current.models : {}),
-      strategy: patch.models.strategy,
-      agents,
-    },
-    telemetry: {
-      ...(typeof current.telemetry === "object" && current.telemetry !== null ? current.telemetry : {}),
-      enabled: patch.telemetry.enabled,
-    },
+
+  const merged = { ...current }
+  for (const section of EDITABLE_SECTIONS) {
+    if (!(section in parsed)) continue
+    const incoming = (parsed as Record<string, unknown>)[section]
+    const existing = merged[section]
+    merged[section] = isObjectLike(incoming) && isObjectLike(existing) ? { ...existing, ...incoming } : incoming
   }
+  // Re-parse through the full schema so defaults fill in and invalid values
+  // are caught before anything is written to disk.
   orchestraConfigSchema.parse(merged)
+
+  // Serialize only the editable sections back, preserving comments and any
+  // unrelated keys in the original JSONC.
   let updated = original
   const formattingOptions = { insertSpaces: true, tabSize: 2, eol: "\n" }
-  for (const [location, value] of [
-    [["budget"], patch.budget],
-    [["models", "strategy"], patch.models.strategy],
-    [["models", "agents"], agents],
-    [["telemetry", "enabled"], patch.telemetry.enabled],
-  ] as const) {
-    updated = applyEdits(updated, modify(updated, [...location], value, { formattingOptions }))
+  for (const section of EDITABLE_SECTIONS) {
+    if (!(section in parsed)) continue
+    updated = applyEdits(updated, modify(updated, [section], merged[section], { formattingOptions }))
   }
+
   try {
     await stat(configPath)
     const stamp = new Date().toISOString().replaceAll(":", "-")
@@ -239,6 +390,7 @@ async function updateConfig(configPath: string, input: unknown): Promise<void> {
   const temporary = `${configPath}.orchestra-dashboard-tmp`
   await writeFile(temporary, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8")
   await rename(temporary, configPath)
+  return { valid: true, issues: [] }
 }
 
 function defaultAssetsDirectory(): string {
@@ -299,9 +451,21 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
           sendJson(response, 200, await snapshot(directory, configDirectory))
           return
         }
+        if (request.method === "GET" && url.pathname === "/api/export") {
+          await exportReport(response, directory, configDirectory, url.searchParams)
+          return
+        }
         if (request.method === "PUT" && url.pathname === "/api/config") {
           await updateConfig(path.join(configDirectory, "orchestra.jsonc"), await jsonBody(request))
           sendJson(response, 200, { ok: true })
+          return
+        }
+        if (request.method === "POST" && url.pathname === "/api/config/validate") {
+          sendJson(response, 200, validateConfigInput(await jsonBody(request)))
+          return
+        }
+        if (request.method === "PUT" && url.pathname === "/api/config/validate") {
+          sendJson(response, 200, await updateConfig(path.join(configDirectory, "orchestra.jsonc"), await jsonBody(request)))
           return
         }
         sendJson(response, 404, { error: "Not found" })
@@ -309,6 +473,10 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
       }
       await serveAsset(response, assetsDirectory, url.pathname)
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        sendJson(response, 422, { error: "Invalid configuration", issues: validationIssues(error) })
+        return
+      }
       sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
     }
   })

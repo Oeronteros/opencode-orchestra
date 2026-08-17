@@ -126,3 +126,17 @@ export function createWorkerAgents(config: OrchestraConfig): AgentSet {
     }),
   )
 }
+
+export type WorkerPoolKey = keyof OrchestraConfig["models"]["worker"]
+
+/** Map a worker name to the capability pool it draws from (for cost estimates). */
+export function workerPoolKey(worker: string): WorkerPoolKey {
+  const spec = WORKERS[worker]
+  return spec?.pool ?? "code"
+}
+
+/** Map a worker name to the capability used when resolving its model. */
+export function workerCapability(worker: string): WorkerSpec["capability"] {
+  const spec = WORKERS[worker]
+  return spec?.capability ?? "code"
+}

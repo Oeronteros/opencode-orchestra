@@ -1,9 +1,17 @@
 {
   "name": "@oeronteros-1/opencode-orchestra",
-  "version": "0.5.3",
-  "description": "Additive model and subagent orchestration for OpenCode",
+  "version": "1.0.0",
+  "description": "Production-ready model routing, specialist agents, diagnostics, telemetry, and dashboard for OpenCode",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Oeronteros/opencode-orchestra.git"
+  },
+  "homepage": "https://github.com/Oeronteros/opencode-orchestra#readme",
+  "bugs": {
+    "url": "https://github.com/Oeronteros/opencode-orchestra/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -11,7 +19,10 @@
     "opencode",
     "plugin",
     "agents",
-    "orchestration"
+    "orchestration",
+    "model-routing",
+    "mcp",
+    "telemetry"
   ],
   "files": [
     "dist",
@@ -19,6 +30,7 @@
     "prompts",
     "schema",
     "CHANGELOG.md",
+    "GITHUB_RELEASE_1.0.0.md",
     "README.md",
     "LICENSE"
   ],
@@ -34,9 +46,10 @@
     "build:dashboard": "vite build --config dashboard/vite.config.ts",
     "build:plugin": "tsc -p tsconfig.build.json",
     "dev:dashboard": "vite --config dashboard/vite.config.ts",
+    "prepublishOnly": "npm run check",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p dashboard/tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/classifier.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/cli.test.js dist-test/test/dashboard.test.js dist-test/test/ledger.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/classifier.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/dashboard.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {

@@ -8,6 +8,10 @@ import { pathToFileURL } from "node:url"
 import { applyEdits, modify, parse, printParseErrorCode, type ParseError } from "jsonc-parser"
 import { openCodeConfigDirectory } from "./config/paths.js"
 import { startDashboard, type DashboardOptions } from "./dashboard/server.js"
+import { completionFor, SHELL_NAMES } from "./diagnostics/completion.js"
+import { formatDoctorReport, runDoctor } from "./diagnostics/doctor.js"
+import { checkForUpdates, formatUpdateResult } from "./diagnostics/update.js"
+import { resolvePluginVersion } from "./plugin-status.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -354,10 +358,16 @@ function usage(): string {
     "OpenCode Orchestra",
     "",
     "Usage:",
-    "  bunx @oeronteros-1/opencode-orchestra@latest install [options]",
-    "  bunx @oeronteros-1/opencode-orchestra@latest dashboard [options]",
+    "  bunx @oeronteros-1/opencode-orchestra@latest <command> [options]",
     "",
-    "Options:",
+    "Commands:",
+    "  install     Configure OpenCode and provision companion MCPs",
+    "  dashboard   Start the local telemetry dashboard",
+    "  doctor      Diagnose config, MCPs, and toolchain paths",
+    "  update      Check for a newer published version",
+    "  completion  Print shell completion (zsh | bash | pwsh)",
+    "",
+    "Install options:",
     "  --no-context7        Do not configure Context7 MCP",
     "  --no-codebase-memory Do not install or configure Codebase Memory MCP",
     "  --no-memorygraph     Do not install or configure MemoryGraph MCP",
@@ -375,7 +385,12 @@ function usage(): string {
   ].join("\n")
 }
 
-type ParsedCommand = { command: "install"; options: InstallOptions } | { command: "dashboard"; options: DashboardOptions }
+type ParsedCommand =
+  | { command: "install"; options: InstallOptions }
+  | { command: "dashboard"; options: DashboardOptions }
+  | { command: "doctor"; options: { configDirectory?: string; json?: boolean } }
+  | { command: "update" }
+  | { command: "completion"; options: { shell: string; program: string } }
 
 function parseArguments(argv: string[]): ParsedCommand | "help" {
   if (argv[0] === "--help" || argv[0] === "-h") return "help"
@@ -403,6 +418,32 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
       } else throw new Error(`Unknown dashboard option: ${argument}`)
     }
     return { command: "dashboard", options }
+  }
+  if (argv[0] === "doctor") {
+    const options: { configDirectory?: string; json?: boolean } = {}
+    for (let index = 1; index < argv.length; index += 1) {
+      const argument = argv[index]
+      if (argument === "--config-dir") {
+        const directory = argv[++index]
+        if (!directory) throw new Error("--config-dir requires a directory")
+        options.configDirectory = directory
+      } else if (argument === "--json") {
+        options.json = true
+      } else throw new Error(`Unknown doctor option: ${argument}`)
+    }
+    return { command: "doctor", options }
+  }
+  if (argv[0] === "update") {
+    for (let index = 1; index < argv.length; index += 1) throw new Error(`Unknown update option: ${argv[index]}`)
+    return { command: "update" }
+  }
+  if (argv[0] === "completion") {
+    const shell = argv[1]
+    if (!shell || (SHELL_NAMES as readonly string[]).includes(shell) === false) {
+      throw new Error(`completion requires one of: ${SHELL_NAMES.join(", ")}`)
+    }
+    for (let index = 2; index < argv.length; index += 1) throw new Error(`Unknown completion option: ${argv[index]}`)
+    return { command: "completion", options: { shell, program: "opencode-orchestra" } }
   }
   if (argv[0] !== "install") throw new Error(`Unknown command: ${argv[0] ?? "(missing)"}`)
   const options: InstallOptions = {
@@ -441,6 +482,23 @@ async function main(): Promise<void> {
       const dashboard = await startDashboard(parsed.options)
       console.log(`Orchestra dashboard: ${dashboard.url}`)
       console.log("Press Ctrl+C to stop.")
+      return
+    }
+    if (parsed.command === "doctor") {
+      const report = await runDoctor({ ...(parsed.options.configDirectory ? { configDirectory: parsed.options.configDirectory } : {}) })
+      if (parsed.options.json) {
+        console.log(JSON.stringify(report, null, 2))
+      } else {
+        console.log(formatDoctorReport(report))
+      }
+      return
+    }
+    if (parsed.command === "update") {
+      console.log(formatUpdateResult(await checkForUpdates(await resolvePluginVersion())))
+      return
+    }
+    if (parsed.command === "completion") {
+      console.log(completionFor(parsed.options.shell, parsed.options.program))
       return
     }
     const result = await install(parsed.options)

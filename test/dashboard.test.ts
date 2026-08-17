@@ -33,20 +33,121 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     const token = url.searchParams.get("token") ?? ""
     const response = await fetch(new URL("/api/snapshot", url), { headers: { "X-Orchestra-Token": token } })
     assert.equal(response.status, 200)
-    const snapshot = await response.json() as { summary: { calls: number; tokens: { input: number } }; mcp: { supermemory: boolean } }
+    const snapshot = await response.json() as { summary: { calls: number; tokens: { input: number } }; mcp: { supermemory: boolean }; projection: { projected: number }; anomalies: Array<{ date: string }>; config: { telemetry: { storeTexts: boolean } } }
     assert.equal(snapshot.summary.calls, 1)
     assert.equal(snapshot.summary.tokens.input, 100)
     assert.equal(snapshot.mcp.supermemory, true)
+    // Analytics are exposed on the snapshot; projection is a finite number and
+    // storeTexts defaults to false when not configured.
+    assert.equal(typeof snapshot.projection.projected, "number")
+    assert.ok(Array.isArray(snapshot.anomalies))
+    assert.equal(snapshot.config.telemetry.storeTexts, false)
 
     const save = await fetch(new URL("/api/config", url), {
       method: "PUT",
       headers: { "Content-Type": "application/json", "X-Orchestra-Token": token },
-      body: JSON.stringify({ budget: "ebobo", models: { strategy: "auto", agents: {} }, telemetry: { enabled: true } }),
+      body: JSON.stringify({ budget: "ebobo", models: { strategy: "auto", agents: { "orch-repo": "" } }, telemetry: { enabled: true } }),
     })
     assert.equal(save.status, 200)
     const text = await readFile(path.join(config, "orchestra.jsonc"), "utf8")
     assert.ok(text.includes("// preserve me"))
     assert.ok(text.includes('"budget": "ebobo"'))
+    assert.ok(!text.includes('orch-repo'))
+
+    const csv = await fetch(new URL("/api/export?scope=activity&format=csv", url), { headers: { "X-Orchestra-Token": token } })
+    assert.equal(csv.status, 200)
+    assert.match(csv.headers.get("content-type") ?? "", /text\/csv/)
+    assert.match(csv.headers.get("content-disposition") ?? "", /attachment; filename="project-orchestra-activity-/)
+    const csvText = await csv.text()
+    assert.ok(csvText.startsWith("id,sessionID,agent,provider,model,createdAt,completedAt,finish,cost,tokensInput,tokensOutput,tokensReasoning,cacheRead,cacheWrite"))
+    assert.ok(csvText.includes("msg,one,orch-lead,openai,gpt-test"))
+
+    const json = await fetch(new URL("/api/export?scope=models&format=json", url), { headers: { "X-Orchestra-Token": token } })
+    assert.equal(json.status, 200)
+    assert.match(json.headers.get("content-type") ?? "", /application\/json/)
+    const jsonBody = await json.json() as { scope: string; rows: Array<Record<string, unknown>> }
+    assert.equal(jsonBody.scope, "models")
+    assert.equal(jsonBody.rows.length, 1)
+    const first = jsonBody.rows[0]!
+    assert.equal(first.id, "openai/gpt-test")
+    assert.equal(first.calls, 1)
+
+    const badScope = await fetch(new URL("/api/export?scope=nope&format=csv", url), { headers: { "X-Orchestra-Token": token } })
+    assert.equal(badScope.status, 400)
+
+    const noAuth = await fetch(new URL("/api/export?scope=summary&format=csv", url))
+    assert.equal(noAuth.status, 401)
+  } finally {
+    await dashboard.close()
+  }
+})
+
+test("dashboard validates the full schema on the fly and rejects invalid patches", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-validate-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  await writeFile(path.join(config, "orchestra.jsonc"), '{ "budget": "balanced" }\n')
+
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const token = url.searchParams.get("token") ?? ""
+    const headers = { "Content-Type": "application/json", "X-Orchestra-Token": token } as const
+
+    // Non-mutating validation of a valid patch.
+    const valid = await fetch(new URL("/api/config/validate", url), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ orchestration: { parallelWorkers: 4 }, superpowers: { compatibility: false } }),
+    })
+    assert.equal(valid.status, 200)
+    const validBody = await valid.json() as { valid: boolean; issues: Array<{ path: string }> }
+    assert.equal(validBody.valid, true)
+    assert.deepEqual(validBody.issues, [])
+
+    // Invalid values produce structured field errors, not a bare 500.
+    const invalid = await fetch(new URL("/api/config/validate", url), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ orchestration: { parallelWorkers: 99 }, budget: "not-a-mode" }),
+    })
+    assert.equal(invalid.status, 200)
+    const invalidBody = await invalid.json() as { valid: boolean; issues: Array<{ path: string; message: string }> }
+    assert.equal(invalidBody.valid, false)
+    assert.ok(invalidBody.issues.some((issue) => issue.path === "orchestration.parallelWorkers"))
+    assert.ok(invalidBody.issues.some((issue) => issue.path === "budget"))
+
+    // A full-schema PUT edits more than the old narrow subset and round-trips.
+    const save = await fetch(new URL("/api/config", url), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        budget: "quality",
+        orchestration: { parallelWorkers: 4, confidenceThreshold: 0.5 },
+        superpowers: { injectPrimaryHint: true },
+      }),
+    })
+    assert.equal(save.status, 200)
+    const text = await readFile(path.join(config, "orchestra.jsonc"), "utf8")
+    assert.ok(text.includes('"parallelWorkers": 4'))
+    assert.ok(text.includes('"confidenceThreshold": 0.5'))
+    assert.ok(text.includes('"injectPrimaryHint": true'))
+
+    // An invalid PUT is rejected with 422 and structured issues (no write).
+    const badSave = await fetch(new URL("/api/config", url), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ orchestration: { parallelWorkers: -1 } }),
+    })
+    assert.equal(badSave.status, 422)
+    const badSaveBody = await badSave.json() as { error: string; issues: Array<{ path: string }> }
+    assert.equal(badSaveBody.error, "Invalid configuration")
+    assert.ok(badSaveBody.issues.some((issue) => issue.path === "orchestration.parallelWorkers"))
   } finally {
     await dashboard.close()
   }

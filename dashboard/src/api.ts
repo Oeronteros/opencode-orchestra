@@ -27,10 +27,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+export type ExportScope = "activity" | "models" | "agents" | "daily" | "summary"
+export type ExportFormat = "csv" | "json"
+
 export const api = {
   snapshot: () => request<Snapshot>("/api/snapshot"),
   saveConfig: (config: DashboardConfig) => request<{ ok: true }>("/api/config", {
     method: "PUT",
     body: JSON.stringify(config),
   }),
+  exportUrl: (scope: ExportScope, format: ExportFormat) => `/api/export?scope=${scope}&format=${format}`,
 }

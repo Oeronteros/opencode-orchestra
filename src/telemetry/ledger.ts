@@ -22,6 +22,9 @@ export interface MessageUsage {
   completedAt?: number
   finish?: string
   tokens: TokenUsage
+  /** Opt-in debug text: only recorded when telemetry.storeTexts is enabled. */
+  prompt?: string
+  reply?: string
 }
 
 export interface SessionLedger {
@@ -89,6 +92,10 @@ function upgradeState(input: unknown): LedgerState {
   const sessions = candidate.sessions ?? {}
   for (const session of Object.values(sessions)) {
     session.messages ??= {}
+    session.agents ??= {}
+    session.premiumEscalations ??= 0
+    session.estimatedPaidUsage ??= 0
+    session.freeWorkerCalls ??= 0
     for (const [id, message] of Object.entries(session.messages)) {
       session.messages[id] = {
         ...message,
@@ -115,12 +122,20 @@ export async function readLedgerState(file: string): Promise<LedgerState> {
 export class Ledger {
   readonly enabled: boolean
   readonly stateFile: string
+  private readonly storeTexts: boolean
   private readonly modelCosts: Map<string, ModelCost>
   private state?: LedgerState
   private queue = Promise.resolve()
 
-  constructor(directory: string, telemetryDirectory: string, enabled: boolean, pools: ModelCandidateInput[][]) {
+  constructor(
+    directory: string,
+    telemetryDirectory: string,
+    enabled: boolean,
+    pools: ModelCandidateInput[][],
+    storeTexts = false,
+  ) {
     this.enabled = enabled
+    this.storeTexts = storeTexts
     this.stateFile = path.resolve(directory, telemetryDirectory, "state.json")
     this.modelCosts = new Map(
       pools.flat().map((candidate) => {
@@ -207,7 +222,31 @@ export class Ledger {
         ...(info.time?.completed ? { completedAt: info.time.completed } : {}),
         ...(info.finish ? { finish: info.finish } : {}),
         tokens: normalizeTokens(info.tokens),
+        ...(previous?.prompt !== undefined ? { prompt: previous.prompt } : {}),
+        ...(previous?.reply !== undefined ? { reply: previous.reply } : {}),
       }
+    })
+  }
+
+  /**
+   * Opt-in debug text. No-op unless the ledger was constructed with
+   * `storeTexts`, so prompts and replies are never persisted by default.
+   */
+  async recordText(
+    sessionID: string,
+    messageID: string,
+    text: { prompt?: string; reply?: string },
+  ): Promise<void> {
+    if (!this.storeTexts) return
+    await this.mutate((state) => {
+      const session = (state.sessions[sessionID] ??= emptySession())
+      const message = (session.messages[messageID] ??= {
+        cost: 0,
+        agent: "default",
+        tokens: normalizeTokens(undefined),
+      })
+      if (text.prompt !== undefined) message.prompt = text.prompt
+      if (text.reply !== undefined) message.reply = text.reply
     })
   }
 

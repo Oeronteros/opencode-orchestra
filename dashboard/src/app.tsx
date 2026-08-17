@@ -6,6 +6,7 @@ import {
   CoinsDollarIcon,
   DashboardSquare01Icon,
   Database01Icon,
+  Download04Icon,
   LanguageSquareIcon,
   Moon02Icon,
   Refresh01Icon,
@@ -18,15 +19,16 @@ import { createRootRoute, createRoute, createRouter, Link, Outlet } from "@tanst
 import { columnSizingFeature, createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { motion } from "motion/react"
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 import { useTranslation } from "react-i18next"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { z } from "zod"
-import { api } from "./api"
+import { api, type ExportFormat, type ExportScope } from "./api"
 import { Button } from "./components/ui/button"
 import { Card } from "./components/ui/card"
 import { Switch } from "./components/ui/switch"
+import { downloadExport } from "./export"
 import i18n from "./i18n"
 import { cn } from "./lib/cn"
 import { useUiStore } from "./store"
@@ -89,6 +91,7 @@ function AppShell() {
             <span className="eyebrow">{snapshot.data?.directory ?? "Loading local workspace…"}</span>
           </div>
           <div className="top-actions">
+            <ExportMenu />
             <Button variant="ghost" aria-label="Language" onClick={() => {
               const language = i18n.language === "ru" ? "en" : "ru"
               localStorage.setItem("orchestra-language", language)
@@ -125,6 +128,61 @@ function EmptyState() {
   return <div className="empty-state"><HugeiconsIcon icon={Activity01Icon} size={24} /><span>{t("noData")}</span></div>
 }
 
+const EXPORT_SCOPES: Array<{ scope: ExportScope; label: string }> = [
+  { scope: "activity", label: "Журнал вызовов" },
+  { scope: "models", label: "Модели" },
+  { scope: "agents", label: "Агенты" },
+  { scope: "daily", label: "По дням" },
+  { scope: "summary", label: "Сводка" },
+]
+
+function ExportMenu() {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState<`${ExportScope}:${ExportFormat}` | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const run = async (scope: ExportScope, format: ExportFormat) => {
+    setBusy(`${scope}:${format}`)
+    setError(null)
+    try {
+      await downloadExport(scope, format)
+      setOpen(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("exportFailed"))
+    } finally {
+      setBusy(null)
+    }
+  }
+  return (
+    <div className="export-menu">
+      <Button variant="outline" onClick={() => setOpen((value) => !value)}>
+        <HugeiconsIcon icon={Download04Icon} size={17} />
+        {t("export")}
+      </Button>
+      {open && (
+        <>
+          <button type="button" className="export-scrim" onClick={() => setOpen(false)} aria-label={t("close")} />
+          <div className="export-panel">
+            <div className="export-head"><span className="eyebrow">{t("export")}</span><button type="button" className="export-close" onClick={() => setOpen(false)}>×</button></div>
+            <div className="export-list">
+              {EXPORT_SCOPES.map((item) => (
+                <div key={item.scope} className="export-item">
+                  <span className="export-item-label">{item.label}</span>
+                  <div className="export-item-actions">
+                    <Button variant="ghost" disabled={busy !== null} onClick={() => run(item.scope, "csv")}>{busy === `${item.scope}:csv` ? "…" : "CSV"}</Button>
+                    <Button variant="ghost" disabled={busy !== null} onClick={() => run(item.scope, "json")}>{busy === `${item.scope}:json` ? "…" : "JSON"}</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {error !== null && <div className="export-error">{error}</div>}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function OverviewPage() {
   const { t } = useTranslation()
   const query = useSnapshot()
@@ -132,6 +190,8 @@ function OverviewPage() {
   if (query.isLoading) return <Loading />
   if (!data) return <ErrorState error={query.error} />
   const tokens = data.summary.tokens.input + data.summary.tokens.output + data.summary.tokens.reasoning
+  const projection = data.projection
+  const latestAnomaly = data.anomalies[data.anomalies.length - 1]
   return <>
     <PageIntro kicker={`${data.config.budget.toUpperCase()} MODE`} title="Пульс оркестра" text="Маршрутизация, токены и стоимость — без отправки телеметрии наружу." />
     <div className="metrics-grid">
@@ -140,6 +200,10 @@ function OverviewPage() {
       <MetricCard label={t("tokens")} value={formatNumber(tokens)} note={`${formatNumber(data.summary.tokens.cache.read)} из кэша`} icon={AiBrain01Icon} />
       <MetricCard label={t("cost")} value={formatCost(data.summary.cost)} note="по данным провайдеров" icon={CoinsDollarIcon} />
     </div>
+    <Card className="insight-banner">
+      <div><span className="eyebrow">{t("monthProjection")}</span><strong>{formatCost(projection.projected)}</strong><small>{formatCost(projection.monthToDate)} {t("monthToDate")}{projection.isAheadOfPace ? ` · ${t("aheadOfPace")}` : ""}</small></div>
+      {latestAnomaly && <div><span className="eyebrow">{t("anomaly")}</span><strong>{new Date(`${latestAnomaly.date}T00:00:00`).toLocaleDateString()} · {formatCost(latestAnomaly.cost)}</strong><small>{t("anomalyNote")} {formatCost(latestAnomaly.threshold)}</small></div>}
+    </Card>
     <div className="dashboard-grid">
       <Card className="chart-card">
         <div className="card-heading"><div><span className="eyebrow">{t("usage")}</span><h2>Токены и расходы</h2></div><span className="updated">{new Date(data.updatedAt).toLocaleTimeString()}</span></div>
@@ -214,10 +278,11 @@ const AGENTS = ["orch-lead", "orch-repo", "orch-docs", "orch-tests", "orch-resea
 const settingsSchema = z.object({
   budget: z.enum(["eco", "balanced", "quality", "ebobo"]),
   models: z.object({ strategy: z.enum(["auto", "manual"]), agents: z.record(z.string(), z.string()) }),
-  telemetry: z.object({ enabled: z.boolean() }),
+  telemetry: z.object({ enabled: z.boolean(), storeTexts: z.boolean() }),
 })
 
 function SettingsPage() {
+  const { t } = useTranslation()
   const query = useSnapshot()
   const client = useQueryClient()
   const form = useForm<DashboardConfig>({ resolver: zodResolver(settingsSchema), defaultValues: query.data?.config })
@@ -229,6 +294,7 @@ function SettingsPage() {
       <Card className="settings-card"><div className="setting-title"><div><h2>Режим бюджета</h2><p>Один активный runtime-профиль для всей команды.</p></div></div><Controller name="budget" control={form.control} render={({ field }) => <div className="budget-grid">{(["eco", "balanced", "quality", "ebobo"] as const).map((mode) => <button type="button" key={mode} className={cn("budget-option", field.value === mode && "selected")} onClick={() => field.onChange(mode)}><strong>{mode}</strong><span>{({ eco: "Бесплатные workers", balanced: "Разумный баланс", quality: "Качество прежде цены", ebobo: "Максимальный роинг" })[mode]}</span></button>)}</div>} /></Card>
       <Card className="settings-card"><div className="setting-title"><div><h2>Назначение моделей</h2><p>Оставьте поле пустым — Orchestra выберет доступную модель автоматически.</p></div><select {...form.register("models.strategy")}><option value="auto">Auto</option><option value="manual">Manual</option></select></div><div className="agent-form-grid">{AGENTS.map((agent) => <label key={agent}><span>{agent}</span><input placeholder="provider/model" {...form.register(`models.agents.${agent}`)} /></label>)}</div></Card>
       <Card className="settings-card inline-setting"><div><h2>Локальная телеметрия</h2><p>Хранить только usage-метаданные. Тексты запросов и ответов не записываются.</p></div><Controller name="telemetry.enabled" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></Card>
+      <Card className="settings-card inline-setting"><div><h2>{t("storeTexts")}</h2><p>Опционально, для отладки. По умолчанию выключено — журнал остаётся без промптов и ответов.</p></div><Controller name="telemetry.storeTexts" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></Card>
       <div className="form-actions"><span>{save.isError ? (save.error as Error).message : save.isSuccess ? "Настройки сохранены" : query.data.configPath}</span><Button type="submit" disabled={save.isPending}>{save.isPending ? "Сохраняю…" : "Сохранить настройки"}</Button></div>
     </form>
   </>

@@ -48,3 +48,43 @@ test("records assistant responses outside the orchestra subagent modes", async (
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("recordText is a no-op when storeTexts is disabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const ledger = new Ledger(root, ".orchestra", true, [])
+
+  try {
+    await ledger.recordText("session-1", "msg", { prompt: "secret", reply: "answer" })
+    // storeTexts defaults to false, so nothing is persisted at all.
+    await assert.rejects(readFile(path.join(root, ".orchestra", "state.json"), "utf8"))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("recordText persists prompt and reply when storeTexts is enabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const ledger = new Ledger(root, ".orchestra", true, [], true)
+
+  try {
+    await ledger.recordAssistant({
+      id: "msg",
+      sessionID: "session-1",
+      role: "assistant",
+      mode: "build",
+      providerID: "openai",
+      modelID: "gpt-5",
+      cost: 0.01,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    })
+    await ledger.recordText("session-1", "msg", { prompt: "hello", reply: "world" })
+    const state = JSON.parse(await readFile(path.join(root, ".orchestra", "state.json"), "utf8")) as {
+      sessions: Record<string, { messages: Record<string, { prompt?: string; reply?: string }> }>
+    }
+    const message = state.sessions["session-1"]?.messages["msg"]
+    assert.equal(message?.prompt, "hello")
+    assert.equal(message?.reply, "world")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

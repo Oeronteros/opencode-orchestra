@@ -1,6 +1,20 @@
 # OpenCode Orchestra
 
-`@oeronteros-1/opencode-orchestra` — плагин-оркестратор для OpenCode. Он добавляет ведущего агента, небольшую команду скрытых специалистов, арбитра для сложных случаев, автоматический выбор подключённых моделей и готовую интеграцию Context7 + Codebase Memory + MemoryGraph.
+[![npm version](https://img.shields.io/npm/v/@oeronteros-1/opencode-orchestra)](https://www.npmjs.com/package/@oeronteros-1/opencode-orchestra) [![license](https://img.shields.io/npm/l/@oeronteros-1/opencode-orchestra)](LICENSE) [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-4f46e5)](https://opencode.ai/docs/plugins/)
+
+`@oeronteros-1/opencode-orchestra` — стабильный плагин-оркестратор для OpenCode. Он добавляет ведущего агента, команду скрытых специалистов, арбитра для сложных случаев, автоматический выбор подключённых моделей, контроль стоимости, локальную телеметрию и интеграцию Context7 + Codebase Memory + MemoryGraph.
+
+## Возможности 1.0
+
+- автоматическая классификация задач и dependency-aware план выполнения;
+- режимы бюджета `eco`, `balanced`, `quality` и `ebobo`;
+- автоматическое обнаружение моделей с ручными пулами и точными overrides;
+- прогноз стоимости, локальный price snapshot и собственный pricing endpoint;
+- локальный dashboard, аналитика расходов и CSV/JSON export;
+- диагностика `doctor`, проверка обновлений и shell completion;
+- идемпотентная установка без удаления пользовательской OpenCode/MCP-конфигурации.
+
+Стабильный контракт версии 1.0 описан в [CHANGELOG.md](CHANGELOG.md). GitHub release notes находятся в [GITHUB_RELEASE_1.0.0.md](GITHUB_RELEASE_1.0.0.md).
 
 ## Установка одной командой
 
@@ -14,7 +28,7 @@ CLI использует Bun напрямую, поэтому отдельный
 
 Команда:
 
-- добавит `@oeronteros-1/opencode-orchestra` в `~/.config/opencode/opencode.json`;
+- добавит `@oeronteros-1/opencode-orchestra@latest` в OpenCode config (`opencode.json` или `opencode.jsonc`);
 - подключит удалённый Context7 MCP (`https://mcp.context7.com/mcp`);
 - установит статический `codebase-memory-mcp`, включит автоматическую индексацию и подключит его к OpenCode;
 - установит MemoryGraph (`memorygraphMCP`) в изолированное окружение через `uv` и подключит локальную SQLite-память;
@@ -32,6 +46,34 @@ bunx @oeronteros-1/opencode-orchestra@latest install --help
 ```
 
 Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
+
+## Диагностика, обновление и автодополнение
+
+Помимо установки и dashboard, CLI предлагает служебные команды:
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest doctor
+```
+
+Проверяет конфиг OpenCode и `orchestra.jsonc`, регистрацию плагина, доступность настроенных MCP-серверов, пути и версии `uv`, MemoryGraph и Codebase Memory. Флаг `--config-dir DIR` переопределяет каталог конфигурации, а `--json` выводит результат в машиночитаемом виде.
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest update
+```
+
+Сверяет установленную версию плагина с последней опубликованной на npm и подсказывает команду обновления.
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest completion zsh
+bunx @oeronteros-1/opencode-orchestra@latest completion bash
+bunx @oeronteros-1/opencode-orchestra@latest completion pwsh
+```
+
+Выводит скрипт автодополнения для zsh, bash или pwsh. Например, для zsh:
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions/_opencode-orchestra
+```
 
 ## Модели без ручной настройки
 
@@ -126,6 +168,28 @@ bunx @oeronteros-1/opencode-orchestra@latest install --help
 
 Цена из каталога — сигнал ранжирования, а не гарантия фактического тарифа. Для подписочных моделей можно явно указать `cost: "subscription"` в ручном пуле.
 
+### Прайс-лист и прогноз стоимости
+
+Плагин поставляет встроенный snapshot цен (`{provider}/{model} → input/output USD за 1M токенов`) и использует его как отдельный сигнал ранжирования — при прочих равных дешевле модель выигрывает. Снапшот можно периодически обновлять с собственного эндпоинта:
+
+```jsonc
+{
+  "pricing": {
+    "endpoint": "https://internal.example.com/prices.json",
+    "refreshIntervalHours": 24,
+    "estimate": true,
+    "warnThresholdUSD": 0.5
+  }
+}
+```
+
+- `endpoint` — self-hosted JSON `{ "updatedAt": "...", "prices": { "provider/model": { "input": 0.27, "output": 1.1 } } }`; при недоступности остаётся встроенный snapshot;
+- `refreshIntervalHours` — период опроса (0 отключает);
+- `estimate` — включает прогноз стоимости до запуска в ответе `orchestra_route`;
+- `warnThresholdUSD` — порог, выше которого роутер добавляет предупреждение «эта задача в `quality` обойдётся примерно в $X».
+
+Resolver формирует упорядоченный список более дешёвых fallback-кандидатов для execution-слоёв, которые умеют повторять вызовы. Сам плагин не перехватывает provider-вызовы OpenCode и поэтому не заявляет автоматический retry. Прогноз стоимости — информативное поле: выполнение не блокируется, а предупреждение помогает подтвердить расходы заранее.
+
 ## Агенты и команды
 
 Плагин добавляет один публичный `orch-lead`, скрытых workers и скрытый `orch-judge`. Workers не могут делегировать работу дальше; lead может вызывать только агентов Orchestra.
@@ -135,7 +199,10 @@ bunx @oeronteros-1/opencode-orchestra@latest install --help
 ```text
 /orchestra <задача>
 /orchestra-status
+/plugin-status
 ```
+
+`/orchestra-status` показывает статистику текущей Orchestra-сессии, а `/plugin-status` — версию загруженного плагина, бюджет, стратегию моделей и состояние companion MCP.
 
 Профили: `architecture`, `debug`, `ui`, `research`, `review`, `security`, `performance`, `migration`, `ops`.
 
@@ -159,16 +226,18 @@ MemoryGraph отвечает за знания, которых нет непос
 
 Глобальный конфиг: `~/.config/opencode/orchestra.jsonc` (или `$XDG_CONFIG_HOME/opencode/orchestra.jsonc`). Проектный `.opencode/orchestra.jsonc` накладывается поверх глобального. Переменная `OPENCODE_CONFIG_DIR` также поддерживается.
 
-## Разработка
+## Требования и разработка
+
+Для установки рекомендуется Bun 1.2+. Для Node-based tooling и разработки требуется Node.js 22+.
 
 ```bash
-npm install
+npm ci
 npm run check
 npm run build
 npm pack --dry-run
 ```
 
-Перед публикацией пакет автоматически собирается через `prepack`.
+Перед публикацией `prepublishOnly` запускает полный check, а `prepack` пересобирает plugin и dashboard. Рабочая команда релиза: `npm publish --access public`. Перед ней проверьте содержимое tarball и создайте Git tag `v1.0.0`.
 
 ## Документация
 
@@ -194,13 +263,32 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
 - input, output, reasoning и cache-токены;
 - фактическую стоимость, которую возвращает провайдер;
 - расходы и нагрузку по моделям и агентам;
-- виртуализированный журнал activity без текстов промптов и ответов;
+- виртуализированный журнал activity; тексты промптов и ответов отключены по умолчанию и сохраняются только при явном `telemetry.storeTexts: true`;
 - статус Context7, Codebase Memory, MemoryGraph и сохранённого пользователем Supermemory;
-- настройку режимов `eco`, `balanced`, `quality`, `ebobo` и моделей отдельных агентов.
+- настройку режимов `eco`, `balanced`, `quality`, `ebobo` и моделей отдельных агентов;
+- месячный прогноз, детектирование аномалий и экспорт activity/models/agents/daily/summary в CSV или JSON.
 
 Настройки сохраняются в `orchestra.jsonc` с резервной копией. Существующие MCP-записи dashboard не удаляет и не перезаписывает.
 
 Полезные параметры: `--directory DIR`, `--config-dir DIR`, `--host HOST`, `--port PORT`, `--no-open`.
+
+## Обновление с 0.5.x
+
+Повторно выполните установщик:
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest install
+```
+
+Миграция `orchestra.jsonc` не требуется. Установщик сохранит существующие plugin options и MCP entries, обновит bare/pinned Orchestra entry до `@latest` и создаст backup перед изменением основного OpenCode config. После обновления перезапустите OpenCode и выполните `/plugin-status`.
+
+## Безопасность и приватность
+
+- dashboard по умолчанию слушает только `127.0.0.1` и защищён случайным токеном;
+- telemetry хранится локально в `.orchestra`;
+- тексты сообщений не сохраняются без `telemetry.storeTexts: true`;
+- pricing endpoint настраивается пользователем и не требуется для offline-оценки;
+- перед публикацией или баг-репортом не прикладывайте локальный ledger, если включали сохранение текстов.
 
 ## License
 

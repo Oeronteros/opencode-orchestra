@@ -64,13 +64,15 @@ function candidate(providerID: string, model: CatalogModel): ModelCandidateInput
   for (const capability of caps) scores[capability] = model.reasoning && capability === "reasoning" ? 9 : 7
 
   return {
-    id: `${providerID}/${model.id}`,
+    id: providerID + "/" + model.id,
     cost: paid ? "paid" : "free",
     tier: model.reasoning ? ((model.limit?.context ?? 0) >= 200_000 ? "frontier" : "lead") : "worker",
     priority,
     capabilities: caps,
     scores,
     ...(contextClass(model.limit?.context) ? { context: contextClass(model.limit?.context) } : {}),
+    ...(model.cost?.input !== undefined ? { priceInput: model.cost.input } : {}),
+    ...(model.cost?.output !== undefined ? { priceOutput: model.cost.output } : {}),
   }
 }
 
