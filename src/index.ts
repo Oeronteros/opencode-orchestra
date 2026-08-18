@@ -237,4 +237,8 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
 // `@opencode-ai/plugin` / `PluginModule`). Older builds resolved a
 // default/self-named export instead, so export both for compatibility.
 export const server: Plugin = OrchestraPlugin
-export default OrchestraPlugin
+
+// OpenCode expects the default module export to be a PluginModule object.
+export default {
+  server: OrchestraPlugin,
+} satisfies { server: Plugin }
