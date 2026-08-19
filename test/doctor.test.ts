@@ -55,6 +55,15 @@ test("bashCompletion supports a custom program name", () => {
   assert.match(c, /complete -F _oo_completion oo/)
 })
 
+test("readConfigFile accepts a UTF-8 BOM", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-bom-"))
+  const file = path.join(directory, "opencode.jsonc")
+  await writeFile(file, "\ufeff{\"plugin\":[\"@oeronteros-1/opencode-orchestra@latest\"]}", "utf8")
+  const result = await readConfigFile(file)
+  assert.deepEqual(result.errors, [])
+  assert.deepEqual(result.parsed.plugin, ["@oeronteros-1/opencode-orchestra@latest"])
+})
+
 test("readConfigFile reports JSONC syntax errors", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-"))
   const file = path.join(directory, "opencode.jsonc")

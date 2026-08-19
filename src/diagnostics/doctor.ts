@@ -79,7 +79,10 @@ export async function readConfigFile(file: string): Promise<ReadConfigResult> {
     return { path: file, parsed: {}, errors: [], exists: false }
   }
   const errors: ParseError[] = []
-  const value = parseJsonc(text, errors, { allowTrailingComma: true, disallowComments: false })
+  // OpenCode configs may be saved with a UTF-8 BOM; jsonc-parser otherwise
+  // reports InvalidSymbol at offset 0 and hides the actual plugin state.
+  const normalized = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  const value = parseJsonc(normalized, errors, { allowTrailingComma: true, disallowComments: false })
   if (errors.length > 0) {
     return {
       path: file,
