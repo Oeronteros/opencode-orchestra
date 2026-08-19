@@ -57,7 +57,10 @@ const FORMATTING = { insertSpaces: true, tabSize: 2, eol: "\n" }
 
 function parseObject(text: string, file: string): Record<string, unknown> {
   const errors: ParseError[] = []
-  const value = parse(text, errors, { allowTrailingComma: true, disallowComments: false })
+  // Editors and generated OpenCode configs may include an UTF-8 BOM.
+  // jsonc-parser treats it as an invalid symbol at offset 0.
+  const normalized = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  const value = parse(normalized, errors, { allowTrailingComma: true, disallowComments: false })
   if (errors.length > 0) {
     const details = errors.map((error) => `${printParseErrorCode(error.error)}@${error.offset}`).join(", ")
     throw new Error(`Cannot update invalid JSONC file ${file}: ${details}`)

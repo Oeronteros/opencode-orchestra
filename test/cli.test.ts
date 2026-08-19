@@ -113,6 +113,16 @@ test("installer upgrades a bare/pinned plugin entry to @latest", async () => {
   }
 })
 
+test("installer accepts a UTF-8 BOM in JSONC config", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-bom-"))
+  const configFile = path.join(directory, "opencode.jsonc")
+  await writeFile(configFile, "\ufeff{\"plugin\":[\"existing\"]}\n")
+  const result = await install({ configDirectory: directory, context7: false, codebaseMemory: false, memoryGraph: false, provisionDependencies: false, force: false, dryRun: false })
+  const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
+  assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest"])
+  assert.ok(result.changed.includes("plugin"))
+})
+
 test("installer keeps an existing @latest entry unchanged and idempotent", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-latest-"))
   const configFile = path.join(directory, "opencode.jsonc")
