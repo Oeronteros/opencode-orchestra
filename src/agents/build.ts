@@ -1,5 +1,6 @@
 import type { OrchestraConfig } from "../config/schema.js"
 import { createJudgeAgent } from "./judge.js"
+import { createMergeAgent } from "./merge.js"
 import { createLeadAgent } from "./lead.js"
 import type { AgentSet } from "./types.js"
 import { createWorkerAgents } from "./workers.js"
@@ -13,6 +14,7 @@ export function createAgentSet(config: OrchestraConfig, prompts: PromptBundle): 
   const agents: AgentSet = {
     "orch-lead": createLeadAgent(config, prompts.lead),
     ...createWorkerAgents(config),
+    "orch-merge": createMergeAgent(config),
     "orch-judge": createJudgeAgent(config, prompts.judge),
   }
   for (const [name, model] of Object.entries(config.models.agents)) {

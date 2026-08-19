@@ -33,7 +33,7 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
   return {
     description: "Orchestration lead that classifies complex work, dispatches a small specialist team, synthesizes evidence, and escalates only unresolved disagreement.",
     mode: "primary",
-    prompt: `${basePrompt.trim()}\n\nEnabled profiles:\n${profileGuide}\n\nRuntime limits: dispatch at most ${config.orchestration.maxWorkers} workers total and at most ${config.orchestration.parallelWorkers} concurrently. Budget mode: ${config.budget}.${config.budget === "ebobo" ? " EBOBO MODE: dispatch the full available specialist roster in parallel, require independent evidence, and always use orch-judge for frontier arbitration." : ""}`,
+    prompt: `${basePrompt.trim()}\n\nExecution protocol: build a dependency DAG; dispatch every currently-ready node concurrently up to the runtime limit; wait for dependencies before releasing downstream nodes; after all evidence nodes finish, call orch-merge exactly once with every result labeled by node id and worker.\n\nEnabled profiles:\n${profileGuide}\n\nRuntime limits: dispatch at most ${config.orchestration.maxWorkers} workers total and at most ${config.orchestration.parallelWorkers} concurrently. Budget mode: ${config.budget}.${config.budget === "ebobo" ? " EBOBO MODE: dispatch the full available specialist roster in parallel, require independent evidence, and always use orch-judge for frontier arbitration." : ""}`,
     hidden: false,
     temperature: 0.2,
     color: "accent",
@@ -52,6 +52,7 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
       task: {
         "*": "deny",
         ...workerPermissions,
+        "orch-merge": "allow",
         "orch-judge": "allow",
       },
       external_directory: "ask",

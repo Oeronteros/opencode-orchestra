@@ -13,6 +13,8 @@ test("builds a selectable primary lead and hidden workers", () => {
   assert.equal(agents["orch-lead"]?.mode, "primary")
   assert.equal(agents["orch-repo"]?.hidden, true)
   assert.equal(agents["orch-judge"]?.hidden, true)
+  assert.equal(agents["orch-merge"]?.hidden, true)
+  assert.equal(agents["orch-merge"]?.permission.task, "deny")
   assert.equal(agents["orch-repo"]?.permission.task, "deny")
 })
 
@@ -24,6 +26,7 @@ test("lead can invoke Orchestra workers but workers cannot delegate", () => {
   assert.equal(typeof taskPermission, "object")
   assert.equal((taskPermission as Record<string, string>)["*"], "deny")
   assert.equal((taskPermission as Record<string, string>)["orch-repo"], "allow")
+  assert.equal((taskPermission as Record<string, string>)["orch-merge"], "allow")
   assert.equal((taskPermission as Record<string, string>)["orch-judge"], "allow")
   assert.equal(agents["orch-lead"]?.permission["memorygraph_*"], "allow")
   assert.equal(agents["orch-repo"]?.permission["codebase_memory_*"], "allow")

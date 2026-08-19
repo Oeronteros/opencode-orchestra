@@ -1,21 +1,20 @@
 import type { ProfileName } from "../config/schema.js"
 
-/**
- * A single node in a task's execution DAG. Each node is a self-contained
- * subtask that maps onto one specialist worker. Dependencies are expressed as
- * ids of the nodes that must complete (or at least be dispatched) first.
- */
+/** A node in the dependency-aware specialist execution DAG. */
 export interface PlanNode {
   id: string
   description: string
   worker: string
   dependsOn: string[]
+  role: "specialist" | "reviewer" | "merger"
 }
 
 export interface TaskPlan {
   nodes: PlanNode[]
+  /** Topologically ordered dispatch waves. Nodes in one level may run concurrently. */
   levels: string[][]
   maxParallel: number
+  mergerNodeId?: string
 }
 
 const PROFILE_WORKERS: Partial<Record<ProfileName, string[]>> = {
@@ -34,105 +33,82 @@ export interface PlanOptions {
   secondaryWorkers?: string[]
   maxNodes?: number
   dependencyAware?: boolean
+  includeMerger?: boolean
 }
 
-const ANALYSTS = new Set(["orch-critic", "orch-security", "orch-visual-review"])
+const REVIEWERS = new Set(["orch-critic", "orch-security", "orch-visual-review"])
 
-export function planTask(
-  profile: ProfileName,
-  secondaryProfiles: ProfileName[] = [],
-  options: PlanOptions = {},
-): TaskPlan {
-  const maxNodes = options.maxNodes ?? 6
+export function planTask(profile: ProfileName, secondaryProfiles: ProfileName[] = [], options: PlanOptions = {}): TaskPlan {
+  const maxNodes = Math.max(1, options.maxNodes ?? 6)
   const dependencyAware = options.dependencyAware ?? true
-
-  const own = PROFILE_WORKERS[profile] ?? []
-  const level0: string[] = []
-  const level1: string[] = []
+  const includeMerger = options.includeMerger ?? dependencyAware
+  const workerLimit = Math.max(0, maxNodes - (includeMerger ? 1 : 0))
+  const primary: string[] = []
+  const reviewers: string[] = []
   const seen = new Set<string>()
-  for (const worker of own) {
+  const add = (worker: string) => {
+    if (seen.has(worker) || worker === "orch-merge") return
     seen.add(worker)
-    ;(ANALYSTS.has(worker) ? level1 : level0).push(worker)
+    ;(REVIEWERS.has(worker) ? reviewers : primary).push(worker)
   }
-  for (const secondary of secondaryProfiles) {
-    for (const worker of PROFILE_WORKERS[secondary] ?? []) {
-      if (seen.has(worker)) continue
-      seen.add(worker)
-      ;(ANALYSTS.has(worker) ? level1 : level0).push(worker)
-    }
-  }
-  for (const worker of options.secondaryWorkers ?? []) {
-    if (seen.has(worker)) continue
-    seen.add(worker)
-    ;(ANALYSTS.has(worker) ? level1 : level0).push(worker)
-  }
+  for (const worker of PROFILE_WORKERS[profile] ?? []) add(worker)
+  for (const secondary of secondaryProfiles) for (const worker of PROFILE_WORKERS[secondary] ?? []) add(worker)
+  for (const worker of options.secondaryWorkers ?? []) add(worker)
 
-  const trimmedLevel0 = level0.slice(0, Math.max(1, maxNodes))
-  const remaining = maxNodes - trimmedLevel0.length
-  const trimmedLevel1 = level1.slice(0, Math.max(0, remaining))
-
+  const selectedPrimary = primary.slice(0, workerLimit)
+  const selectedReviewers = reviewers.slice(0, Math.max(0, workerLimit - selectedPrimary.length))
   const nodes: PlanNode[] = []
   const levels: string[][] = []
 
-  if (dependencyAware && trimmedLevel1.length > 0) {
-    const l0 = trimmedLevel0.map((worker, i) => {
-      const node: PlanNode = {
-        id: "n0-" + i,
-        description: "Gather primary evidence for the " + profile + " task using " + worker + ".",
-        worker,
-        dependsOn: [],
-      }
-      nodes.push(node)
-      return node.id
-    })
-    levels.push(l0)
+  const first = selectedPrimary.map((worker, i) => {
+    const node: PlanNode = { id: "n0-" + i, description: "Investigate an independent " + profile + " branch using " + worker + ".", worker, dependsOn: [], role: "specialist" }
+    nodes.push(node); return node.id
+  })
+  if (first.length) levels.push(first)
 
-    const l1 = trimmedLevel1.map((worker, i) => {
-      const node: PlanNode = {
-        id: "n1-" + i,
-        description: "Cross-check the gathered evidence using " + worker + ".",
-        worker,
-        dependsOn: l0,
-      }
-      nodes.push(node)
-      return node.id
+  let evidence = first
+  if (selectedReviewers.length) {
+    const review = selectedReviewers.map((worker, i) => {
+      const deps = dependencyAware ? first : []
+      const node: PlanNode = { id: "n1-" + i, description: "Cross-check specialist evidence using " + worker + ".", worker, dependsOn: deps, role: "reviewer" }
+      nodes.push(node); return node.id
     })
-    levels.push(l1)
-  } else {
-    const flat = [...trimmedLevel0, ...trimmedLevel1].slice(0, maxNodes)
-    const l0 = flat.map((worker, i) => {
-      const node: PlanNode = {
-        id: "n0-" + i,
-        description: "Contribute an independent branch for the " + profile + " task using " + worker + ".",
-        worker,
-        dependsOn: [],
-      }
-      nodes.push(node)
-      return node.id
-    })
-    levels.push(l0)
+    if (dependencyAware) levels.push(review)
+    else if (levels[0]) levels[0].push(...review)
+    else levels.push(review)
+    evidence = [...first, ...review]
   }
 
-  return {
-    nodes,
-    levels,
-    maxParallel: levels.reduce((max, level) => Math.max(max, level.length), 0),
+  let mergerNodeId: string | undefined
+  if (includeMerger) {
+    mergerNodeId = "merge"
+    nodes.push({ id: mergerNodeId, description: "Merge all completed specialist outputs into one evidence-backed handoff, preserving conflicts and provenance.", worker: "orch-merge", dependsOn: evidence, role: "merger" })
+    levels.push([mergerNodeId])
   }
+
+  return { nodes, levels, maxParallel: levels.reduce((max, level) => Math.max(max, level.length), 0), ...(mergerNodeId ? { mergerNodeId } : {}) }
 }
 
 export function validatePlan(plan: TaskPlan): string[] {
-  const byId = new Map(plan.nodes.map((n) => [n.id, n]))
-  const position = new Map(plan.nodes.map((n, i) => [n.id, i]))
+  const byId = new Map<string, PlanNode>()
   const problems: string[] = []
   for (const node of plan.nodes) {
-    if (!byId.has(node.id)) problems.push("missing node " + node.id)
-    for (const dep of node.dependsOn) {
-      if (!byId.has(dep)) problems.push("node " + node.id + " references unknown dependency " + dep)
-      else if (dep === node.id) problems.push("node " + node.id + " depends on itself")
-      else if ((position.get(dep) ?? -1) >= (position.get(node.id) ?? 0)) {
-        problems.push("node " + node.id + " has a forward/cyclic dependency on " + dep)
-      }
-    }
+    if (byId.has(node.id)) problems.push("duplicate node " + node.id)
+    byId.set(node.id, node)
   }
-  return problems
+  const visiting = new Set<string>(), visited = new Set<string>()
+  const visit = (id: string): void => {
+    if (visiting.has(id)) { problems.push("cycle includes " + id); return }
+    if (visited.has(id)) return
+    const node = byId.get(id); if (!node) return
+    visiting.add(id)
+    for (const dep of node.dependsOn) {
+      if (!byId.has(dep)) problems.push("node " + id + " references unknown dependency " + dep)
+      else if (dep === id) problems.push("node " + id + " depends on itself")
+      else visit(dep)
+    }
+    visiting.delete(id); visited.add(id)
+  }
+  for (const node of plan.nodes) visit(node.id)
+  return [...new Set(problems)]
 }

@@ -12,6 +12,7 @@ import { orchestraConfigSchema } from "../config/schema.js"
 import { openCodeConfigDirectory } from "../config/paths.js"
 import { analyzeDaily, type DailyAnomaly, type MonthProjection } from "../telemetry/analytics.js"
 import { readLedgerState, type MessageUsage, type TokenUsage } from "../telemetry/ledger.js"
+import { parseLiveSnapshot, type LiveSnapshot } from "../telemetry/live.js"
 
 /**
  * Any top-level config section may be edited from the dashboard, so the input
@@ -445,6 +446,77 @@ function openBrowser(url: string): void {
   child.unref()
 }
 
+const LIVE_TELEMETRY_DIRECTORIES = [".orchestra", "orchestra"]
+
+/**
+ * Resolve the live stream file written by the plugin. The telemetry directory
+ * comes from the config (defaults to ".orchestra"), with a couple of common
+ * historical names as a fallback so the dashboard keeps working if the user
+ * moved the directory.
+ */
+async function readLiveSnapshot(directory: string, configDirectory: string): Promise<LiveSnapshot> {
+  let telemetryDirectory = ".orchestra"
+  try {
+    const configPath = path.join(configDirectory, "orchestra.jsonc")
+    const config = orchestraConfigSchema.parse(parseJsonc(await readTextOr(configPath, "{}\n")))
+    telemetryDirectory = config.telemetry.directory
+  } catch {
+    // Fall through to the default; a missing file yields the empty snapshot.
+  }
+  const candidates = [path.resolve(directory, telemetryDirectory, "live.ndjson"), ...LIVE_TELEMETRY_DIRECTORIES.map((name) => path.resolve(directory, name, "live.ndjson"))]
+  for (const candidate of candidates) {
+    const text = await readTextOr(candidate, "")
+    if (text) return parseLiveSnapshot(text)
+  }
+  return { version: 1, updatedAt: Date.now(), seq: 0, active: [], recent: [] }
+}
+
+function sseSend(response: ServerResponse, event: string, data: unknown): void {
+  response.write("event: " + event + "\ndata: " + JSON.stringify(data) + "\n\n")
+}
+
+function handleLiveStream(request: IncomingMessage, response: ServerResponse, directory: string, configDirectory: string): void {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  })
+  response.write("retry: 2000\n\n")
+
+  let closed = false
+  let timer: ReturnType<typeof setInterval> | undefined
+  const close = () => {
+    if (closed) return
+    closed = true
+    if (timer) clearInterval(timer)
+    response.end()
+  }
+  request.on("close", close)
+  response.on("close", close)
+
+  let lastSeq = -1
+  let lastUpdatedAt = -1
+
+  const tick = async () => {
+    if (closed) return
+    const snapshot = await readLiveSnapshot(directory, configDirectory)
+    if (closed) return
+    if (snapshot.seq !== lastSeq || snapshot.updatedAt !== lastUpdatedAt) {
+      lastSeq = snapshot.seq
+      lastUpdatedAt = snapshot.updatedAt
+      sseSend(response, "snapshot", snapshot)
+    } else {
+      response.write(": ping\n\n") // keep the connection alive
+    }
+  }
+
+  // Send the current state immediately, then poll the plugin's live file.
+  void tick().catch(() => undefined)
+  timer = setInterval(() => void tick().catch(() => undefined), 700)
+  timer.unref?.()
+}
+
 export async function startDashboard(options: DashboardOptions = {}): Promise<{
   url: string
   close: () => Promise<void>
@@ -459,8 +531,16 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? host}`)
       if (url.pathname.startsWith("/api/")) {
-        if (request.headers["x-orchestra-token"] !== token) {
+        // EventSource cannot set custom headers, so the SSE /api/live route
+        // authenticates via a ?token= query param (the same token that is
+        // already present in the page URL). Other /api calls may use header or query.
+        const givenToken = request.headers["x-orchestra-token"] ?? url.searchParams.get("token")
+        if (givenToken !== token) {
           sendJson(response, 401, { error: "Invalid dashboard token" })
+          return
+        }
+        if (request.method === "GET" && url.pathname === "/api/live") {
+          handleLiveStream(request, response, directory, configDirectory)
           return
         }
         if (request.method === "GET" && url.pathname === "/api/snapshot") {

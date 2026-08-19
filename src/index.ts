@@ -8,6 +8,8 @@ import { loadPrompts } from "./prompts/load.js"
 import { applyDiscoveredModels, discoverConnectedModels } from "./routing/model-discovery.js"
 import { primarySystemHint } from "./superpowers/compatibility.js"
 import { Ledger } from "./telemetry/ledger.js"
+import { LiveStream } from "./telemetry/live.js"
+import { lookupPrice } from "./routing/pricing/prices.js"
 import { createOrchestraTools } from "./tools.js"
 import { createStreamObserver, type StreamObserver } from "./routing/observer.js"
 import { createPriceRefresher, type RefreshSource } from "./routing/pricing/refresh.js"
@@ -46,12 +48,30 @@ const promptBuffers = new Map<string, string>()
 const MAX_TEXT_BUFFERS = 512
 let storeTextsFlag = false
 
+// Live agent activity identity, mapped per session so streaming deltas can be
+// attributed to an agent + model before the assistant message finalizes.
+// Populated on every LLM request via the chat.params hook.
+const sessionAgent = new Map<string, string>()
+const sessionModel = new Map<string, { providerID: string; modelID: string }>()
+// Per-response accumulated text (independent of telemetry.storeTexts) used to
+// show "what the agent is doing" in the live dashboard panel. Bounded.
+const liveTexts = new Map<string, string>()
+
 function pruneOldest(map: Map<string, string>): void {
   while (map.size > MAX_TEXT_BUFFERS) {
     const oldest = map.keys().next().value
     if (oldest === undefined) break
     map.delete(oldest)
   }
+}
+
+/** Accumulate a text delta for a live response, returning the tail snippet. */
+function appendLiveText(messageID: string, delta: string): string {
+  const current = liveTexts.get(messageID) ?? ""
+  const next = current.length > 4_000 ? current.slice(-1_600) + delta : current + delta
+  liveTexts.set(messageID, next)
+  pruneOldest(liveTexts)
+  return next.length > 240 ? next.slice(-240) : next
 }
 
 function trackStreamDelta(sessionID: string, part: { id: string; messageID: string }, delta: string): void {
@@ -119,6 +139,14 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
     : undefined
   const priceRefresher = createPriceRefresher(undefined, refreshSource)
   priceRefresher.start()
+  // Live orchestration activity feed: records which agents are generating and
+  // what they produce (plus an estimated cost-so-far) for the dashboard SSE.
+  const live = new LiveStream(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, (provider, model) => {
+    if (!model) return undefined
+    const snapshot = priceRefresher.snapshot
+    const key = provider ? `${provider}/${model}` : model
+    return lookupPrice(snapshot, key) ?? (provider ? lookupPrice(snapshot, model) : undefined)
+  })
   const systemHint = primarySystemHint(orchestra)
   const pluginStatus: PluginStatus = {
     name: PACKAGE_NAME,
@@ -182,13 +210,20 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
     }),
     dispose: async () => {
       priceRefresher.stop()
+      await live.dispose()
       promptBuffers.clear()
       replyBuffers.clear()
+      liveTexts.clear()
+      sessionAgent.clear()
+      sessionModel.clear()
       streamObservers.clear()
       flaggedParts.clear()
     },
-    "chat.message": async ({ sessionID }, output) => {
-      if (!storeTextsFlag || !sessionID) return
+    "chat.message": async ({ sessionID, agent, model }, output) => {
+      if (!sessionID) return
+      if (agent) sessionAgent.set(sessionID, agent)
+      if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: model.modelID })
+      if (!storeTextsFlag) return
       const text = output.parts
         .filter((part) => part.type === "text")
         .map((part) => part.text)
@@ -199,16 +234,43 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
         pruneOldest(promptBuffers)
       }
     },
+    "chat.params": async ({ sessionID, agent, model }) => {
+      // Capture the agent + model for the in-flight LLM request so live stream
+      // deltas can attribute activity before the assistant message finalizes.
+      if (!sessionID) return
+      if (agent) sessionAgent.set(sessionID, agent)
+      if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: model.id })
+    },
     event: async ({ event }) => {
       if (event.type === "message.part.updated") {
         const part = event.properties.part
-        trackStreamDelta(part.sessionID, part, event.properties.delta ?? "")
+        const delta = event.properties.delta ?? ""
+        trackStreamDelta(part.sessionID, part, delta)
+        if (delta) {
+          const model = sessionModel.get(part.sessionID)
+          live.delta({
+            key: part.messageID,
+            sessionID: part.sessionID,
+            agent: sessionAgent.get(part.sessionID),
+            text: appendLiveText(part.messageID, delta),
+            provider: model?.providerID,
+            model: model?.modelID,
+          })
+        }
         return
       }
       if (event.type !== "message.updated") return
       const info = event.properties.info
       if (info.role !== "assistant") return
       endStream(info.id)
+      if (sessionAgent.has(info.sessionID)) live.finish({
+        key: info.id,
+        sessionID: info.sessionID,
+        agent: sessionAgent.get(info.sessionID),
+        cost: info.cost,
+        tokens: { input: info.tokens.input, output: info.tokens.output, reasoning: info.tokens.reasoning },
+        finish: info.finish,
+      })
       await ledger.recordAssistant(info)
       if (storeTextsFlag) {
         const prompt = promptBuffers.get(info.sessionID)

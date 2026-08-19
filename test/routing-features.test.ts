@@ -14,13 +14,17 @@ test("planner builds a dependency-aware DAG with a synthesis level", () => {
   assert.ok(first && first.length > 0)
   assert.ok(first && plan.maxParallel >= first.length)
   assert.deepEqual(validatePlan(plan), [])
+  assert.equal(plan.nodes.at(-1)?.role, "merger")
+  assert.equal(plan.nodes.at(-1)?.worker, "orch-merge")
+  assert.deepEqual(plan.levels.at(-1), [plan.mergerNodeId])
+  assert.ok(plan.nodes.at(-1)?.dependsOn.length)
 
   const ids = new Set(plan.nodes.map((n) => n.id))
   assert.equal(ids.size, plan.nodes.length)
 })
 
 test("planner flattens to a single level in greedy mode", () => {
-  const plan = planTask("debug", [], { maxNodes: 4, dependencyAware: false })
+  const plan = planTask("debug", [], { maxNodes: 4, dependencyAware: false, includeMerger: false })
 
   assert.equal(plan.levels.length, 1)
   for (const node of plan.nodes) assert.deepEqual(node.dependsOn, [])

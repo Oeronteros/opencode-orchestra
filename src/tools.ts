@@ -71,7 +71,8 @@ export function createOrchestraTools(
 
         const planOptions = {
           maxNodes: config.orchestration.maxWorkers,
-          dependencyAware: config.budget !== "ebobo",
+          dependencyAware: true,
+          includeMerger: true,
           ...(config.budget === "ebobo" ? { secondaryWorkers: Array.from(new Set(enabledWorkers)) } : {}),
         }
         const plan = planTask(profile, classification.secondaryProfiles, planOptions)
@@ -123,7 +124,7 @@ export function createOrchestraTools(
             escalation,
             ...(estimate ? { estimate } : {}),
             ...(estimate ? { warning: formatEstimateWarning(estimate, config.pricing.warnThresholdUSD) ?? null } : { warning: null }),
-            next: "Delegate the full task once to orch-lead with profile=" + profile + ". Let orch-lead dispatch workers per the plan levels: level 0 branches in parallel, then level 1 synthesis." + eboboHint,
+            next: "Delegate the full task and returned plan once to orch-lead with profile=" + profile + ". Execute ready nodes level-by-level, concurrently within parallelWorkers, then call orch-merge exactly once." + eboboHint,
           },
           null,
           2,
