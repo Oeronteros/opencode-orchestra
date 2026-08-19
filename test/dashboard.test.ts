@@ -15,7 +15,7 @@ test("dashboard serves local telemetry and saves validated config", async () => 
   await mkdir(assets, { recursive: true })
   await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
   await writeFile(path.join(config, "orchestra.jsonc"), '\ufeff{\n  // preserve me\n  "budget": "balanced"\n}\n')
-  await writeFile(path.join(config, "opencode.json"), '\ufeff{"mcp":{"supermemory":{"type":"remote"}}}\n')
+  await writeFile(path.join(config, "opencode.json"), '\ufeff{"mcp":{"playwright":{"type":"local"}}}\n')
   await writeFile(path.join(project, ".orchestra", "state.json"), JSON.stringify({
     version: 2,
     updatedAt: "2026-08-16T00:00:00.000Z",
@@ -33,10 +33,10 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     const token = url.searchParams.get("token") ?? ""
     const response = await fetch(new URL("/api/snapshot", url), { headers: { "X-Orchestra-Token": token } })
     assert.equal(response.status, 200)
-    const snapshot = await response.json() as { summary: { calls: number; tokens: { input: number } }; mcp: { supermemory: boolean }; projection: { projected: number }; anomalies: Array<{ date: string }>; config: { telemetry: { storeTexts: boolean } } }
+    const snapshot = await response.json() as { summary: { calls: number; tokens: { input: number } }; mcp: { playwright: boolean }; projection: { projected: number }; anomalies: Array<{ date: string }>; config: { telemetry: { storeTexts: boolean } } }
     assert.equal(snapshot.summary.calls, 1)
     assert.equal(snapshot.summary.tokens.input, 100)
-    assert.equal(snapshot.mcp.supermemory, true)
+    assert.equal(snapshot.mcp.playwright, true)
     // Analytics are exposed on the snapshot; projection is a finite number and
     // storeTexts defaults to false when not configured.
     assert.equal(typeof snapshot.projection.projected, "number")
