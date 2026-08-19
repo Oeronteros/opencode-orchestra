@@ -30,7 +30,8 @@ export interface InstallOptions {
   context7: boolean
   codebaseMemory: boolean
   memoryGraph: boolean
-  playwright: boolean
+  /** Configure Playwright MCP by default; false explicitly disables it. */
+  playwright?: boolean
   provisionDependencies: boolean
   force: boolean
   dryRun: boolean
@@ -298,7 +299,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   if (options.context7) {
     addMcp("context7", { type: "remote", url: CONTEXT7_URL, enabled: true, oauth: false })
   }
-  if (options.playwright) {
+  if (options.playwright !== false) {
     addMcp("playwright", { type: "local", command: PLAYWRIGHT_COMMAND, enabled: true, timeout: 30_000 })
   }
   if (options.codebaseMemory) {
