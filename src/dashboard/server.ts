@@ -142,7 +142,7 @@ async function mcpStatus(configDirectory: string): Promise<Record<string, boolea
     context7: "context7" in mcp,
     codebaseMemory: "codebase-memory" in mcp,
     memoryGraph: "memorygraph" in mcp,
-    supermemory: "supermemory" in mcp,
+    playwright: "playwright" in mcp,
   }
 }
 
@@ -169,9 +169,10 @@ interface SnapshotData {
   projection: MonthProjection
   anomalies: DailyAnomaly[]
   mcp: Record<string, boolean>
+  availableModels: string[]
 }
 
-async function snapshot(directory: string, configDirectory: string): Promise<SnapshotData> {
+async function snapshot(directory: string, configDirectory: string, client?: unknown): Promise<SnapshotData> {
   const configPath = path.join(configDirectory, "orchestra.jsonc")
   const configText = await readTextOr(configPath, "{}\n")
   const config = orchestraConfigSchema.parse(parseJsonc(configText))
@@ -224,6 +225,9 @@ async function snapshot(directory: string, configDirectory: string): Promise<Sna
     projection: analytics.projection,
     anomalies: analytics.anomalies,
     mcp: await mcpStatus(configDirectory),
+    availableModels: [...new Set([
+      ...config.models.lead, ...config.models.judge, ...Object.values(config.models.worker).flat(),
+    ].map((model) => typeof model === "string" ? model : model.id))],
   }
 }
 

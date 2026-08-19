@@ -80,5 +80,6 @@ export interface Snapshot {
   daily: Array<DailyPoint>
   projection: MonthProjection
   anomalies: DailyAnomaly[]
-  mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "supermemory", boolean>
+  mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "playwright", boolean>
+  availableModels: string[]
 }

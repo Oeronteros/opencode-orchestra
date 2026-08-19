@@ -82,7 +82,7 @@ export async function detectMcpPresence(configDirectory: string = openCodeConfig
     context7: "context7" in mcp,
     codebaseMemory: "codebase-memory" in mcp,
     memoryGraph: "memorygraph" in mcp,
-    supermemory: "supermemory" in mcp,
+    playwright: "playwright" in mcp,
   }
 }
 

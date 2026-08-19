@@ -19,6 +19,7 @@ const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // version it first cached under a bare package name.
 const PACKAGE_ENTRY = `${PACKAGE_NAME}@latest`
 const CONTEXT7_URL = "https://mcp.context7.com/mcp"
+const PLAYWRIGHT_COMMAND = ["npx", "-y", "@playwright/mcp@latest"]
 const CODEBASE_MEMORY_INSTALLER = "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
 const CODEBASE_MEMORY_WINDOWS_INSTALLER = "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.ps1"
 const UV_INSTALLER = "https://astral.sh/uv/install.sh"
@@ -29,6 +30,7 @@ export interface InstallOptions {
   context7: boolean
   codebaseMemory: boolean
   memoryGraph: boolean
+  playwright: boolean
   provisionDependencies: boolean
   force: boolean
   dryRun: boolean
@@ -296,6 +298,9 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   if (options.context7) {
     addMcp("context7", { type: "remote", url: CONTEXT7_URL, enabled: true, oauth: false })
   }
+  if (options.playwright) {
+    addMcp("playwright", { type: "local", command: PLAYWRIGHT_COMMAND, enabled: true, timeout: 30_000 })
+  }
   if (options.codebaseMemory) {
     addMcp("codebase-memory", {
       type: "local",
@@ -375,6 +380,7 @@ function usage(): string {
     "  --no-context7        Do not configure Context7 MCP",
     "  --no-codebase-memory Do not install or configure Codebase Memory MCP",
     "  --no-memorygraph     Do not install or configure MemoryGraph MCP",
+    "  --no-playwright      Do not configure Playwright MCP",
     "  --no-deps            Only write config; do not install local MCP executables",
     "  --force              Replace existing MCP entries with Orchestra defaults",
     "  --dry-run            Show intended changes without writing files or downloading",
@@ -454,6 +460,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     context7: true,
     codebaseMemory: true,
     memoryGraph: true,
+    playwright: true,
     provisionDependencies: true,
     force: false,
     dryRun: false,
@@ -463,6 +470,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     if (argument === "--no-context7") options.context7 = false
     else if (argument === "--no-codebase-memory") options.codebaseMemory = false
     else if (argument === "--no-memorygraph") options.memoryGraph = false
+    else if (argument === "--no-playwright") options.playwright = false
     else if (argument === "--no-deps") options.provisionDependencies = false
     else if (argument === "--force") options.force = true
     else if (argument === "--dry-run") options.dryRun = true

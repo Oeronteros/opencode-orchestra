@@ -30,6 +30,7 @@ CLI использует Bun напрямую, поэтому отдельный
 
 - добавит `@oeronteros-1/opencode-orchestra@latest` в OpenCode config (`opencode.json` или `opencode.jsonc`);
 - подключит удалённый Context7 MCP (`https://mcp.context7.com/mcp`);
+- подключит Playwright MCP для браузерной автоматизации;
 - установит статический `codebase-memory-mcp`, включит автоматическую индексацию и подключит его к OpenCode;
 - установит MemoryGraph (`memorygraphMCP`) в изолированное окружение через `uv` и подключит локальную SQLite-память;
 - сохранит все пользовательские MCP и плагины без удаления или переименования;
@@ -45,7 +46,7 @@ CLI использует Bun напрямую, поэтому отдельный
 bunx @oeronteros-1/opencode-orchestra@latest install --help
 ```
 
-Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
+Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-playwright`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
 
 ## Диагностика, обновление и автодополнение
 
@@ -264,7 +265,7 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
 - фактическую стоимость, которую возвращает провайдер;
 - расходы и нагрузку по моделям и агентам;
 - виртуализированный журнал activity; тексты промптов и ответов отключены по умолчанию и сохраняются только при явном `telemetry.storeTexts: true`;
-- статус Context7, Codebase Memory, MemoryGraph и сохранённого пользователем Supermemory;
+- статус Context7, Codebase Memory, MemoryGraph;
 - настройку режимов `eco`, `balanced`, `quality`, `ebobo` и моделей отдельных агентов;
 - месячный прогноз, детектирование аномалий и экспорт activity/models/agents/daily/summary в CSV или JSON.
 
