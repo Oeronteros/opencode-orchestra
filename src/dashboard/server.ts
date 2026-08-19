@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { createReadStream } from "node:fs"
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
@@ -172,7 +172,14 @@ interface SnapshotData {
   availableModels: string[]
 }
 
-async function snapshot(directory: string, configDirectory: string, client?: unknown): Promise<SnapshotData> {
+function connectedModels(directory: string): string[] {
+  const executable = process.platform === "win32" ? "opencode.cmd" : "opencode"
+  const result = spawnSync(executable, ["models"], { cwd: directory, encoding: "utf8", windowsHide: true, timeout: 10_000 })
+  if (result.status !== 0 || !result.stdout) return []
+  return [...new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
+}
+
+async function snapshot(directory: string, configDirectory: string): Promise<SnapshotData> {
   const configPath = path.join(configDirectory, "orchestra.jsonc")
   const configText = await readTextOr(configPath, "{}\n")
   const config = orchestraConfigSchema.parse(parseJsonc(configText))
@@ -226,8 +233,10 @@ async function snapshot(directory: string, configDirectory: string, client?: unk
     anomalies: analytics.anomalies,
     mcp: await mcpStatus(configDirectory),
     availableModels: [...new Set([
+      ...connectedModels(directory),
+      ...Object.values(config.models.agents),
       ...config.models.lead, ...config.models.judge, ...Object.values(config.models.worker).flat(),
-    ].map((model) => typeof model === "string" ? model : model.id))],
+    ].map((model) => typeof model === "string" ? model : model.id))].sort(),
   }
 }
 

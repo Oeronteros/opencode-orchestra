@@ -274,7 +274,19 @@ function RankingPage({ kind }: { kind: "models" | "agents" }) {
   </motion.div>)}</div> : <EmptyState />}</Card></>
 }
 
-const AGENTS = ["orch-lead", "orch-repo", "orch-docs", "orch-tests", "orch-research", "orch-critic", "orch-security", "orch-visual-reference", "orch-visual-generate", "orch-visual-review", "orch-judge"]
+const AGENTS = [
+  { id: "orch-lead", name: "Lead", role: "Планирование и координация", group: "Основные" },
+  { id: "orch-judge", name: "Judge", role: "Арбитраж сложных решений", group: "Основные" },
+  { id: "orch-repo", name: "Repository", role: "Анализ и изменение кода", group: "Разработка" },
+  { id: "orch-tests", name: "Tests", role: "Тесты и верификация", group: "Разработка" },
+  { id: "orch-critic", name: "Critic", role: "Ревью и поиск проблем", group: "Разработка" },
+  { id: "orch-docs", name: "Docs", role: "Документация и API", group: "Исследование" },
+  { id: "orch-research", name: "Research", role: "Внешнее исследование", group: "Исследование" },
+  { id: "orch-security", name: "Security", role: "Безопасность", group: "Исследование" },
+  { id: "orch-visual-reference", name: "Visual Reference", role: "Анализ визуальных референсов", group: "Визуальные" },
+  { id: "orch-visual-generate", name: "Visual Generate", role: "Генерация изображений", group: "Визуальные" },
+  { id: "orch-visual-review", name: "Visual Review", role: "Визуальная проверка", group: "Визуальные" },
+] as const
 const settingsSchema = z.object({
   budget: z.enum(["eco", "balanced", "quality", "ebobo"]),
   models: z.object({ strategy: z.enum(["auto", "manual"]), agents: z.record(z.string(), z.string()) }),
@@ -292,7 +304,7 @@ function SettingsPage() {
   return <><PageIntro kicker="CONFIGURATION" title="Настройка Orchestra" text="Изменения сохраняются локально с резервной копией текущего JSONC." />
     <form onSubmit={form.handleSubmit((value) => save.mutate(value))} className="settings-stack">
       <Card className="settings-card"><div className="setting-title"><div><h2>Режим бюджета</h2><p>Один активный runtime-профиль для всей команды.</p></div></div><Controller name="budget" control={form.control} render={({ field }) => <div className="budget-grid">{(["eco", "balanced", "quality", "ebobo"] as const).map((mode) => <button type="button" key={mode} className={cn("budget-option", field.value === mode && "selected")} onClick={() => field.onChange(mode)}><strong>{mode}</strong><span>{({ eco: "Бесплатные workers", balanced: "Разумный баланс", quality: "Качество прежде цены", ebobo: "Максимальный роинг" })[mode]}</span></button>)}</div>} /></Card>
-      <Card className="settings-card"><div className="setting-title"><div><h2>Назначение моделей</h2><p>Оставьте поле пустым — Orchestra выберет доступную модель автоматически.</p></div><select {...form.register("models.strategy")}><option value="auto">Auto</option><option value="manual">Manual</option></select></div><div className="agent-form-grid">{AGENTS.map((agent) => <label key={agent}><span>{agent}</span><select {...form.register(`models.agents.${agent}`)}><option value="">Автоматически</option>{query.data.availableModels.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>)}</div></Card>
+      <Card className="settings-card model-settings"><div className="setting-title"><div><h2>Назначение моделей</h2><p>Выберите подключённую модель отдельно для каждого участника команды.</p></div><select {...form.register("models.strategy")}><option value="auto">Автоподбор</option><option value="manual">Ручной режим</option></select></div>{query.data.availableModels.length === 0 && <div className="model-empty">OpenCode не вернул подключённые модели. Проверьте авторизацию провайдера и команду <code>opencode models</code>.</div>}<div className="agent-model-list">{AGENTS.map((agent) => <div className="agent-model-row" key={agent.id}><div className="agent-identity"><strong>{agent.name}</strong><span>{agent.role}</span><small>{agent.id}</small></div><select aria-label={`Модель для ${agent.name}`} {...form.register(`models.agents.${agent.id}`)}><option value="">Автоматически</option>{query.data.availableModels.map((model) => <option key={model} value={model}>{model}</option>)}</select></div>)}</div></Card>
       <Card className="settings-card inline-setting"><div><h2>Локальная телеметрия</h2><p>Хранить только usage-метаданные. Тексты запросов и ответов не записываются.</p></div><Controller name="telemetry.enabled" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></Card>
       <Card className="settings-card inline-setting"><div><h2>{t("storeTexts")}</h2><p>Опционально, для отладки. По умолчанию выключено — журнал остаётся без промптов и ответов.</p></div><Controller name="telemetry.storeTexts" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></Card>
       <div className="form-actions"><span>{save.isError ? (save.error as Error).message : save.isSuccess ? "Настройки сохранены" : query.data.configPath}</span><Button type="submit" disabled={save.isPending}>{save.isPending ? "Сохраняю…" : "Сохранить настройки"}</Button></div>
