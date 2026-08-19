@@ -33,7 +33,7 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   const commands = runtime.command as Record<string, { template: string }>
   const tools = hooks.tool as Record<string, unknown>
 
-  assert.equal(agents["orch-lead"]?.mode, "subagent")
+  assert.equal(agents["orch-lead"]?.mode, "primary")
   assert.equal(agents["orch-repo"]?.mode, "subagent")
   assert.ok(commands["orchestra-status"]?.template.includes("orchestra_status"))
   assert.ok(commands["plugin-status"]?.template.includes("orchestra_plugin_status"))

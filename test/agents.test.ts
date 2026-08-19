@@ -5,11 +5,12 @@ import { orchestraConfigSchema } from "../src/config/schema.js"
 
 const prompts = { lead: "Lead prompt", judge: "Judge prompt" }
 
-test("builds one public lead and hidden workers", () => {
+test("builds a selectable primary lead and hidden workers", () => {
   const config = orchestraConfigSchema.parse({})
   const agents = createAgentSet(config, prompts)
 
   assert.equal(agents["orch-lead"]?.hidden, false)
+  assert.equal(agents["orch-lead"]?.mode, "primary")
   assert.equal(agents["orch-repo"]?.hidden, true)
   assert.equal(agents["orch-judge"]?.hidden, true)
   assert.equal(agents["orch-repo"]?.permission.task, "deny")

@@ -32,7 +32,7 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
 
   return {
     description: "Orchestration lead that classifies complex work, dispatches a small specialist team, synthesizes evidence, and escalates only unresolved disagreement.",
-    mode: "subagent",
+    mode: "primary",
     prompt: `${basePrompt.trim()}\n\nEnabled profiles:\n${profileGuide}\n\nRuntime limits: dispatch at most ${config.orchestration.maxWorkers} workers total and at most ${config.orchestration.parallelWorkers} concurrently. Budget mode: ${config.budget}.${config.budget === "ebobo" ? " EBOBO MODE: dispatch the full available specialist roster in parallel, require independent evidence, and always use orch-judge for frontier arbitration." : ""}`,
     hidden: false,
     temperature: 0.2,

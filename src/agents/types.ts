@@ -2,7 +2,7 @@ export type PermissionAction = "allow" | "ask" | "deny"
 
 export interface RuntimeAgentConfig {
   description: string
-  mode: "subagent"
+  mode: "primary" | "subagent"
   prompt: string
   model?: string
   hidden?: boolean

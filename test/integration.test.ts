@@ -94,7 +94,7 @@ test("full plugin run discovers mock provider models and assigns them to agents"
   assert.equal(init.extra.discoveredModels, 3, "three connected models should be discovered")
 
   const agents = runtime.agent as Record<string, { model?: string; mode: string }>
-  assert.equal(agents["orch-lead"]?.mode, "subagent")
+  assert.equal(agents["orch-lead"]?.mode, "primary")
   // Auto strategy + empty manual pools should be filled from discovery.
   assert.ok(agents["orch-lead"]?.model?.startsWith("mockvendor/"), "lead should resolve to a discovered mock model")
   assert.ok(agents["orch-repo"]?.model?.startsWith("mockvendor/"), "code worker should resolve to a discovered mock model")
