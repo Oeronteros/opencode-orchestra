@@ -1,6 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { OrchestraPlugin } from "../src/index.js"
+import pluginModule, { OrchestraPlugin, server } from "../src/index.js"
+
+test("entrypoint exposes a stable id and server", () => {
+  assert.equal(pluginModule.id, "opencode-orchestra")
+  assert.equal(pluginModule.server, OrchestraPlugin)
+  assert.equal(server, OrchestraPlugin)
+})
 
 test("plugin initializes and injects additive agents, tools, and commands", async () => {
   const initialize = OrchestraPlugin as unknown as (

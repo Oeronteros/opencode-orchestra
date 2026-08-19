@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
@@ -34,7 +34,7 @@ export interface InstallOptions {
   dryRun: boolean
 }
 
-type DependencyStatus = "installed" | "existing" | "skipped"
+type DependencyStatus = "installed" | "existing" | "skipped" | "failed"
 
 export interface InstallResult {
   openCodeConfig: string
@@ -225,11 +225,12 @@ async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDepend
 
 export async function install(options: InstallOptions): Promise<InstallResult> {
   const shouldProvision = options.provisionDependencies && !options.dryRun
+  // Companion MCPs are optional: failed provisioning must not prevent plugin setup.
   const codebase = options.codebaseMemory
-    ? await provisionCodebaseMemory(shouldProvision)
+    ? await provisionCodebaseMemory(shouldProvision).catch(() => ({ command: "codebase-memory-mcp", status: "failed" as const }))
     : { command: "codebase-memory-mcp", status: "skipped" as const }
   const memoryGraph = options.memoryGraph
-    ? await provisionMemoryGraph(shouldProvision)
+    ? await provisionMemoryGraph(shouldProvision).catch(() => ({ command: "memorygraph", status: "failed" as const }))
     : { command: "memorygraph", status: "skipped" as const }
 
   const configDirectory = path.resolve(options.configDirectory ?? openCodeConfigDirectory())

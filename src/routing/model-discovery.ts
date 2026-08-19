@@ -80,7 +80,7 @@ export async function discoverConnectedModels(client: unknown): Promise<ModelCan
   const provider = (client as ProviderClientLike).provider
   if (!provider?.list) return []
   try {
-    const result = await provider.list()
+    const result = await Promise.race([provider.list(), new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error("Provider discovery timed out")), 3000); timer.unref?.() })])
     const catalog = result.data
     if (!catalog) return []
     const connected = new Set(catalog.connected)

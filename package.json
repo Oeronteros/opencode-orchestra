@@ -1,8 +1,10 @@
 {
   "name": "@oeronteros-1/opencode-orchestra",
-  "version": "1.0.3",
+  "version": "1.0.7",
   "description": "Production-ready model routing, specialist agents, diagnostics, telemetry, and dashboard for OpenCode",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -31,11 +33,16 @@
     "schema",
     "CHANGELOG.md",
     "GITHUB_RELEASE_1.0.0.md",
+    "GITHUB_RELEASE_1.0.7.md",
     "README.md",
     "LICENSE"
   ],
   "exports": {
-    ".": "./dist/index.js",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
     "./schema": "./schema/opencode-orchestra.schema.json"
   },
   "bin": {
@@ -49,7 +56,7 @@
     "prepublishOnly": "npm run check",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p dashboard/tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/classifier.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/dashboard.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/config.test.js dist-test/test/classifier.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/dashboard.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {

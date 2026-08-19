@@ -51,13 +51,14 @@ export async function loadConfig(
   const explicit = typeof options.configFile === "string" ? options.configFile : undefined
   delete options.configFile
 
+  // Prefer JSONC when both project variants exist instead of silently merging
+  // two sibling files. Global settings remain the lowest-precedence layer.
+  const projectJsonc = path.join(directory, ".opencode", "orchestra.jsonc")
+  const projectJson = path.join(directory, ".opencode", "orchestra.json")
+  const project = (await exists(projectJsonc)) ? projectJsonc : projectJson
   const candidates = explicit
     ? [path.resolve(directory, explicit)]
-    : [
-        globalOrchestraConfig(),
-        path.join(directory, ".opencode", "orchestra.json"),
-        path.join(directory, ".opencode", "orchestra.jsonc"),
-      ]
+    : [globalOrchestraConfig(), project]
   const sources = (
     await Promise.all(candidates.map(async (candidate) => ((await exists(candidate)) ? candidate : undefined)))
   ).filter((candidate): candidate is string => Boolean(candidate))

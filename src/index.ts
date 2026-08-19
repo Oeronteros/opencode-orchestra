@@ -238,7 +238,8 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
 // default/self-named export instead, so export both for compatibility.
 export const server: Plugin = OrchestraPlugin
 
-// OpenCode expects the default module export to be a PluginModule object.
+// OpenCode 1.18 desktop resolves the default export as a PluginModule.
 export default {
+  id: "opencode-orchestra",
   server: OrchestraPlugin,
-} satisfies { server: Plugin }
+} satisfies { id: string; server: Plugin }

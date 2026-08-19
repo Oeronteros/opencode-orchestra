@@ -4,6 +4,24 @@ All notable changes to OpenCode Orchestra are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.7] — 2026-08-17
+
+### Added
+
+- Stable plugin module ID and package export metadata for current OpenCode resolvers.
+- Config-discovery and entrypoint regression tests.
+
+### Changed
+
+- The CLI now uses Node.js as its portable executable runtime while remaining compatible with Bun.
+- Project JSONC config takes precedence over the JSON variant when both exist.
+- Optional MCP dependency provisioning is best-effort and reports failures without blocking setup.
+
+### Fixed
+
+- Bounded provider model discovery so a stalled catalog cannot block plugin initialization.
+- Removed unconditional stderr output during plugin initialization.
+
 ## [1.0.0] — 2026-08-17
 
 ### Added
