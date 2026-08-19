@@ -14,8 +14,8 @@ test("dashboard serves local telemetry and saves validated config", async () => 
   await mkdir(config, { recursive: true })
   await mkdir(assets, { recursive: true })
   await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
-  await writeFile(path.join(config, "orchestra.jsonc"), '{\n  // preserve me\n  "budget": "balanced"\n}\n')
-  await writeFile(path.join(config, "opencode.json"), '{"mcp":{"supermemory":{"type":"remote"}}}\n')
+  await writeFile(path.join(config, "orchestra.jsonc"), '\ufeff{\n  // preserve me\n  "budget": "balanced"\n}\n')
+  await writeFile(path.join(config, "opencode.json"), '\ufeff{"mcp":{"supermemory":{"type":"remote"}}}\n')
   await writeFile(path.join(project, ".orchestra", "state.json"), JSON.stringify({
     version: 2,
     updatedAt: "2026-08-16T00:00:00.000Z",

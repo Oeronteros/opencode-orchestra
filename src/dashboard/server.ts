@@ -102,7 +102,10 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 
 function parseJsonc(text: string): Record<string, unknown> {
   const errors: ParseError[] = []
-  const value = parse(text, errors, { allowTrailingComma: true, disallowComments: false })
+  // OpenCode may save JSONC with a UTF-8 BOM. Strip it consistently with the
+  // installer and doctor before handing the document to jsonc-parser.
+  const normalized = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  const value = parse(normalized, errors, { allowTrailingComma: true, disallowComments: false })
   if (errors.length > 0 || typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("Configuration contains invalid JSONC")
   }
