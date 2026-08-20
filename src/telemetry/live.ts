@@ -347,6 +347,14 @@ export class LiveStream {
       try {
         const directory = path.dirname(this.liveFile)
         await mkdir(directory, { recursive: true })
+        // Keep the live telemetry directory out of version control, mirroring
+        // the ledger's sentinel so state and live feeds are both untracked.
+        const ignoreFile = path.join(directory, ".gitignore")
+        try {
+          await writeFile(ignoreFile, "*\n!.gitignore\n", { flag: "wx" })
+        } catch {
+          // The sentinel already exists.
+        }
         const temporary = `${this.liveFile}.tmp`
         await writeFile(temporary, JSON.stringify(snapshot) + "\n", "utf8")
         await rename(temporary, this.liveFile)

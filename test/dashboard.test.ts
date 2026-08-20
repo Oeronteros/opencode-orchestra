@@ -152,3 +152,55 @@ test("dashboard validates the full schema on the fly and rejects invalid patches
     await dashboard.close()
   }
 })
+test("dashboard /api/live streams the live snapshot over SSE", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-sse-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  await writeFile(path.join(config, "orchestra.jsonc"), '{ "budget": "balanced" }\n')
+  // Pre-seed a live snapshot as the plugin would leave it.
+  await writeFile(path.join(project, ".orchestra", "live.ndjson"), JSON.stringify({
+    version: 1,
+    updatedAt: 1700000000000,
+    seq: 3,
+    active: [{ key: "msg-1", sessionID: "s1", agent: "orch-lead", model: "gpt-test", provider: "openai", startedAt: 1699999999000, text: "working", cost: 0.0002, tokens: { input: 100, output: 20, reasoning: 0 } }],
+    recent: [{ seq: 1, e: "start", ts: 1699999999000, k: "msg-1", agent: "orch-lead" }, { seq: 2, e: "delta", ts: 1699999999100, k: "msg-1", text: "working", cost: 0.0002 }],
+  }) + "\n")
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const token = url.searchParams.get("token") ?? ""
+    const controller = new AbortController()
+    const response = await fetch(new URL("/api/live?token=" + encodeURIComponent(token), url), { signal: controller.signal })
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/)
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let data = ""
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    try {
+      // Read until we have captured the initial snapshot event.
+      for (let i = 0; i < 60 && !data.includes("event: snapshot"); i += 1) {
+        const { value, done } = await reader.read()
+        if (done) break
+        data += decoder.decode(value, { stream: true })
+      }
+    } finally {
+      clearTimeout(timeout)
+      try { await reader.cancel() } catch { /* connection already closed */ }
+      controller.abort()
+    }
+    const match = /event: snapshot\ndata: (\{.*?\})\n\n/s.exec(data)
+    assert.ok(match, "expected an SSE snapshot frame, got: " + data.slice(0, 200))
+    const snapshot = JSON.parse(match[1]!) as { active: Array<{ agent?: string; cost: number }> }
+    assert.equal(snapshot.active.length, 1)
+    assert.equal(snapshot.active[0]?.agent, "orch-lead")
+    assert.ok(snapshot.active[0]!.cost > 0)
+  } finally {
+    await dashboard.close()
+  }
+})

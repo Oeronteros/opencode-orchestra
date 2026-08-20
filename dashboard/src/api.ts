@@ -1,4 +1,4 @@
-import type { DashboardConfig, Snapshot } from "./types"
+import type { DashboardConfig, LiveSnapshot, Snapshot } from "./types"
 
 const query = new URLSearchParams(window.location.search)
 const fromUrl = query.get("token")
@@ -29,6 +29,30 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export type ExportScope = "activity" | "models" | "agents" | "daily" | "summary"
 export type ExportFormat = "csv" | "json"
+
+/**
+ * Subscribe to the live orchestration stream over SSE. The server pushes a
+ * full LiveSnapshot whenever new events are produced. Returns a handle that
+ * closes the connection (best-effort on cleanup).
+ */
+export function subscribeLive(onSnapshot: (snapshot: LiveSnapshot) => void, onError?: () => void): { close: () => void } {
+  const query = new URLSearchParams({ token })
+  const source = new EventSource("/api/live?" + query.toString())
+  source.addEventListener("snapshot", (event) => {
+    try {
+      onSnapshot(JSON.parse((event as MessageEvent<string>).data) as LiveSnapshot)
+    } catch {
+      // Ignore malformed frames; the next push will reconcile.
+    }
+  })
+  source.onerror = () => {
+    // EventSource auto-reconnects; surface an error to let the panel degrade.
+    onError?.()
+  }
+  return {
+    close: () => source.close(),
+  }
+}
 
 export const api = {
   snapshot: () => request<Snapshot>("/api/snapshot"),

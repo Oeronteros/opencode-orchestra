@@ -24,7 +24,7 @@ import { Controller, useForm } from "react-hook-form"
 import { useTranslation } from "react-i18next"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { z } from "zod"
-import { api, type ExportFormat, type ExportScope } from "./api"
+import { api, subscribeLive, type ExportFormat, type ExportScope } from "./api"
 import { Button } from "./components/ui/button"
 import { Card } from "./components/ui/card"
 import { Switch } from "./components/ui/switch"
@@ -32,7 +32,7 @@ import { downloadExport } from "./export"
 import i18n from "./i18n"
 import { cn } from "./lib/cn"
 import { useUiStore } from "./store"
-import type { ActivityRow, AggregateRow, DashboardConfig, Snapshot } from "./types"
+import type { ActivityRow, AggregateRow, DashboardConfig, LiveActiveAgent, LiveSnapshot, Snapshot } from "./types"
 
 const EMPTY: never[] = []
 
@@ -200,6 +200,7 @@ function OverviewPage() {
       <MetricCard label={t("tokens")} value={formatNumber(tokens)} note={`${formatNumber(data.summary.tokens.cache.read)} из кэша`} icon={AiBrain01Icon} />
       <MetricCard label={t("cost")} value={formatCost(data.summary.cost)} note="по данным провайдеров" icon={CoinsDollarIcon} />
     </div>
+    <LivePanel />
     <Card className="insight-banner">
       <div><span className="eyebrow">{t("monthProjection")}</span><strong>{formatCost(projection.projected)}</strong><small>{formatCost(projection.monthToDate)} {t("monthToDate")}{projection.isAheadOfPace ? ` · ${t("aheadOfPace")}` : ""}</small></div>
       {latestAnomaly && <div><span className="eyebrow">{t("anomaly")}</span><strong>{new Date(`${latestAnomaly.date}T00:00:00`).toLocaleDateString()} · {formatCost(latestAnomaly.cost)}</strong><small>{t("anomalyNote")} {formatCost(latestAnomaly.threshold)}</small></div>}
@@ -234,6 +235,76 @@ function RecentRows({ rows }: { rows: ActivityRow[] }) {
   </div>)}</div>
 }
 
+function useLiveSnapshot() {
+  const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null)
+  const [connected, setConnected] = useState(false)
+  useEffect(() => {
+    let mounted = true
+    const handle = subscribeLive(
+      (next) => { if (mounted) { setSnapshot(next); setConnected(true) } },
+      () => { if (mounted) setConnected(false) },
+    )
+    return () => { mounted = false; handle.close() }
+  }, [])
+  return { snapshot, connected }
+}
+
+function liveAgentName(agent?: string): string {
+  return agent?.replace("orch-", "") ?? "unknown"
+}
+
+function liveCostOfSet(rows: LiveActiveAgent[]): number {
+  return rows.reduce((sum, row) => sum + row.cost, 0)
+}
+
+function LivePanel() {
+  const { t } = useTranslation()
+  const { snapshot, connected } = useLiveSnapshot()
+  const active = snapshot?.active ?? []
+  const totalCost = liveCostOfSet(active)
+  const running = active.length > 0
+  return (
+    <Card className="live-card">
+      <div className="card-heading">
+        <div><span className="eyebrow">LIVE · ORCHESTRATION</span><h2>Что происходит сейчас</h2></div>
+        <span className={cn("live-state", running && "active", !connected && "off")}>
+          <span className="status-dot" />{running ? t("live") + " · " + active.length : connected ? "ожидание" : "нет соединения"}
+        </span>
+      </div>
+      {active.length ? (
+        <div className="live-list">
+          {active.map((row: LiveActiveAgent) => <LiveAgentRow key={row.key} row={row} />)}
+          <div className="live-total"><span>Идёт в эту секунду</span><strong>{active.length} {active.length === 1 ? "агент" : "агента"}</strong><span>оценочная стоимость</span><strong>{formatCost(totalCost)}</strong></div>
+        </div>
+      ) : (
+        <EmptyState />
+      )}
+    </Card>
+  )
+}
+
+function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
+  const elapsed = Math.max(0, Date.now() - row.startedAt)
+  const seconds = Math.floor(elapsed / 1000)
+  return (
+    <div className="live-row">
+      <span className="agent-badge">{liveAgentName(row.agent)}</span>
+      <div className="live-body">
+        <div className="live-meta">
+          <strong>{liveAgentName(row.agent)}</strong>
+          <span>{row.provider && row.model ? row.provider + "/" + row.model : "модель…"}</span>
+        </div>
+        <p className="live-snippet">{row.text || "начинает отвечать…"}</p>
+        <div className="live-stats">
+          <span>{seconds + "s"}</span>
+          <span>{formatNumber(row.tokens.input + row.tokens.output + row.tokens.reasoning) + " tok"}</span>
+          {row.flags?.length ? <span className="live-warn" title={row.flags.join(", ")}>⚑</span> : null}
+        </div>
+      </div>
+      <span className="live-cost">{formatCost(row.cost)}</span>
+    </div>
+  )
+}
 const tableFeatureSet = tableFeatures({ columnSizingFeature })
 const activityHelper = createColumnHelper<typeof tableFeatureSet, ActivityRow>()
 const activityColumns = activityHelper.columns([

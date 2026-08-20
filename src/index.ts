@@ -263,7 +263,9 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
       const info = event.properties.info
       if (info.role !== "assistant") return
       endStream(info.id)
-      if (sessionAgent.has(info.sessionID)) live.finish({
+      // Always finalize the live row so an active entry never goes stale, even
+      // for sessions whose agent/model were not captured by chat.params yet.
+      live.finish({
         key: info.id,
         sessionID: info.sessionID,
         agent: sessionAgent.get(info.sessionID),

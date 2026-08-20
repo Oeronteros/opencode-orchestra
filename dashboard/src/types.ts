@@ -62,6 +62,53 @@ export interface MonthProjection {
   isAheadOfPace: boolean
 }
 
+/** Event kinds emitted by the live orchestration stream. */
+export type LiveEventKind = "start" | "delta" | "finish"
+
+/** One live stream event (start / delta / finish). */
+export interface LiveEvent {
+  seq: number
+  e: LiveEventKind
+  ts: number
+  k: string
+  sessionID?: string
+  agent?: string
+  model?: string
+  provider?: string
+  /** Snippet of what the agent currently produces. */
+  text?: string
+  /** USD cost-so-far (delta carries a running estimate; finish the actual). */
+  cost?: number
+  tokens?: { input: number; output: number; reasoning: number }
+  finish?: string
+  confidence?: number
+  flags?: string[]
+}
+
+/** An agent currently generating, shown in the live panel. */
+export interface LiveActiveAgent {
+  key: string
+  sessionID?: string
+  agent?: string
+  model?: string
+  provider?: string
+  startedAt: number
+  text: string
+  cost: number
+  tokens: { input: number; output: number; reasoning: number }
+  confidence?: number
+  flags?: string[]
+}
+
+/** Snapshot pushed by the /api/live SSE stream. */
+export interface LiveSnapshot {
+  version: 1
+  updatedAt: number
+  seq: number
+  active: LiveActiveAgent[]
+  recent: LiveEvent[]
+}
+
 export interface Snapshot {
   updatedAt: string
   project: string
