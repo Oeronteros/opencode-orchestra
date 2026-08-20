@@ -1,6 +1,6 @@
 {
   "name": "@oeronteros-1/opencode-orchestra",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Production-ready model routing, specialist agents, diagnostics, telemetry, and dashboard for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
