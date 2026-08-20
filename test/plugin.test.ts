@@ -35,6 +35,8 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
 
   assert.equal(agents["orch-lead"]?.mode, "primary")
   assert.equal(agents["orch-repo"]?.mode, "subagent")
+  assert.equal((commands.orchestra as { agent?: string })?.agent, "orch-lead")
+  assert.ok(commands.orchestra?.template.includes("execute the returned plan yourself"))
   assert.ok(commands["orchestra-status"]?.template.includes("orchestra_status"))
   assert.ok(commands["plugin-status"]?.template.includes("orchestra_plugin_status"))
   assert.ok(tools.orchestra_route)

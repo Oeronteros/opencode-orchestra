@@ -22,7 +22,7 @@
 
 ### 1.0.13 — первичный агент и стабильность
 
-- **Первичный агент `orch-lead`**: теперь ведущий агент явно виден как основной (`primary agent`). Это упрощает отладку: в `/plugin-status` и логах сессии `orch-lead` отображается как главный координатор, а не скрытый специалист. Пример вывода:
+- **Первичный агент `orch-lead`**: ведущий агент не только координирует специалистов, но и сам редактирует файлы, запускает проверку и завершает пользовательскую задачу. Файловые операции разрешены, а shell-команды требуют подтверждения OpenCode. В `/plugin-status` и логах сессии `orch-lead` отображается как главный исполнитель, а не скрытый специалист. Пример вывода:
   ```text
   /plugin-status
   Primary agent: orch-lead (v1.0.13)
@@ -61,6 +61,7 @@ CLI использует Bun напрямую, поэтому отдельный
 Команда:
 
 - добавит `@oeronteros-1/opencode-orchestra@latest` в OpenCode config (`opencode.json` или `opencode.jsonc`);
+- добавит плагин Superpowers (`superpowers@git+https://github.com/obra/superpowers.git`) в массив `plugin`;
 - подключит удалённый Context7 MCP (`https://mcp.context7.com/mcp`);
 - подключит Playwright MCP для браузерной автоматизации;
 - установит статический `codebase-memory-mcp`, включит автоматическую индексацию и подключит его к OpenCode;
@@ -74,11 +75,13 @@ CLI использует Bun напрямую, поэтому отдельный
 
 На Linux и macOS используются официальные shell-инсталляторы Codebase Memory и uv. На Windows загружаются официальные PowerShell-инсталляторы, исполняемые с временным `ExecutionPolicy Bypass`; Codebase Memory устанавливается в `%LOCALAPPDATA%`, а пути к `uv` и MemoryGraph определяются автоматически. Сам установщик Orchestra не изменяет системные каталоги.
 
+Superpowers — фреймворк навыков для агентов (obra/superpowers) — добавляется в массив `plugin` официальной git-спекой и устанавливается через плагин-менеджер OpenCode. На некоторых Windows-сборках OpenCode git-спеки могут не установиться из-за проблем с путями кэша и `git.exe`; в этом случае выполните `npm install superpowers@git+https://github.com/obra/superpowers.git --prefix "$HOME\.config\opencode"` и добавьте запись `"~/.config/opencode/node_modules/superpowers"` в `plugin`.
+
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest install --help
 ```
 
-Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-playwright`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
+Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-playwright`, `--no-superpowers`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
 
 ## Диагностика, обновление и автодополнение
 
@@ -225,9 +228,9 @@ Resolver формирует упорядоченный список более �
 
 ## Агенты и команды
 
-Плагин добавляет один публичный `orch-lead`, скрытых workers, скрытый reduce-агент `orch-merge` и скрытый `orch-judge`. Workers не могут делегировать работу дальше; lead может вызывать только агентов Orchestra.
+Плагин добавляет один публичный primary-агент `orch-lead`, скрытых workers, скрытый reduce-агент `orch-merge` и скрытый `orch-judge`. Workers не могут редактировать файлы или делегировать работу дальше; lead может вызывать только агентов Orchestra, после чего сам реализует изменения и проверяет результат.
 
-`orch-lead` строит dependency-aware DAG: независимые ветки одного уровня запускаются параллельно в пределах `parallelWorkers`, downstream-узлы ждут свои зависимости, а после всех веток `orch-merge` один раз объединяет результаты с сохранением источников, конфликтов и неопределённости. Это явный fan-out/fan-in pipeline, а не последовательный список рекомендаций.
+`orch-lead` строит dependency-aware DAG: независимые ветки одного уровня запускаются параллельно через OpenCode Task tool в пределах `parallelWorkers`, downstream-узлы ждут свои зависимости, а после всех веток `orch-merge` один раз объединяет результаты с сохранением источников, конфликтов и неопределённости. Затем `orch-lead` редактирует файлы и запускает релевантную проверку. Это явный fan-out/fan-in pipeline, а не последовательный список рекомендаций.
 
 ### `orch-judge` — арбитр для критических решений
 
@@ -249,6 +252,8 @@ Resolver формирует упорядоченный список более �
 /orchestra-status
 /plugin-status
 ```
+
+`/orchestra <задача>` закреплена за `orch-lead`: команда сначала вызывает `orchestra_route`, затем lead сам выполняет возвращённый план без делегирования самому себе. Workers по умолчанию скрыты из `@`-автодополнения (`orchestration.exposeWorkers: false`), но доступны lead через Task tool и отображаются в локальном dashboard и `/orchestra-status`.
 
 `/orchestra-status` показывает статистику текущей Orchestra-сессии, а `/plugin-status` — версию загруженного плагина, бюджет, стратегию моделей и состояние companion MCP.
 
@@ -330,7 +335,7 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
 bunx @oeronteros-1/opencode-orchestra@latest install
 ```
 
-Миграция `orchestra.jsonc` не требуется. Установщик сохранит существующие plugin options и MCP entries, обновит bare/pinned Orchestra entry до `@latest` и создаст backup перед изменением основного OpenCode config. После обновления перезапустите OpenCode и выполните `/plugin-status`.
+Миграция `orchestra.jsonc` не требуется. Установщик сохранит существующие plugin options и MCP entries, обновит bare/pinned Orchestra entry до `@latest`, добавит Superpowers (если его ещё нет) и создаст backup перед изменением основного OpenCode config. После обновления перезапустите OpenCode и выполните `/plugin-status`.
 
 ## Безопасность и приватность
 

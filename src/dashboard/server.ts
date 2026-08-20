@@ -10,9 +10,11 @@ import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import { z } from "zod"
 import { orchestraConfigSchema } from "../config/schema.js"
 import { openCodeConfigDirectory } from "../config/paths.js"
+import { loadConfigForDirectory } from "../config/load.js"
 import { analyzeDaily, type DailyAnomaly, type MonthProjection } from "../telemetry/analytics.js"
 import { readLedgerState, type MessageUsage, type TokenUsage } from "../telemetry/ledger.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../telemetry/live.js"
+import { projectId, readProjects, registerProject, type RegisteredProject } from "./registry.js"
 
 /**
  * Any top-level config section may be edited from the dashboard, so the input
@@ -148,6 +150,7 @@ async function mcpStatus(configDirectory: string): Promise<Record<string, boolea
 }
 
 interface SnapshotData {
+  projectId: string
   updatedAt: string
   project: string
   directory: string
@@ -173,6 +176,29 @@ interface SnapshotData {
   availableModels: string[]
 }
 
+interface ProjectInfo {
+  id: string
+  name: string
+  directory: string
+  lastSeenAt: string
+  updatedAt: string
+  summary: SnapshotData["summary"]
+}
+
+interface GlobalSnapshot {
+  global: true
+  updatedAt: string
+  project: string
+  directory: string
+  summary: SnapshotData["summary"] & { projects: number }
+  models: AggregateRow[]
+  agents: AggregateRow[]
+  daily: SnapshotData["daily"]
+  projection: MonthProjection
+  anomalies: DailyAnomaly[]
+  projects: ProjectInfo[]
+}
+
 function connectedModels(directory: string): string[] {
   const executable = process.platform === "win32" ? "opencode.cmd" : "opencode"
   const result = spawnSync(executable, ["models"], { cwd: directory, encoding: "utf8", windowsHide: true, timeout: 10_000 })
@@ -180,10 +206,9 @@ function connectedModels(directory: string): string[] {
   return [...new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
 }
 
-async function snapshot(directory: string, configDirectory: string): Promise<SnapshotData> {
+async function snapshot(directory: string, configDirectory: string, includeModels = true): Promise<SnapshotData> {
   const configPath = path.join(configDirectory, "orchestra.jsonc")
-  const configText = await readTextOr(configPath, "{}\n")
-  const config = orchestraConfigSchema.parse(parseJsonc(configText))
+  const config = (await loadConfigForDirectory(directory, configDirectory)).config
   const ledger = await readLedgerState(path.resolve(directory, config.telemetry.directory, "state.json"))
   const activity: ActivityRow[] = []
   for (const [sessionID, session] of Object.entries(ledger.sessions)) {
@@ -211,6 +236,7 @@ async function snapshot(directory: string, configDirectory: string): Promise<Sna
   const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
   const analytics = analyzeDaily(daily)
   return {
+    projectId: projectId(directory),
     updatedAt: ledger.updatedAt,
     project: path.basename(directory),
     directory,
@@ -234,10 +260,80 @@ async function snapshot(directory: string, configDirectory: string): Promise<Sna
     anomalies: analytics.anomalies,
     mcp: await mcpStatus(configDirectory),
     availableModels: [...new Set([
-      ...connectedModels(directory),
+      ...(includeModels ? connectedModels(directory) : []),
       ...Object.values(config.models.agents),
       ...config.models.lead, ...config.models.judge, ...Object.values(config.models.worker).flat(),
     ].map((model) => typeof model === "string" ? model : model.id))].sort(),
+  }
+}
+
+function mergeAggregateRows(snapshots: SnapshotData[], key: "models" | "agents"): AggregateRow[] {
+  const merged = new Map<string, AggregateRow>()
+  for (const data of snapshots) {
+    for (const row of data[key]) {
+      const current = merged.get(row.id) ?? { id: row.id, calls: 0, cost: 0, tokens: emptyTokens() }
+      current.calls += row.calls
+      current.cost += row.cost
+      addTokens(current.tokens, row.tokens)
+      merged.set(row.id, current)
+    }
+  }
+  return [...merged.values()].sort((a, b) => b.cost - a.cost || b.tokens.output - a.tokens.output)
+}
+
+async function knownProjects(directory: string, configDirectory: string): Promise<RegisteredProject[]> {
+  const current: RegisteredProject = { id: projectId(directory), name: path.basename(directory), directory, lastSeenAt: new Date().toISOString() }
+  const unique = new Map((await readProjects(configDirectory)).map((project) => [path.resolve(project.directory), { ...project, directory: path.resolve(project.directory) }]))
+  unique.set(directory, current)
+  return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+async function projectSnapshots(directory: string, configDirectory: string): Promise<SnapshotData[]> {
+  const results = await Promise.all((await knownProjects(directory, configDirectory)).map(async (project) => {
+    try { return await snapshot(project.directory, configDirectory, false) } catch { return undefined }
+  }))
+  return results.filter((item): item is SnapshotData => Boolean(item))
+}
+
+function projectInfo(data: SnapshotData): ProjectInfo {
+  return { id: data.projectId, name: data.project, directory: data.directory, lastSeenAt: data.updatedAt, updatedAt: data.updatedAt, summary: data.summary }
+}
+
+async function globalSnapshot(directory: string, configDirectory: string): Promise<GlobalSnapshot> {
+  const snapshots = await projectSnapshots(directory, configDirectory)
+  const tokens = emptyTokens()
+  let sessions = 0
+  let calls = 0
+  let cost = 0
+  const dailyMap = new Map<string, SnapshotData["daily"][number]>()
+  for (const data of snapshots) {
+    sessions += data.summary.sessions
+    calls += data.summary.calls
+    cost += data.summary.cost
+    addTokens(tokens, data.summary.tokens)
+    for (const row of data.daily) {
+      const point = dailyMap.get(row.date) ?? { date: row.date, cost: 0, input: 0, output: 0, reasoning: 0 }
+      point.cost += row.cost
+      point.input += row.input
+      point.output += row.output
+      point.reasoning += row.reasoning
+      dailyMap.set(row.date, point)
+    }
+  }
+  const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-30)
+  const analytics = analyzeDaily(daily)
+  return {
+    global: true,
+    updatedAt: snapshots.map((item) => item.updatedAt).sort().at(-1) ?? new Date(0).toISOString(),
+    project: "Все проекты",
+    directory: `${snapshots.length} registered projects`,
+    summary: { projects: snapshots.length, sessions, calls, cost, tokens },
+    models: mergeAggregateRows(snapshots, "models"),
+    agents: mergeAggregateRows(snapshots, "agents"),
+    daily,
+    projection: analytics.projection,
+    anomalies: analytics.anomalies,
+    projects: snapshots.map(projectInfo),
   }
 }
 
@@ -457,8 +553,7 @@ const LIVE_TELEMETRY_DIRECTORIES = [".orchestra", "orchestra"]
 async function readLiveSnapshot(directory: string, configDirectory: string): Promise<LiveSnapshot> {
   let telemetryDirectory = ".orchestra"
   try {
-    const configPath = path.join(configDirectory, "orchestra.jsonc")
-    const config = orchestraConfigSchema.parse(parseJsonc(await readTextOr(configPath, "{}\n")))
+    const config = (await loadConfigForDirectory(directory, configDirectory)).config
     telemetryDirectory = config.telemetry.directory
   } catch {
     // Fall through to the default; a missing file yields the empty snapshot.
@@ -527,6 +622,11 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
   const port = options.port ?? 0
   const assetsDirectory = path.resolve(options.assetsDirectory ?? defaultAssetsDirectory())
   const token = randomBytes(24).toString("base64url")
+  await registerProject(directory, configDirectory).catch(() => undefined)
+  const resolveProject = async (id: string | null): Promise<string | undefined> => {
+    if (!id) return directory
+    return (await knownProjects(directory, configDirectory)).find((project) => project.id === id)?.directory
+  }
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? host}`)
@@ -540,15 +640,30 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
           return
         }
         if (request.method === "GET" && url.pathname === "/api/live") {
-          handleLiveStream(request, response, directory, configDirectory)
+          const target = await resolveProject(url.searchParams.get("project"))
+          if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
+          handleLiveStream(request, response, target, configDirectory)
           return
         }
         if (request.method === "GET" && url.pathname === "/api/snapshot") {
-          sendJson(response, 200, await snapshot(directory, configDirectory))
+          const target = await resolveProject(url.searchParams.get("project"))
+          if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
+          sendJson(response, 200, await snapshot(target, configDirectory))
+          return
+        }
+        if (request.method === "GET" && url.pathname === "/api/projects") {
+          const projects = await projectSnapshots(directory, configDirectory)
+          sendJson(response, 200, projects.map((item) => projectInfo(item)))
+          return
+        }
+        if (request.method === "GET" && url.pathname === "/api/global") {
+          sendJson(response, 200, await globalSnapshot(directory, configDirectory))
           return
         }
         if (request.method === "GET" && url.pathname === "/api/export") {
-          await exportReport(response, directory, configDirectory, url.searchParams)
+          const target = await resolveProject(url.searchParams.get("project"))
+          if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
+          await exportReport(response, target, configDirectory, url.searchParams)
           return
         }
         if (request.method === "PUT" && url.pathname === "/api/config") {

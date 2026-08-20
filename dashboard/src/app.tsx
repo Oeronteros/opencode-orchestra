@@ -32,12 +32,18 @@ import { downloadExport } from "./export"
 import i18n from "./i18n"
 import { cn } from "./lib/cn"
 import { useUiStore } from "./store"
-import type { ActivityRow, AggregateRow, DashboardConfig, LiveActiveAgent, LiveSnapshot, Snapshot } from "./types"
+import type { ActivityRow, AggregateRow, DashboardConfig, GlobalSnapshot, LiveActiveAgent, LiveSnapshot, Snapshot } from "./types"
 
 const EMPTY: never[] = []
 
 function useSnapshot() {
-  return useQuery({ queryKey: ["snapshot"], queryFn: api.snapshot, refetchInterval: 2_500 })
+  const selected = useUiStore((state) => state.selectedProject)
+  return useQuery({ queryKey: ["snapshot", selected], queryFn: () => api.snapshot(selected === "global" ? undefined : selected), refetchInterval: 2_500, enabled: selected !== "global" })
+}
+
+function useDashboardData() {
+  const selected = useUiStore((state) => state.selectedProject)
+  return useQuery<Snapshot | GlobalSnapshot>({ queryKey: ["dashboard", selected], queryFn: async () => selected === "global" ? api.global() : api.snapshot(selected), refetchInterval: 2_500 })
 }
 
 function formatNumber(value: number): string {
@@ -56,8 +62,14 @@ function AppShell() {
   const { t } = useTranslation()
   const theme = useUiStore((state) => state.theme)
   const setTheme = useUiStore((state) => state.setTheme)
-  const snapshot = useSnapshot()
+  const selectedProject = useUiStore((state) => state.selectedProject)
+  const setSelectedProject = useUiStore((state) => state.setSelectedProject)
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, refetchInterval: 5_000 })
+  const data = useDashboardData()
   useEffect(() => { document.documentElement.classList.toggle("light", theme === "light") }, [theme])
+  useEffect(() => {
+    if (projects.data && selectedProject !== "global" && !projects.data.some((project) => project.id === selectedProject)) setSelectedProject("global")
+  }, [projects.data, selectedProject, setSelectedProject])
   const nav = [
     { to: "/", label: t("overview"), icon: DashboardSquare01Icon },
     { to: "/activity", label: t("activity"), icon: Activity01Icon },
@@ -82,13 +94,17 @@ function AppShell() {
         </nav>
         <div className="sidebar-foot">
           <div className="local-chip"><span className="status-dot" />{t("live")}</div>
-          <div className="project-name">{snapshot.data?.project ?? "Orchestra"}</div>
+          <div className="project-name">{data.data?.project ?? "Orchestra"}</div>
         </div>
       </aside>
       <main className="main-panel">
         <header className="topbar">
           <div>
-            <span className="eyebrow">{snapshot.data?.directory ?? "Loading local workspace…"}</span>
+             <select className="project-select" value={selectedProject} onChange={(event) => setSelectedProject(event.target.value)} aria-label="Выбор проекта">
+               <option value="global">Все проекты</option>
+               {projects.data?.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+             </select>
+             <span className="eyebrow">{data.data?.directory ?? "Loading telemetry…"}</span>
           </div>
           <div className="top-actions">
             <ExportMenu />
@@ -138,6 +154,7 @@ const EXPORT_SCOPES: Array<{ scope: ExportScope; label: string }> = [
 
 function ExportMenu() {
   const { t } = useTranslation()
+  const selectedProject = useUiStore((state) => state.selectedProject)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState<`${ExportScope}:${ExportFormat}` | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -145,7 +162,7 @@ function ExportMenu() {
     setBusy(`${scope}:${format}`)
     setError(null)
     try {
-      await downloadExport(scope, format)
+       await downloadExport(scope, format, selectedProject)
       setOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : t("exportFailed"))
@@ -153,6 +170,7 @@ function ExportMenu() {
       setBusy(null)
     }
   }
+  if (selectedProject === "global") return null
   return (
     <div className="export-menu">
       <Button variant="outline" onClick={() => setOpen((value) => !value)}>
@@ -185,7 +203,7 @@ function ExportMenu() {
 
 function OverviewPage() {
   const { t } = useTranslation()
-  const query = useSnapshot()
+  const query = useDashboardData()
   const data = query.data
   if (query.isLoading) return <Loading />
   if (!data) return <ErrorState error={query.error} />
@@ -193,14 +211,14 @@ function OverviewPage() {
   const projection = data.projection
   const latestAnomaly = data.anomalies[data.anomalies.length - 1]
   return <>
-    <PageIntro kicker={`${data.config.budget.toUpperCase()} MODE`} title="Пульс оркестра" text="Маршрутизация, токены и стоимость — без отправки телеметрии наружу." />
+    <PageIntro kicker={"global" in data ? `${data.summary.projects} PROJECTS` : `${data.config.budget.toUpperCase()} MODE`} title="Пульс оркестра" text={"global" in data ? "Общая локальная статистика по всем зарегистрированным проектам." : "Маршрутизация, токены и стоимость — без отправки телеметрии наружу."} />
     <div className="metrics-grid">
       <MetricCard label={t("sessions")} value={formatNumber(data.summary.sessions)} note="локальных запусков" icon={Database01Icon} />
       <MetricCard label={t("calls")} value={formatNumber(data.summary.calls)} note="ответов агентов" icon={Activity01Icon} />
       <MetricCard label={t("tokens")} value={formatNumber(tokens)} note={`${formatNumber(data.summary.tokens.cache.read)} из кэша`} icon={AiBrain01Icon} />
       <MetricCard label={t("cost")} value={formatCost(data.summary.cost)} note="по данным провайдеров" icon={CoinsDollarIcon} />
     </div>
-    <LivePanel />
+    {!("global" in data) && <LivePanel projectId={data.projectId} />}
     <Card className="insight-banner">
       <div><span className="eyebrow">{t("monthProjection")}</span><strong>{formatCost(projection.projected)}</strong><small>{formatCost(projection.monthToDate)} {t("monthToDate")}{projection.isAheadOfPace ? ` · ${t("aheadOfPace")}` : ""}</small></div>
       {latestAnomaly && <div><span className="eyebrow">{t("anomaly")}</span><strong>{new Date(`${latestAnomaly.date}T00:00:00`).toLocaleDateString()} · {formatCost(latestAnomaly.cost)}</strong><small>{t("anomalyNote")} {formatCost(latestAnomaly.threshold)}</small></div>}
@@ -213,17 +231,22 @@ function OverviewPage() {
           <CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="date" tickFormatter={(v) => String(v).slice(5)} stroke="#71717a" tickLine={false} axisLine={false}/><YAxis stroke="#71717a" tickLine={false} axisLine={false} width={48} tickFormatter={formatNumber}/><Tooltip contentStyle={{ background: "#11141b", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12 }}/><Area type="monotone" dataKey="input" stackId="1" stroke="#8b5cf6" fill="url(#tokens)"/><Area type="monotone" dataKey="output" stackId="1" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.12}/>
         </AreaChart></ResponsiveContainer></div> : <EmptyState />}
       </Card>
-      <Card className="mcp-card">
+      {!("global" in data) ? <Card className="mcp-card">
         <span className="eyebrow">MEMORY LAYER</span><h2>MCP-сервисы</h2>
         <div className="mcp-list">
           {Object.entries({ context7: "Context7", codebaseMemory: "Codebase Memory", memoryGraph: "MemoryGraph", playwright: "Playwright" }).map(([key, label]) => (
             <div key={key}><span className={cn("status-dot", !data.mcp[key as keyof Snapshot["mcp"]] && "off")} /><span>{label}</span><small>{data.mcp[key as keyof Snapshot["mcp"]] ? "подключён" : "не настроен"}</small></div>
           ))}
         </div>
-      </Card>
+      </Card> : <ProjectList data={data} />}
     </div>
-    <Card className="list-card"><div className="card-heading"><div><span className="eyebrow">{t("recent")}</span><h2>Последние вызовы</h2></div><Link to="/activity" className="text-link">Открыть журнал →</Link></div><RecentRows rows={data.activity.slice(0, 6)} /></Card>
+    {!("global" in data) && <Card className="list-card"><div className="card-heading"><div><span className="eyebrow">{t("recent")}</span><h2>Последние вызовы</h2></div><Link to="/activity" className="text-link">Открыть журнал →</Link></div><RecentRows rows={data.activity.slice(0, 6)} /></Card>}
   </>
+}
+
+function ProjectList({ data }: { data: GlobalSnapshot }) {
+  const setSelectedProject = useUiStore((state) => state.setSelectedProject)
+  return <Card className="mcp-card"><span className="eyebrow">PROJECTS</span><h2>Проекты</h2><div className="project-list">{data.projects.map((project) => <button type="button" key={project.id} onClick={() => setSelectedProject(project.id)}><span><strong>{project.name}</strong><small>{project.directory}</small></span><span>{formatNumber(project.summary.calls)} calls</span><span>{formatCost(project.summary.cost)}</span></button>)}</div></Card>
 }
 
 function RecentRows({ rows }: { rows: ActivityRow[] }) {
@@ -235,17 +258,17 @@ function RecentRows({ rows }: { rows: ActivityRow[] }) {
   </div>)}</div>
 }
 
-function useLiveSnapshot() {
+function useLiveSnapshot(projectId: string) {
   const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null)
   const [connected, setConnected] = useState(false)
   useEffect(() => {
     let mounted = true
-    const handle = subscribeLive(
+    const handle = subscribeLive(projectId,
       (next) => { if (mounted) { setSnapshot(next); setConnected(true) } },
       () => { if (mounted) setConnected(false) },
     )
     return () => { mounted = false; handle.close() }
-  }, [])
+  }, [projectId])
   return { snapshot, connected }
 }
 
@@ -257,9 +280,9 @@ function liveCostOfSet(rows: LiveActiveAgent[]): number {
   return rows.reduce((sum, row) => sum + row.cost, 0)
 }
 
-function LivePanel() {
+function LivePanel({ projectId }: { projectId: string }) {
   const { t } = useTranslation()
-  const { snapshot, connected } = useLiveSnapshot()
+  const { snapshot, connected } = useLiveSnapshot(projectId)
   const active = snapshot?.active ?? []
   const totalCost = liveCostOfSet(active)
   const running = active.length > 0
@@ -317,7 +340,9 @@ const activityColumns = activityHelper.columns([
 ])
 
 function ActivityPage() {
+  const selected = useUiStore((state) => state.selectedProject)
   const query = useSnapshot()
+  if (selected === "global") return <ProjectRequired title="Журнал работы" />
   if (!query.data) return query.isLoading ? <Loading /> : <ErrorState error={query.error} />
   return <><PageIntro kicker="LOCAL EVENT STREAM" title="Журнал работы" text="Метаданные вызовов без содержимого промптов и ответов." /><Card className="table-card"><VirtualActivityTable data={query.data.activity} /></Card></>
 }
@@ -336,7 +361,7 @@ function VirtualActivityTable({ data }: { data: ActivityRow[] }) {
 }
 
 function RankingPage({ kind }: { kind: "models" | "agents" }) {
-  const query = useSnapshot()
+  const query = useDashboardData()
   const rows = query.data?.[kind] ?? EMPTY
   const title = kind === "models" ? "Экономика моделей" : "Нагрузка агентов"
   const text = kind === "models" ? "Фактические токены и стоимость по каждой использованной модели." : "Кто выполняет работу, сколько контекста потребляет и где происходит эскалация."
@@ -367,10 +392,12 @@ const settingsSchema = z.object({
 function SettingsPage() {
   const { t } = useTranslation()
   const query = useSnapshot()
+  const selected = useUiStore((state) => state.selectedProject)
   const client = useQueryClient()
   const form = useForm<DashboardConfig>({ resolver: zodResolver(settingsSchema), defaultValues: query.data?.config })
   useEffect(() => { if (query.data) form.reset(query.data.config) }, [query.data, form])
   const save = useMutation({ mutationFn: api.saveConfig, onSuccess: async () => { await client.invalidateQueries({ queryKey: ["snapshot"] }) } })
+  if (selected === "global") return <ProjectRequired title="Настройка Orchestra" />
   if (!query.data) return query.isLoading ? <Loading /> : <ErrorState error={query.error} />
   return <><PageIntro kicker="CONFIGURATION" title="Настройка Orchestra" text="Изменения сохраняются локально с резервной копией текущего JSONC." />
     <form onSubmit={form.handleSubmit((value) => save.mutate(value))} className="settings-stack">
@@ -381,6 +408,10 @@ function SettingsPage() {
       <div className="form-actions"><span>{save.isError ? (save.error as Error).message : save.isSuccess ? "Настройки сохранены" : query.data.configPath}</span><Button type="submit" disabled={save.isPending}>{save.isPending ? "Сохраняю…" : "Сохранить настройки"}</Button></div>
     </form>
   </>
+}
+
+function ProjectRequired({ title }: { title: string }) {
+  return <><PageIntro kicker="PROJECT REQUIRED" title={title} text="Выберите конкретный проект в верхней панели." /><Card><EmptyState /></Card></>
 }
 
 function Loading() { return <div className="loading"><HugeiconsIcon icon={Refresh01Icon} size={24} className="spin" />Читаю локальную телеметрию…</div> }

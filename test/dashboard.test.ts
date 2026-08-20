@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { startDashboard } from "../src/dashboard/server.js"
+import { projectId, registerProject } from "../src/dashboard/registry.js"
 
 test("dashboard serves local telemetry and saves validated config", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-"))
@@ -200,6 +201,61 @@ test("dashboard /api/live streams the live snapshot over SSE", async () => {
     assert.equal(snapshot.active.length, 1)
     assert.equal(snapshot.active[0]?.agent, "orch-lead")
     assert.ok(snapshot.active[0]!.cost > 0)
+  } finally {
+    await dashboard.close()
+  }
+})
+
+test("dashboard aggregates registered projects and selects one by id", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-global-"))
+  const first = path.join(root, "first")
+  const second = path.join(root, "second")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await Promise.all([
+    mkdir(path.join(first, ".orchestra"), { recursive: true }),
+    mkdir(path.join(second, ".orchestra"), { recursive: true }),
+    mkdir(config, { recursive: true }),
+    mkdir(assets, { recursive: true }),
+  ])
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  await writeFile(path.join(config, "orchestra.jsonc"), '{ "budget": "balanced" }\n')
+  const state = (cost: number, input: number) => JSON.stringify({
+    version: 2,
+    updatedAt: "2026-08-20T00:00:00.000Z",
+    sessions: { one: { agents: {}, premiumEscalations: 0, estimatedPaidUsage: cost, freeWorkerCalls: 0, messages: { msg: { cost, provider: "openai", model: "gpt-test", tokens: { input, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } } } } },
+  })
+  await writeFile(path.join(first, ".orchestra", "state.json"), state(0.1, 100))
+  await writeFile(path.join(second, ".orchestra", "state.json"), state(0.2, 200))
+  await registerProject(second, config)
+
+  const dashboard = await startDashboard({ directory: first, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const headers = { "X-Orchestra-Token": url.searchParams.get("token") ?? "" }
+    const projectsResponse = await fetch(new URL("/api/projects", url), { headers })
+    assert.equal(projectsResponse.status, 200)
+    const projects = await projectsResponse.json() as Array<{ id: string; name: string; summary: { calls: number } }>
+    assert.deepEqual(projects.map((project) => project.name).sort(), ["first", "second"])
+
+    const globalResponse = await fetch(new URL("/api/global", url), { headers })
+    assert.equal(globalResponse.status, 200)
+    const global = await globalResponse.json() as { summary: { projects: number; calls: number; cost: number; tokens: { input: number } }; models: Array<{ id: string; calls: number }> }
+    assert.equal(global.summary.projects, 2)
+    assert.equal(global.summary.calls, 2)
+    assert.ok(Math.abs(global.summary.cost - 0.3) < 1e-9)
+    assert.equal(global.summary.tokens.input, 300)
+    assert.equal(global.models[0]?.id, "openai/gpt-test")
+    assert.equal(global.models[0]?.calls, 2)
+
+    const selectedResponse = await fetch(new URL(`/api/snapshot?project=${projectId(second)}`, url), { headers })
+    assert.equal(selectedResponse.status, 200)
+    const selected = await selectedResponse.json() as { project: string; summary: { cost: number } }
+    assert.equal(selected.project, "second")
+    assert.equal(selected.summary.cost, 0.2)
+
+    const missing = await fetch(new URL("/api/snapshot?project=missing", url), { headers })
+    assert.equal(missing.status, 404)
   } finally {
     await dashboard.close()
   }

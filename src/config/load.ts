@@ -28,7 +28,8 @@ async function exists(file: string): Promise<boolean> {
 }
 
 async function readJsonc(file: string): Promise<unknown> {
-  const text = await readFile(file, "utf8")
+  const raw = await readFile(file, "utf8")
+  const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
   const errors: ParseError[] = []
   const value = parseJsonc(text, errors, { allowTrailingComma: true, disallowComments: false })
   if (errors.length > 0) {
@@ -70,4 +71,19 @@ export async function loadConfig(
     config: orchestraConfigSchema.parse(merged),
     ...(sources.length > 0 ? { source: sources.join(" -> ") } : {}),
   }
+}
+
+/** Load the same global + project config layers without plugin options. */
+export async function loadConfigForDirectory(directory: string, configDirectory?: string): Promise<LoadedConfig> {
+  const projectJsonc = path.join(directory, ".opencode", "orchestra.jsonc")
+  const projectJson = path.join(directory, ".opencode", "orchestra.json")
+  const project = (await exists(projectJsonc)) ? projectJsonc : projectJson
+  const global = path.join(configDirectory ?? path.dirname(globalOrchestraConfig()), "orchestra.jsonc")
+  const candidates = [global, project]
+  const sources = (
+    await Promise.all(candidates.map(async (candidate) => ((await exists(candidate)) ? candidate : undefined)))
+  ).filter((candidate): candidate is string => Boolean(candidate))
+  let fromFile: unknown = {}
+  for (const source of sources) fromFile = mergeConfig(fromFile, await readJsonc(source))
+  return { config: orchestraConfigSchema.parse(fromFile), ...(sources.length > 0 ? { source: sources.join(" -> ") } : {}) }
 }

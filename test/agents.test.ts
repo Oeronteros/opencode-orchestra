@@ -28,6 +28,8 @@ test("lead can invoke Orchestra workers but workers cannot delegate", () => {
   assert.equal((taskPermission as Record<string, string>)["orch-repo"], "allow")
   assert.equal((taskPermission as Record<string, string>)["orch-merge"], "allow")
   assert.equal((taskPermission as Record<string, string>)["orch-judge"], "allow")
+  assert.equal(agents["orch-lead"]?.permission.edit, "allow")
+  assert.equal(agents["orch-lead"]?.permission.bash, "ask")
   assert.equal(agents["orch-lead"]?.permission["memorygraph_*"], "allow")
   assert.equal(agents["orch-repo"]?.permission["codebase_memory_*"], "allow")
   assert.equal(agents["orch-lead"]?.permission["supermemory_*"], undefined)

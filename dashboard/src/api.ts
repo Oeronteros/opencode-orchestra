@@ -1,4 +1,4 @@
-import type { DashboardConfig, LiveSnapshot, Snapshot } from "./types"
+import type { DashboardConfig, GlobalSnapshot, LiveSnapshot, ProjectInfo, Snapshot } from "./types"
 
 const query = new URLSearchParams(window.location.search)
 const fromUrl = query.get("token")
@@ -35,8 +35,9 @@ export type ExportFormat = "csv" | "json"
  * full LiveSnapshot whenever new events are produced. Returns a handle that
  * closes the connection (best-effort on cleanup).
  */
-export function subscribeLive(onSnapshot: (snapshot: LiveSnapshot) => void, onError?: () => void): { close: () => void } {
+export function subscribeLive(projectId: string, onSnapshot: (snapshot: LiveSnapshot) => void, onError?: () => void): { close: () => void } {
   const query = new URLSearchParams({ token })
+  query.set("project", projectId)
   const source = new EventSource("/api/live?" + query.toString())
   source.addEventListener("snapshot", (event) => {
     try {
@@ -55,7 +56,9 @@ export function subscribeLive(onSnapshot: (snapshot: LiveSnapshot) => void, onEr
 }
 
 export const api = {
-  snapshot: () => request<Snapshot>("/api/snapshot"),
+  snapshot: (projectId?: string) => request<Snapshot>(`/api/snapshot${projectId ? `?project=${encodeURIComponent(projectId)}` : ""}`),
+  projects: () => request<ProjectInfo[]>("/api/projects"),
+  global: () => request<GlobalSnapshot>("/api/global"),
   saveConfig: (config: DashboardConfig) => request<{ ok: true }>("/api/config", {
     method: "PUT",
     body: JSON.stringify(config),

@@ -10,8 +10,9 @@ function filenameFromDisposition(disposition: string | null): string | null {
   return match?.[1] ?? null
 }
 
-export async function downloadExport(scope: ExportScope, format: ExportFormat): Promise<void> {
+export async function downloadExport(scope: ExportScope, format: ExportFormat, projectId: string): Promise<void> {
   const query = new URLSearchParams({ scope, format })
+  query.set("project", projectId)
   const response = await fetch(`/api/export?${query.toString()}`, {
     headers: { "X-Orchestra-Token": token() },
   })

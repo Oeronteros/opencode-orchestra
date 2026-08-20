@@ -6,6 +6,8 @@ import test from "node:test"
 import { parse } from "jsonc-parser"
 import { install } from "../src/cli.js"
 
+const SUPER_POWERS_ENTRY = "superpowers@git+https://github.com/obra/superpowers.git"
+
 test("installer merges plugin and MCPs while preserving existing entries", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-install-"))
   const configFile = path.join(directory, "opencode.jsonc")
@@ -28,7 +30,7 @@ test("installer merges plugin and MCPs while preserving existing entries", async
   const mcp = config.mcp as Record<string, { url: string }>
 
   assert.ok(text.includes("// keep this comment"))
-  assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest"])
+  assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest", SUPER_POWERS_ENTRY])
   assert.equal(mcp.context7?.url, "https://custom.invalid")
   assert.deepEqual(mcp["codebase-memory"], {
     type: "local",
@@ -59,6 +61,8 @@ test("installer is idempotent", async () => {
     dryRun: false,
   } as const
   await install(options)
+  const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { plugin: string[] }
+  assert.ok(config.plugin.includes(SUPER_POWERS_ENTRY))
   const second = await install(options)
 
   assert.deepEqual(second.changed, [])
@@ -85,7 +89,7 @@ test("installer preserves user-configured Supermemory entries", async () => {
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[]; mcp: Record<string, unknown> }
 
   assert.deepEqual(config.mcp.supermemory, { type: "remote", url: "https://mcp.supermemory.ai/mcp" })
-  assert.deepEqual(config.plugin, ["opencode-supermemory", "existing", "@oeronteros-1/opencode-orchestra@latest"])
+  assert.deepEqual(config.plugin, ["opencode-supermemory", "existing", "@oeronteros-1/opencode-orchestra@latest", SUPER_POWERS_ENTRY])
   assert.equal(result.changed.some((item) => item.startsWith("removed:")), false)
 })
 
@@ -103,6 +107,7 @@ test("installer upgrades a bare/pinned plugin entry to @latest", async () => {
       context7: false,
       codebaseMemory: false,
       memoryGraph: false,
+      superpowers: false,
       provisionDependencies: false,
       force: false,
       dryRun: false,
@@ -119,7 +124,7 @@ test("installer accepts a UTF-8 BOM in JSONC config", async () => {
   await writeFile(configFile, "\ufeff{\"plugin\":[\"existing\"]}\n")
   const result = await install({ configDirectory: directory, context7: false, codebaseMemory: false, memoryGraph: false, provisionDependencies: false, force: false, dryRun: false })
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
-  assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest"])
+  assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest", SUPER_POWERS_ENTRY])
   assert.ok(result.changed.includes("plugin"))
 })
 
@@ -133,6 +138,7 @@ test("installer keeps an existing @latest entry unchanged and idempotent", async
     context7: false,
     codebaseMemory: false,
     memoryGraph: false,
+    superpowers: false,
     provisionDependencies: false,
     force: false,
     dryRun: false,
@@ -141,4 +147,72 @@ test("installer keeps an existing @latest entry unchanged and idempotent", async
 
   assert.deepEqual(config.plugin, ["@oeronteros-1/opencode-orchestra@latest"])
   assert.equal(result.changed.includes("plugin"), false)
+})
+
+test("installer skips the Superpowers entry with superpowers: false", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-nosuper-"))
+  const configFile = path.join(directory, "opencode.jsonc")
+  await writeFile(configFile, '{"plugin":["@oeronteros-1/opencode-orchestra@latest"]}\n')
+
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    superpowers: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+  })
+  const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
+
+  assert.deepEqual(config.plugin, ["@oeronteros-1/opencode-orchestra@latest"])
+  assert.equal(result.changed.includes("plugin"), false)
+})
+
+test("installer preserves an existing Superpowers entry in any form", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-super-"))
+  const configFile = path.join(directory, "opencode.jsonc")
+
+  for (const seeded of [
+    SUPER_POWERS_ENTRY,
+    "superpowers@git+https://github.com/obra/superpowers.git#v6.3.0",
+    "~/.config/opencode/node_modules/superpowers",
+  ]) {
+    await writeFile(configFile, `{"plugin":["@oeronteros-1/opencode-orchestra@latest","${seeded}"]}\n`)
+    const result = await install({
+      configDirectory: directory,
+      context7: false,
+      codebaseMemory: false,
+      memoryGraph: false,
+      provisionDependencies: false,
+      force: false,
+      dryRun: false,
+    })
+    const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
+
+    assert.equal(config.plugin.length, 2, seeded)
+    assert.ok(config.plugin.includes(seeded), seeded)
+    assert.equal(result.changed.includes("plugin"), false, seeded)
+  }
+})
+
+test("installer dry-run reports intended changes without writing files", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-dryrun-"))
+
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    playwright: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: true,
+  })
+
+  assert.ok(result.changed.includes("plugin"))
+  assert.ok(result.changed.includes("orchestra.jsonc"))
+  assert.equal(result.backup, undefined)
+  await assert.rejects(readFile(path.join(directory, "opencode.json"), "utf8"), { code: "ENOENT" })
 })

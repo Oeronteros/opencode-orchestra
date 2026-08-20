@@ -38,6 +38,8 @@ nav { display: grid; gap: 5px; }
 .top-actions { display: flex; align-items: center; gap: 4px; }
 .eyebrow { color: #777783; font-size: 9px; line-height: 1.4; font-weight: 700; letter-spacing: .17em; text-transform: uppercase; }
 .topbar .eyebrow { display: block; max-width: 60vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar > div:first-child { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.project-select { max-width: 240px; height: 34px; padding: 0 30px 0 10px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; color: #e4e4e7; background: #12151c; outline: none; }
 .content { max-width: 1480px; margin: 0 auto; padding: 46px 4vw 80px; }
 .page-intro { margin-bottom: 32px; }
 .page-intro h1 { margin: 8px 0 8px; font-size: clamp(28px,3vw,44px); line-height: 1.08; letter-spacing: -.04em; font-weight: 650; }
@@ -63,6 +65,11 @@ h2 { margin: 5px 0 0; font-size: 16px; letter-spacing: -.015em; }
 .mcp-list { display: grid; margin-top: 20px; }
 .mcp-list > div { min-height: 50px; border-top: 1px solid rgba(255,255,255,.06); display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
 .mcp-list small { color: #656570; font-size: 9px; }
+.project-list { display: grid; margin-top: 16px; }
+.project-list button { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 12px; align-items: center; min-height: 54px; padding: 8px 0; border: 0; border-top: 1px solid rgba(255,255,255,.06); color: #8b8b95; background: transparent; text-align: left; }
+.project-list button:hover strong { color: #a78bfa; }
+.project-list strong,.project-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-list strong { color: #d4d4d8; font-size: 11px; }.project-list small { margin-top: 3px; color: #5f5f69; font-size: 8px; }
 .text-link { color: #a78bfa; font-size: 11px; text-decoration: none; }
 .recent-list > div { min-height: 56px; border-top: 1px solid rgba(255,255,255,.055); display: grid; grid-template-columns: 90px minmax(0,1fr) 100px 80px; align-items: center; gap: 14px; color: #a1a1aa; font-size: 11px; }
 .recent-list strong,.recent-list small { display: block; }.recent-list strong { color: #d4d4d8; font-size: 11px; font-weight: 550; }.recent-list small { margin-top: 3px; color: #5f5f69; font-size: 9px; }

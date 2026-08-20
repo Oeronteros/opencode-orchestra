@@ -110,6 +110,7 @@ export interface LiveSnapshot {
 }
 
 export interface Snapshot {
+  projectId: string
   updatedAt: string
   project: string
   directory: string
@@ -129,4 +130,27 @@ export interface Snapshot {
   anomalies: DailyAnomaly[]
   mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "playwright", boolean>
   availableModels: string[]
+}
+
+export interface ProjectInfo {
+  id: string
+  name: string
+  directory: string
+  lastSeenAt: string
+  updatedAt: string
+  summary: Snapshot["summary"]
+}
+
+export interface GlobalSnapshot {
+  global: true
+  updatedAt: string
+  project: string
+  directory: string
+  summary: Snapshot["summary"] & { projects: number }
+  models: AggregateRow[]
+  agents: AggregateRow[]
+  daily: DailyPoint[]
+  projection: MonthProjection
+  anomalies: DailyAnomaly[]
+  projects: ProjectInfo[]
 }

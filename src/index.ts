@@ -2,6 +2,8 @@ import type { Config, Plugin } from "@opencode-ai/plugin"
 import { createAgentSet } from "./agents/build.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
 import { loadConfig } from "./config/load.js"
+import { openCodeConfigDirectory } from "./config/paths.js"
+import { registerProject } from "./dashboard/registry.js"
 import { applyBudgetPreset } from "./config/defaults.js"
 import type { ModelCandidateInput } from "./config/schema.js"
 import { loadPrompts } from "./prompts/load.js"
@@ -17,7 +19,7 @@ import { detectMcpPresence, resolvePluginVersion, PACKAGE_NAME, type PluginStatu
 
 type MutableConfig = Omit<Config, "agent" | "command"> & {
   agent?: Record<string, RuntimeAgentConfig>
-  command?: Record<string, { template: string; description?: string }>
+  command?: Record<string, { template: string; description?: string; agent?: string }>
 }
 
 function mergeAgent(base: RuntimeAgentConfig, override?: RuntimeAgentConfig): RuntimeAgentConfig {
@@ -123,6 +125,7 @@ function logStreamFlag(sessionID: string, partID: string, observation: { confide
 
 export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions = {}) => {
   const loaded = await loadConfig(directory, rawOptions)
+  await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)
   const orchestra = applyDiscoveredModels(applyBudgetPreset(loaded.config), discovered)
   const prompts = await loadPrompts()
@@ -201,8 +204,9 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
         template: "Call the orchestra_plugin_status tool and present its result verbatim.",
       }
       mutable.command.orchestra ??= {
-        description: "Classify a task and delegate it to orch-lead",
-        template: "Call orchestra_route for this task: $ARGUMENTS. Then delegate the full task once to orch-lead using the returned profile and constraints.",
+        description: "Classify a task and execute it through orch-lead",
+        agent: "orch-lead",
+        template: "Call orchestra_route for this task: $ARGUMENTS. Then execute the returned plan yourself as orch-lead: dispatch ready worker nodes through task, wait for dependencies, call orch-merge once after evidence nodes complete, implement the requested change, and verify it.",
       }
     },
     tool: createOrchestraTools(orchestra, ledger, pluginStatus, {

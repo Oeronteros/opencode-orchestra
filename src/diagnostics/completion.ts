@@ -17,6 +17,8 @@ function optionsFor(command: string): CompletionOption[] {
         { name: "--no-context7" },
         { name: "--no-codebase-memory" },
         { name: "--no-memorygraph" },
+        { name: "--no-playwright" },
+        { name: "--no-superpowers" },
         { name: "--no-deps" },
         { name: "--force" },
         { name: "--dry-run" },

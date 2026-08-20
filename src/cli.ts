@@ -18,6 +18,10 @@ const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // the newest published version on subsequent runs instead of pinning the
 // version it first cached under a bare package name.
 const PACKAGE_ENTRY = `${PACKAGE_NAME}@latest`
+// Official Superpowers entry (obra/superpowers). Superpowers is not published
+// to npm; the documented install is a git-backed npm spec added to the
+// `plugin` array (https://github.com/obra/superpowers/blob/main/.opencode/INSTALL.md).
+const SUPER_POWERS_ENTRY = "superpowers@git+https://github.com/obra/superpowers.git"
 const CONTEXT7_URL = "https://mcp.context7.com/mcp"
 const PLAYWRIGHT_COMMAND = ["npx", "-y", "@playwright/mcp@latest"]
 const CODEBASE_MEMORY_INSTALLER = "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
@@ -32,6 +36,8 @@ export interface InstallOptions {
   memoryGraph: boolean
   /** Configure Playwright MCP by default; false explicitly disables it. */
   playwright?: boolean
+  /** Add the Superpowers plugin (obra/superpowers) to the plugin array by default; false explicitly disables it. */
+  superpowers?: boolean
   provisionDependencies: boolean
   force: boolean
   dryRun: boolean
@@ -90,6 +96,20 @@ function pluginName(entry: unknown): string | undefined {
   const slash = raw.lastIndexOf("/")
   const at = slash === -1 ? raw.indexOf("@") : raw.indexOf("@", slash)
   return at === -1 ? raw : raw.slice(0, at)
+}
+
+/**
+ * Normalized Superpowers name: `pluginName` returns the git spec verbatim
+ * (its "@" precedes the last "/"), so strip an optional `#fragment` pin and
+ * match case-insensitively. The substring match also covers the documented
+ * Windows fallback (`~/.config/opencode/node_modules/superpowers`) so we never
+ * add a duplicate alongside a user's existing Superpowers entry.
+ */
+function superPowersName(entry: unknown): string | undefined {
+  const name = pluginName(entry)
+  if (name === undefined) return undefined
+  const hash = name.indexOf("#")
+  return (hash === -1 ? name : name.slice(0, hash)).toLowerCase()
 }
 
 async function existingMainConfig(configDirectory: string): Promise<string> {
@@ -279,6 +299,16 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     changed.push("plugin")
     pluginsChanged = true
   }
+  if (options.superpowers !== false) {
+    const superPowersIndex = plugins.findIndex((entry) => superPowersName(entry)?.includes("superpowers"))
+    if (superPowersIndex === -1) {
+      plugins.push(SUPER_POWERS_ENTRY)
+      if (!changed.includes("plugin")) changed.push("plugin")
+      pluginsChanged = true
+    }
+    // Present in any form (pinned, local path): preserve it. The installer
+    // contract preserves user plugins rather than upgrading foreign ones.
+  }
   if (pluginsChanged) updated = setJsonc(updated, ["plugin"], plugins)
 
   const mcp = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
@@ -382,6 +412,7 @@ function usage(): string {
     "  --no-codebase-memory Do not install or configure Codebase Memory MCP",
     "  --no-memorygraph     Do not install or configure MemoryGraph MCP",
     "  --no-playwright      Do not configure Playwright MCP",
+    "  --no-superpowers     Do not add the Superpowers plugin",
     "  --no-deps            Only write config; do not install local MCP executables",
     "  --force              Replace existing MCP entries with Orchestra defaults",
     "  --dry-run            Show intended changes without writing files or downloading",
@@ -462,6 +493,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     codebaseMemory: true,
     memoryGraph: true,
     playwright: true,
+    superpowers: true,
     provisionDependencies: true,
     force: false,
     dryRun: false,
@@ -472,6 +504,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     else if (argument === "--no-codebase-memory") options.codebaseMemory = false
     else if (argument === "--no-memorygraph") options.memoryGraph = false
     else if (argument === "--no-playwright") options.playwright = false
+    else if (argument === "--no-superpowers") options.superpowers = false
     else if (argument === "--no-deps") options.provisionDependencies = false
     else if (argument === "--force") options.force = true
     else if (argument === "--dry-run") options.dryRun = true
