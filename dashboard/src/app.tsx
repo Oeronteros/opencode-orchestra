@@ -307,7 +307,12 @@ function LivePanel({ projectId }: { projectId: string }) {
 }
 
 function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
-  const elapsed = Math.max(0, Date.now() - row.startedAt)
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const elapsed = Math.max(0, now - row.startedAt)
   const seconds = Math.floor(elapsed / 1000)
   return (
     <div className="live-row">

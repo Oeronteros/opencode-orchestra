@@ -561,9 +561,18 @@ async function readLiveSnapshot(directory: string, configDirectory: string): Pro
   const candidates = [path.resolve(directory, telemetryDirectory, "live.ndjson"), ...LIVE_TELEMETRY_DIRECTORIES.map((name) => path.resolve(directory, name, "live.ndjson"))]
   for (const candidate of candidates) {
     const text = await readTextOr(candidate, "")
-    if (text) return parseLiveSnapshot(text)
+    if (text) {
+      const snapshot = parseLiveSnapshot(text)
+      // If the plugin process died without finalizing its agents, do not keep
+      // displaying those rows forever. Healthy streams rewrite this snapshot
+      // on deltas, so a 15-minute-old active set is considered abandoned.
+      if (snapshot.active.length > 0 && Date.now() - snapshot.updatedAt > 15 * 60_000) {
+        return { ...snapshot, active: [] }
+      }
+      return snapshot
+    }
   }
-  return { version: 1, updatedAt: Date.now(), seq: 0, active: [], recent: [] }
+  return { version: 1, updatedAt: 0, seq: 0, active: [], recent: [] }
 }
 
 function sseSend(response: ServerResponse, event: string, data: unknown): void {

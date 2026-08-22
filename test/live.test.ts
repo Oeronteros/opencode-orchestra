@@ -10,7 +10,7 @@ const PRICE = { input: 1.25, output: 10 }
 test("LiveStream records start/delta/finish and estimates live cost", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-"))
   const project = path.join(root, "project")
-  const live = new LiveStream(project, ".orchestra", true, () => PRICE, 100, 5)
+  const live = new LiveStream(project, ".orchestra", true, () => PRICE, 100, 5, true)
   live.start({ key: "msg-1", sessionID: "s1", agent: "orch-lead", provider: "openai", model: "gpt-test" })
   live.delta({ key: "msg-1", sessionID: "s1", agent: "orch-lead", provider: "openai", model: "gpt-test", text: "Hello world, this is a streaming response." })
   live.delta({ key: "msg-1", sessionID: "s1", agent: "orch-lead", provider: "openai", model: "gpt-test", text: "Hello world, this is a streaming response. More tokens flow in." })
@@ -32,14 +32,39 @@ test("LiveStream records start/delta/finish and estimates live cost", async () =
 
 test("LiveStream keeps running agents in the active set", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-active-"))
-  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => undefined, 100, 5)
-  live.start({ key: "a", sessionID: "s1", agent: "orch-repo", model: "openai/gpt-test" })
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => undefined, 100, 5, true)
+  // A delta without an explicit start must retain the first chunk.
   live.delta({ key: "a", sessionID: "s1", agent: "orch-repo", text: "editing code" })
   await live.dispose()
   const snapshot = parseLiveSnapshot(await readFile(live.liveFile, "utf8"))
   assert.equal(snapshot.active.length, 1)
   assert.equal(snapshot.active[0]?.agent, "orch-repo")
   assert.equal(snapshot.active[0]?.text, "editing code")
+  assert.ok(snapshot.recent.some((event) => event.e === "delta" && event.text === "editing code"))
+})
+
+test("LiveStream cost grows using full output length while persisting only a snippet", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-cost-"))
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5, true)
+  live.delta({ key: "a", text: "x".repeat(240), chars: 240 })
+  const first = live.current().active[0]!
+  live.delta({ key: "a", text: "y".repeat(240), chars: 2_400 })
+  const second = live.current().active[0]!
+  assert.equal(second.text.length, 240)
+  assert.ok(second.cost > first.cost)
+  assert.equal(second.tokens.output, 600)
+  await live.dispose()
+})
+
+test("LiveStream redacts partial text unless storeTexts is enabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-private-"))
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5)
+  live.delta({ key: "a", text: "secret partial reply", chars: 20 })
+  await live.dispose()
+  const snapshot = parseLiveSnapshot(await readFile(live.liveFile, "utf8"))
+  assert.equal(snapshot.active[0]?.text, "")
+  assert.ok(snapshot.recent.every((event) => event.text === undefined || event.text === ""))
+  assert.ok((snapshot.active[0]?.cost ?? 0) > 0)
 })
 
 test("LiveStream with telemetry disabled records nothing", async () => {

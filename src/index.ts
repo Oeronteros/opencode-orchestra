@@ -58,6 +58,7 @@ const sessionModel = new Map<string, { providerID: string; modelID: string }>()
 // Per-response accumulated text (independent of telemetry.storeTexts) used to
 // show "what the agent is doing" in the live dashboard panel. Bounded.
 const liveTexts = new Map<string, string>()
+const liveTextLengths = new Map<string, number>()
 
 function pruneOldest(map: Map<string, string>): void {
   while (map.size > MAX_TEXT_BUFFERS) {
@@ -67,13 +68,20 @@ function pruneOldest(map: Map<string, string>): void {
   }
 }
 
-/** Accumulate a text delta for a live response, returning the tail snippet. */
-function appendLiveText(messageID: string, delta: string): string {
+/** Accumulate a text delta, retaining a bounded snippet and exact length. */
+function appendLiveText(messageID: string, delta: string): { text: string; chars: number } {
   const current = liveTexts.get(messageID) ?? ""
   const next = current.length > 4_000 ? current.slice(-1_600) + delta : current + delta
   liveTexts.set(messageID, next)
+  const chars = (liveTextLengths.get(messageID) ?? 0) + delta.length
+  liveTextLengths.set(messageID, chars)
   pruneOldest(liveTexts)
-  return next.length > 240 ? next.slice(-240) : next
+  while (liveTextLengths.size > MAX_TEXT_BUFFERS) {
+    const oldest = liveTextLengths.keys().next().value
+    if (oldest === undefined) break
+    liveTextLengths.delete(oldest)
+  }
+  return { text: next.length > 240 ? next.slice(-240) : next, chars }
 }
 
 function trackStreamDelta(sessionID: string, part: { id: string; messageID: string }, delta: string): void {
@@ -149,7 +157,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
     const snapshot = priceRefresher.snapshot
     const key = provider ? `${provider}/${model}` : model
     return lookupPrice(snapshot, key) ?? (provider ? lookupPrice(snapshot, model) : undefined)
-  })
+  }, 200, 450, orchestra.telemetry.storeTexts)
   const systemHint = primarySystemHint(orchestra)
   const pluginStatus: PluginStatus = {
     name: PACKAGE_NAME,
@@ -218,6 +226,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
       promptBuffers.clear()
       replyBuffers.clear()
       liveTexts.clear()
+      liveTextLengths.clear()
       sessionAgent.clear()
       sessionModel.clear()
       streamObservers.clear()
@@ -252,11 +261,13 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
         trackStreamDelta(part.sessionID, part, delta)
         if (delta) {
           const model = sessionModel.get(part.sessionID)
+          const liveText = appendLiveText(part.messageID, delta)
           live.delta({
             key: part.messageID,
             sessionID: part.sessionID,
             agent: sessionAgent.get(part.sessionID),
-            text: appendLiveText(part.messageID, delta),
+            text: liveText.text,
+            chars: liveText.chars,
             provider: model?.providerID,
             model: model?.modelID,
           })
@@ -277,6 +288,8 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
         tokens: { input: info.tokens.input, output: info.tokens.output, reasoning: info.tokens.reasoning },
         finish: info.finish,
       })
+      liveTexts.delete(info.id)
+      liveTextLengths.delete(info.id)
       await ledger.recordAssistant(info)
       if (storeTextsFlag) {
         const prompt = promptBuffers.get(info.sessionID)

@@ -166,7 +166,7 @@ test("dashboard /api/live streams the live snapshot over SSE", async () => {
   // Pre-seed a live snapshot as the plugin would leave it.
   await writeFile(path.join(project, ".orchestra", "live.ndjson"), JSON.stringify({
     version: 1,
-    updatedAt: 1700000000000,
+    updatedAt: Date.now(),
     seq: 3,
     active: [{ key: "msg-1", sessionID: "s1", agent: "orch-lead", model: "gpt-test", provider: "openai", startedAt: 1699999999000, text: "working", cost: 0.0002, tokens: { input: 100, output: 20, reasoning: 0 } }],
     recent: [{ seq: 1, e: "start", ts: 1699999999000, k: "msg-1", agent: "orch-lead" }, { seq: 2, e: "delta", ts: 1699999999100, k: "msg-1", text: "working", cost: 0.0002 }],

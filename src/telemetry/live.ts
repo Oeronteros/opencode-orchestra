@@ -84,6 +84,7 @@ export interface LiveSnapshot {
 
 interface ActiveState extends LiveActiveAgent {
   lastSeq: number
+  chars: number
 }
 
 const MAX_RECENT = 200
@@ -141,6 +142,7 @@ export class LiveStream {
   private readonly maxRecent: number
   private readonly throttleMs: number
   private readonly estimatePrice: (provider: string | undefined, model: string | undefined) => LiveTokenPrice | undefined
+  private readonly storeTexts: boolean
   private active = new Map<string, ActiveState>()
   private recent: LiveEvent[] = []
   private seq = 0
@@ -157,9 +159,11 @@ export class LiveStream {
     estimatePrice: (provider: string | undefined, model: string | undefined) => LiveTokenPrice | undefined = () => undefined,
     maxRecent = MAX_RECENT,
     throttleMs = THROTTLE_MS,
+    storeTexts = false,
   ) {
     this.liveFile = path.resolve(directory, telemetryDirectory, "live.ndjson")
     this.enabled = enabled
+    this.storeTexts = storeTexts
     this.maxRecent = maxRecent
     this.throttleMs = throttleMs
     this.estimatePrice = estimatePrice
@@ -199,6 +203,7 @@ export class LiveStream {
       cost: est.cost,
       tokens: { input: est.input, output: 0, reasoning: 0 },
       lastSeq: this.seq,
+      chars: 0,
     })
     this.makeEvent({
       e: "start",
@@ -222,6 +227,8 @@ export class LiveStream {
   delta(input: {
     key: string
     text: string
+    /** Total generated characters observed for this response. */
+    chars?: number | undefined
     sessionID?: string | undefined
     agent?: string | undefined
     provider?: string | undefined
@@ -230,9 +237,10 @@ export class LiveStream {
     flags?: string[] | undefined
   }): void {
     if (!this.enabled) return
-    const existing = this.active.get(input.key)
+    let existing = this.active.get(input.key)
     if (!existing) {
-      // No prior start for this key: synthesize one so the row is visible.
+      // No prior start for this key: synthesize one, then apply this first delta
+      // instead of dropping the first visible chunk.
       this.start({
         key: input.key,
         sessionID: input.sessionID,
@@ -240,19 +248,21 @@ export class LiveStream {
         provider: input.provider,
         model: input.model,
       })
-      return
+      existing = this.active.get(input.key)
+      if (!existing) return
     }
     if (input.sessionID) existing.sessionID = input.sessionID
     if (input.agent) existing.agent = input.agent
     if (input.model) existing.model = input.model
     if (input.provider) existing.provider = input.provider
     const snippet = input.text.length > 240 ? `${input.text.slice(-240)}…` : input.text
-    existing.text = snippet
+    existing.text = this.storeTexts ? snippet : ""
+    existing.chars = Math.max(existing.chars, input.chars ?? input.text.length)
     existing.confidence = input.confidence
     existing.flags = input.flags
     existing.lastSeq = this.seq
     const price = this.estimatePrice(input.provider ?? existing.provider, input.model ?? existing.model)
-    const est = estimateLiveCost(snippet.length, price)
+    const est = estimateLiveCost(existing.chars, price)
     existing.cost = est.cost
     existing.tokens = { input: est.input, output: est.output, reasoning: 0 }
     this.record({
@@ -262,7 +272,7 @@ export class LiveStream {
       agent: existing.agent,
       model: input.model ?? existing.model,
       provider: input.provider ?? existing.provider,
-      text: snippet,
+      text: this.storeTexts ? snippet : undefined,
       cost: existing.cost,
       tokens: { input: existing.tokens.input, output: existing.tokens.output, reasoning: existing.tokens.reasoning },
       confidence: input.confidence,
@@ -309,7 +319,7 @@ export class LiveStream {
 
   private serialize(): LiveSnapshot {
     const active = [...this.active.values()]
-      .map(({ lastSeq: _lastSeq, ...rest }) => rest)
+      .map(({ lastSeq: _lastSeq, chars: _chars, ...rest }) => rest)
       .sort((a, b) => a.startedAt - b.startedAt)
     return {
       version: 1,
