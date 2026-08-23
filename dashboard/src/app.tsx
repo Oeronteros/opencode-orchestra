@@ -50,6 +50,11 @@ function formatNumber(value: number): string {
   return Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value)
 }
 
+const tokenRateFormatter = new Intl.NumberFormat(undefined, {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+})
+
 function formatCost(value: number): string {
   return value > 0 ? `$${value.toFixed(value < 1 ? 4 : 2)}` : "—"
 }
@@ -313,7 +318,9 @@ function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
     return () => window.clearInterval(timer)
   }, [])
   const elapsed = Math.max(0, now - row.startedAt)
-  const seconds = Math.floor(elapsed / 1000)
+  const elapsedSeconds = elapsed / 1000
+  const seconds = Math.floor(elapsedSeconds)
+  const averageOutputTokensPerSecond = elapsedSeconds > 0 ? row.tokens.output / elapsedSeconds : 0
   return (
     <div className="live-row">
       <span className="agent-badge">{liveAgentName(row.agent)}</span>
@@ -325,7 +332,8 @@ function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
         <p className="live-snippet">{row.text || "начинает отвечать…"}</p>
         <div className="live-stats">
           <span>{seconds + "s"}</span>
-          <span>{formatNumber(row.tokens.input + row.tokens.output + row.tokens.reasoning) + " tok"}</span>
+          <span>{formatNumber(row.tokens.output) + " output (" + formatNumber(row.tokens.reasoning) + " reasoning)"}</span>
+          <span>{"≈" + tokenRateFormatter.format(averageOutputTokensPerSecond) + " tok/s"}</span>
           {row.flags?.length ? <span className="live-warn" title={row.flags.join(", ")}>⚑</span> : null}
         </div>
       </div>
