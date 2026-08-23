@@ -676,7 +676,13 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
           return
         }
         if (request.method === "PUT" && url.pathname === "/api/config") {
-          await updateConfig(path.join(configDirectory, "orchestra.jsonc"), await jsonBody(request))
+          const requestedProject = url.searchParams.get("project")
+          const target = requestedProject ? await resolveProject(requestedProject) : undefined
+          if (requestedProject && !target) { sendJson(response, 404, { error: "Unknown project" }); return }
+          const configPath = target
+            ? path.join(target, ".opencode", "orchestra.jsonc")
+            : path.join(configDirectory, "orchestra.jsonc")
+          await updateConfig(configPath, await jsonBody(request))
           sendJson(response, 200, { ok: true })
           return
         }

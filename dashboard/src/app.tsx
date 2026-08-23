@@ -401,7 +401,7 @@ function SettingsPage() {
   const client = useQueryClient()
   const form = useForm<DashboardConfig>({ resolver: zodResolver(settingsSchema), defaultValues: query.data?.config })
   useEffect(() => { if (query.data) form.reset(query.data.config) }, [query.data, form])
-  const save = useMutation({ mutationFn: api.saveConfig, onSuccess: async () => { await client.invalidateQueries({ queryKey: ["snapshot"] }) } })
+  const save = useMutation({ mutationFn: (config: DashboardConfig) => api.saveConfig(config, selected), onSuccess: async () => { await client.invalidateQueries({ queryKey: ["snapshot"] }) } })
   if (selected === "global") return <ProjectRequired title="Настройка Orchestra" />
   if (!query.data) return query.isLoading ? <Loading /> : <ErrorState error={query.error} />
   return <><PageIntro kicker="CONFIGURATION" title="Настройка Orchestra" text="Изменения сохраняются локально с резервной копией текущего JSONC." />
