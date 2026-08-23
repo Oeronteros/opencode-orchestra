@@ -200,7 +200,12 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
       const mutable = input as unknown as MutableConfig
       mutable.agent ??= {}
       for (const [name, agent] of Object.entries(agents)) {
-        mutable.agent[name] = mergeAgent(agent, mutable.agent[name])
+        const merged = mergeAgent(agent, mutable.agent[name])
+        // orch-lead is the single implementation writer; keep its edit access
+        // available even when a broad inherited agent rule denies it.
+        mutable.agent[name] = name === "orch-lead"
+          ? { ...merged, permission: { ...merged.permission, edit: "allow" } }
+          : merged
       }
       mutable.command ??= {}
       mutable.command["orchestra-status"] ??= {

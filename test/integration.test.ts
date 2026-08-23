@@ -125,6 +125,22 @@ test("manual strategy keeps explicit pools and ignores the mock provider", async
   assert.equal(agents["orch-repo"]?.model, "explicit/code-model")
 })
 
+test("plugin preserves lead edit access over an inherited agent denial", async () => {
+  const logs: Array<{ level: string; message: string; extra: Record<string, unknown> }> = []
+  const hooks = await initializePlugin(mockClient(logs), { telemetry: { enabled: false } })
+  const runtime: Record<string, unknown> = {
+    agent: {
+      "orch-lead": { permission: { edit: "deny", bash: "ask" } },
+    },
+  }
+
+  await (hooks.config as (input: Record<string, unknown>) => Promise<void>)(runtime)
+
+  const agents = runtime.agent as Record<string, { permission: Record<string, unknown> }>
+  assert.equal(agents["orch-lead"]?.permission.edit, "allow")
+  assert.equal(agents["orch-lead"]?.permission.bash, "ask")
+})
+
 test("route tool runs the full routing pipeline against discovered models", async () => {
   const logs: Array<{ level: string; message: string; extra: Record<string, unknown> }> = []
   const hooks = await initializePlugin(mockClient(logs), {
