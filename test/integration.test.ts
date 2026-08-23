@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import path from "node:path"
 import test from "node:test"
 import { OrchestraPlugin } from "../src/index.js"
 
@@ -16,6 +17,8 @@ interface DiscoveredRunResult {
   tools: Record<string, unknown>
   service: Array<{ level: string; message: string; extra: Record<string, unknown> }>
 }
+
+const EMPTY_CONFIG = path.join(process.cwd(), "test", "fixtures", "empty-orchestra.jsonc")
 
 /** Build a mock provider catalog that yields one reasoning model and one code model. */
 const MOCK_CATALOG = {
@@ -64,7 +67,9 @@ async function initializePlugin(
     input: Record<string, unknown>,
     options: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>
-  return initialize({ directory: process.cwd(), client }, options)
+  // Integration tests exercise the full plugin pipeline, but must not inherit
+  // the developer's global or project-level Orchestra model assignments.
+  return initialize({ directory: process.cwd(), client }, { ...options, configFile: EMPTY_CONFIG })
 }
 
 function mockClient(logs: Array<{ level: string; message: string; extra: Record<string, unknown> }>) {
