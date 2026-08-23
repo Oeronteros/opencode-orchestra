@@ -98,7 +98,7 @@ export async function readConfigFile(file: string): Promise<ReadConfigResult> {
 }
 
 export async function findMainConfig(configDirectory: string): Promise<string> {
-  for (const name of ["opencode.json", "opencode.jsonc"]) {
+  for (const name of ["opencode.jsonc", "opencode.json"]) {
     const candidate = path.join(configDirectory, name)
     try {
       await readFile(candidate, "utf8")

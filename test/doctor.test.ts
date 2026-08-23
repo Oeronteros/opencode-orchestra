@@ -5,7 +5,7 @@ import path from "node:path"
 import test from "node:test"
 import { completionFor, bashCompletion } from "../src/diagnostics/completion.js"
 import { compareVersions, formatUpdateResult } from "../src/diagnostics/update.js"
-import { formatDoctorReport, readConfigFile, runDoctor, type Check } from "../src/diagnostics/doctor.js"
+import { findMainConfig, formatDoctorReport, readConfigFile, runDoctor, type Check } from "../src/diagnostics/doctor.js"
 
 test("compareVersions orders dotted versions", () => {
   assert.ok(compareVersions("0.5.3", "0.5.4") < 0)
@@ -80,6 +80,14 @@ test("readConfigFile reports JSONC syntax errors", async () => {
 
   const missing = await readConfigFile(path.join(directory, "nope.json"))
   assert.equal(missing.exists, false)
+})
+
+test("findMainConfig prefers opencode.jsonc when both files exist", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-dual-"))
+  await writeFile(path.join(directory, "opencode.json"), "{}\n", "utf8")
+  await writeFile(path.join(directory, "opencode.jsonc"), "{}\n", "utf8")
+
+  assert.equal(await findMainConfig(directory), path.join(directory, "opencode.jsonc"))
 })
 
 test("runDoctor checks config presence and validity without touching the network", async () => {

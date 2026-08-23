@@ -113,7 +113,9 @@ function superPowersName(entry: unknown): string | undefined {
 }
 
 async function existingMainConfig(configDirectory: string): Promise<string> {
-  for (const name of ["opencode.json", "opencode.jsonc"]) {
+  // OpenCode loads JSONC after JSON when both files exist, so update the
+  // later-loaded config to avoid its arrays overriding installer changes.
+  for (const name of ["opencode.jsonc", "opencode.json"]) {
     const candidate = path.join(configDirectory, name)
     try {
       await readFile(candidate, "utf8")

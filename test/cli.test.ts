@@ -69,6 +69,36 @@ test("installer is idempotent", async () => {
   assert.equal(second.backup, undefined)
 })
 
+test("installer updates opencode.jsonc when both main config files exist", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-dual-config-"))
+  const jsonFile = path.join(directory, "opencode.json")
+  const jsoncFile = path.join(directory, "opencode.jsonc")
+  const jsonOriginal = '{"plugin":["json-only"]}\n'
+  await writeFile(jsonFile, jsonOriginal)
+  await writeFile(
+    jsoncFile,
+    '{\n  // loaded after opencode.json\n  "plugin": ["@oeronteros-1/opencode-orchestra@1.0.15"]\n}\n',
+  )
+
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    playwright: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+  })
+  const jsoncText = await readFile(jsoncFile, "utf8")
+  const jsonc = parse(jsoncText) as { plugin: string[] }
+
+  assert.equal(result.openCodeConfig, jsoncFile)
+  assert.equal(await readFile(jsonFile, "utf8"), jsonOriginal)
+  assert.ok(jsoncText.includes("// loaded after opencode.json"))
+  assert.deepEqual(jsonc.plugin, ["@oeronteros-1/opencode-orchestra@latest", SUPER_POWERS_ENTRY])
+})
+
 test("installer preserves user-configured Supermemory entries", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-migrate-"))
   const configFile = path.join(directory, "opencode.json")
