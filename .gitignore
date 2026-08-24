@@ -28,3 +28,6 @@ Desktop.ini
 
 # accidental nested git repo
 opencode-orchestra/
+
+# git worktrees
+.worktrees/
