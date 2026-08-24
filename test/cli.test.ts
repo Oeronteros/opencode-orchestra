@@ -121,8 +121,11 @@ test("installer preserves a pinned Orchestra version when Superpowers is already
 
   assert.deepEqual(config.plugin, ["@oeronteros-1/opencode-orchestra@1.0.15", SUPER_POWERS_ENTRY])
   assert.deepEqual((config as Record<string, unknown>).agent, { "orch-lead": { mode: "primary", hidden: false } })
+  const cacheRoot = process.env.XDG_CACHE_HOME
+    ?? (process.platform === "win32" ? process.env.LOCALAPPDATA : undefined)
+    ?? path.join(os.homedir(), ".cache")
   assert.deepEqual((config as { skills?: { paths?: string[] } }).skills?.paths, [
-    path.join(os.homedir(), ".cache", "opencode", "packages", SUPER_POWERS_ENTRY, "node_modules", "superpowers", "skills"),
+    path.join(cacheRoot, "opencode", "packages", SUPER_POWERS_ENTRY, "node_modules", "superpowers", "skills"),
   ])
   assert.equal(result.changed.includes("plugin"), false)
 })
