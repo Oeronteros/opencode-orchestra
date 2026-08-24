@@ -96,7 +96,35 @@ test("installer updates opencode.jsonc when both main config files exist", async
   assert.equal(result.openCodeConfig, jsoncFile)
   assert.equal(await readFile(jsonFile, "utf8"), jsonOriginal)
   assert.ok(jsoncText.includes("// loaded after opencode.json"))
-  assert.deepEqual(jsonc.plugin, ["@oeronteros-1/opencode-orchestra@latest", SUPER_POWERS_ENTRY])
+  assert.deepEqual(jsonc.plugin, ["@oeronteros-1/opencode-orchestra@1.0.15", SUPER_POWERS_ENTRY])
+})
+
+test("installer preserves a pinned Orchestra version when Superpowers is already configured", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-pinned-"))
+  const configFile = path.join(directory, "opencode.jsonc")
+  await writeFile(
+    configFile,
+    `{"plugin":["@oeronteros-1/opencode-orchestra@1.0.15","${SUPER_POWERS_ENTRY}"]}\n`,
+  )
+
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    playwright: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+  })
+  const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
+
+  assert.deepEqual(config.plugin, ["@oeronteros-1/opencode-orchestra@1.0.15", SUPER_POWERS_ENTRY])
+  assert.deepEqual((config as Record<string, unknown>).agent, { "orch-lead": { mode: "primary", hidden: false } })
+  assert.deepEqual((config as { skills?: { paths?: string[] } }).skills?.paths, [
+    path.join(os.homedir(), ".cache", "opencode", "packages", SUPER_POWERS_ENTRY, "node_modules", "superpowers", "skills"),
+  ])
+  assert.equal(result.changed.includes("plugin"), false)
 })
 
 test("installer preserves user-configured Supermemory entries", async () => {
@@ -123,13 +151,13 @@ test("installer preserves user-configured Supermemory entries", async () => {
   assert.equal(result.changed.some((item) => item.startsWith("removed:")), false)
 })
 
-test("installer upgrades a bare/pinned plugin entry to @latest", async () => {
+test("installer upgrades a bare entry and preserves a pinned version", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-upgrade-"))
   const configFile = path.join(directory, "opencode.jsonc")
 
   for (const [label, before, after] of [
     ["bare name", "@oeronteros-1/opencode-orchestra", "@oeronteros-1/opencode-orchestra@latest"],
-    ["pinned version", "@oeronteros-1/opencode-orchestra@0.5.1", "@oeronteros-1/opencode-orchestra@latest"],
+    ["pinned version", "@oeronteros-1/opencode-orchestra@0.5.1", "@oeronteros-1/opencode-orchestra@0.5.1"],
   ] as const) {
     await writeFile(configFile, `{"plugin":["${before}"]}\n`)
     const result = await install({
@@ -144,7 +172,7 @@ test("installer upgrades a bare/pinned plugin entry to @latest", async () => {
     })
     const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
     assert.deepEqual(config.plugin, [after], label)
-    assert.ok(result.changed.includes("plugin"), label)
+    assert.equal(result.changed.includes("plugin"), label === "bare name", label)
   }
 })
 

@@ -112,6 +112,13 @@ function superPowersName(entry: unknown): string | undefined {
   return (hash === -1 ? name : name.slice(0, hash)).toLowerCase()
 }
 
+function superPowersSkillsPath(): string {
+  const cacheRoot = process.env.XDG_CACHE_HOME
+    ?? (process.platform === "win32" ? process.env.LOCALAPPDATA : undefined)
+    ?? path.join(os.homedir(), ".cache")
+  return path.join(cacheRoot, "opencode", "packages", SUPER_POWERS_ENTRY, "node_modules", "superpowers", "skills")
+}
+
 async function existingMainConfig(configDirectory: string): Promise<string> {
   // OpenCode loads JSONC after JSON when both files exist, so update the
   // later-loaded config to avoid its arrays overriding installer changes.
@@ -292,14 +299,22 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     plugins.push(PACKAGE_ENTRY)
     changed.push("plugin")
     pluginsChanged = true
-  } else if (plugins[existing] !== PACKAGE_ENTRY) {
-    // Present but pinned to a bare name or a specific version: upgrade to
-    // @latest so the plugin actually tracks new releases.
-    const wasOptions = Array.isArray(plugins[existing])
-    const options = wasOptions ? plugins[existing][1] : undefined
-    plugins[existing] = options !== undefined ? [PACKAGE_ENTRY, options] : PACKAGE_ENTRY
-    changed.push("plugin")
-    pluginsChanged = true
+  } else {
+    const current = plugins[existing]
+    const currentSpec = typeof current === "string"
+      ? current
+      : Array.isArray(current) && typeof current[0] === "string"
+        ? current[0]
+        : undefined
+    // Add a resolvable tag to a bare package name, but preserve explicit
+    // versions/tags so installing companions cannot change a working plugin.
+    if (currentSpec === PACKAGE_NAME) {
+      const wasOptions = Array.isArray(plugins[existing])
+      const options = wasOptions ? plugins[existing][1] : undefined
+      plugins[existing] = options !== undefined ? [PACKAGE_ENTRY, options] : PACKAGE_ENTRY
+      changed.push("plugin")
+      pluginsChanged = true
+    }
   }
   if (options.superpowers !== false) {
     const superPowersIndex = plugins.findIndex((entry) => superPowersName(entry)?.includes("superpowers"))
@@ -312,6 +327,46 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     // contract preserves user plugins rather than upgrading foreign ones.
   }
   if (pluginsChanged) updated = setJsonc(updated, ["plugin"], plugins)
+
+  const agent = typeof root.agent === "object" && root.agent !== null && !Array.isArray(root.agent)
+    ? (root.agent as Record<string, unknown>)
+    : {}
+  if (root.agent !== undefined && (typeof root.agent !== "object" || root.agent === null || Array.isArray(root.agent))) {
+    throw new Error(`Expected \"agent\" to be an object in ${openCodeConfig}`)
+  }
+  const lead = typeof agent["orch-lead"] === "object" && agent["orch-lead"] !== null && !Array.isArray(agent["orch-lead"])
+    ? (agent["orch-lead"] as Record<string, unknown>)
+    : {}
+  if (agent["orch-lead"] !== undefined && (typeof agent["orch-lead"] !== "object" || agent["orch-lead"] === null || Array.isArray(agent["orch-lead"]))) {
+    throw new Error(`Expected \"agent.orch-lead\" to be an object in ${openCodeConfig}`)
+  }
+  if (lead.mode !== "primary") {
+    updated = setJsonc(updated, ["agent", "orch-lead", "mode"], "primary")
+    changed.push("agent.orch-lead.mode")
+  }
+  if (lead.hidden !== false) {
+    updated = setJsonc(updated, ["agent", "orch-lead", "hidden"], false)
+    changed.push("agent.orch-lead.hidden")
+  }
+
+  if (options.superpowers !== false) {
+    const skills = typeof root.skills === "object" && root.skills !== null && !Array.isArray(root.skills)
+      ? (root.skills as Record<string, unknown>)
+      : {}
+    if (root.skills !== undefined && (typeof root.skills !== "object" || root.skills === null || Array.isArray(root.skills))) {
+      throw new Error(`Expected \"skills\" to be an object in ${openCodeConfig}`)
+    }
+    const skillPaths = Array.isArray(skills.paths) ? [...skills.paths] : []
+    if (skills.paths !== undefined && !Array.isArray(skills.paths)) {
+      throw new Error(`Expected \"skills.paths\" to be an array in ${openCodeConfig}`)
+    }
+    const superpowersPath = superPowersSkillsPath()
+    if (!skillPaths.includes(superpowersPath)) {
+      skillPaths.push(superpowersPath)
+      updated = setJsonc(updated, ["skills", "paths"], skillPaths)
+      changed.push("skills.paths")
+    }
+  }
 
   const mcp = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
     ? (root.mcp as Record<string, unknown>)
