@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { applyEdits, modify, parse, printParseErrorCode, type ParseError } from "jsonc-parser"
+import { formatPluginCacheReport, openCodePackagesRoot, refreshPluginCache, type PluginCacheReport } from "./cache-refresh.js"
 import { openCodeConfigDirectory } from "./config/paths.js"
 import { startDashboard, type DashboardOptions } from "./dashboard/server.js"
 import { completionFor, SHELL_NAMES } from "./diagnostics/completion.js"
@@ -41,6 +42,12 @@ export interface InstallOptions {
   provisionDependencies: boolean
   force: boolean
   dryRun: boolean
+  /**
+   * Override for OpenCode's plugin package cache (`packages` directory).
+   * Tests point this at a temporary directory so runs never touch the
+   * real per-user cache.
+   */
+  pluginCacheDirectory?: string
 }
 
 type DependencyStatus = "installed" | "existing" | "skipped" | "failed"
@@ -51,6 +58,7 @@ export interface InstallResult {
   changed: string[]
   preserved: string[]
   backup?: string
+  pluginCache: PluginCacheReport
   dependencies: {
     codebaseMemory: DependencyStatus
     memoryGraph: DependencyStatus
@@ -113,10 +121,7 @@ function superPowersName(entry: unknown): string | undefined {
 }
 
 function superPowersSkillsPath(): string {
-  const cacheRoot = process.env.XDG_CACHE_HOME
-    ?? (process.platform === "win32" ? process.env.LOCALAPPDATA : undefined)
-    ?? path.join(os.homedir(), ".cache")
-  return path.join(cacheRoot, "opencode", "packages", SUPER_POWERS_ENTRY, "node_modules", "superpowers", "skills")
+  return path.join(openCodePackagesRoot(), SUPER_POWERS_ENTRY, "node_modules", "superpowers", "skills")
 }
 
 async function existingMainConfig(configDirectory: string): Promise<string> {
@@ -416,6 +421,14 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     await atomicWrite(openCodeConfig, updated.endsWith("\n") ? updated : `${updated}\n`)
   }
 
+  // Reinstalling the plugin must also refresh OpenCode's package cache:
+  // an entry like `@latest` keeps its first-resolved version until removed.
+  const pluginCache = await refreshPluginCache({
+    packagesRoot: path.resolve(options.pluginCacheDirectory ?? openCodePackagesRoot()),
+    targetVersion: await resolvePluginVersion(),
+    ...(options.dryRun ? { dryRun: true } : {}),
+  })
+
   try {
     const orchestraOriginal = await readFile(orchestraConfig, "utf8")
     parseObject(orchestraOriginal, orchestraConfig)
@@ -443,6 +456,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     changed,
     preserved,
     ...(backup ? { backup } : {}),
+    pluginCache,
     dependencies: {
       codebaseMemory: codebase.status,
       memoryGraph: memoryGraph.status,
@@ -607,6 +621,8 @@ async function main(): Promise<void> {
     const result = await install(parsed.options)
     console.log(`OpenCode Orchestra configured: ${result.openCodeConfig}`)
     console.log(`Agent settings: ${result.orchestraConfig}`)
+    const cacheSummary = formatPluginCacheReport(result.pluginCache, parsed.options.dryRun)
+    console.log(`OpenCode plugin cache: ${cacheSummary ?? "no cached Orchestra entries"}`)
     console.log(`Codebase Memory: ${result.dependencies.codebaseMemory}`)
     console.log(`MemoryGraph: ${result.dependencies.memoryGraph}`)
     if (result.changed.length > 0) console.log(`Changed: ${result.changed.join(", ")}`)

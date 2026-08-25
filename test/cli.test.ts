@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -24,6 +24,7 @@ test("installer merges plugin and MCPs while preserving existing entries", async
     provisionDependencies: false,
     force: false,
     dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
   })
   const text = await readFile(configFile, "utf8")
   const config = parse(text) as Record<string, unknown>
@@ -59,6 +60,7 @@ test("installer is idempotent", async () => {
     provisionDependencies: false,
     force: false,
     dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
   } as const
   await install(options)
   const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { plugin: string[] }
@@ -89,6 +91,7 @@ test("installer updates opencode.jsonc when both main config files exist", async
     provisionDependencies: false,
     force: false,
     dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
   })
   const jsoncText = await readFile(jsoncFile, "utf8")
   const jsonc = parse(jsoncText) as { plugin: string[] }
@@ -116,6 +119,7 @@ test("installer preserves a pinned Orchestra version when Superpowers is already
     provisionDependencies: false,
     force: false,
     dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
   })
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
 
@@ -146,6 +150,7 @@ test("installer preserves user-configured Supermemory entries", async () => {
     provisionDependencies: false,
     force: false,
     dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
   })
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[]; mcp: Record<string, unknown> }
 
@@ -172,6 +177,7 @@ test("installer upgrades a bare entry and preserves a pinned version", async () 
       provisionDependencies: false,
       force: false,
       dryRun: false,
+      pluginCacheDirectory: path.join(directory, "packages"),
     })
     const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
     assert.deepEqual(config.plugin, [after], label)
@@ -183,7 +189,7 @@ test("installer accepts a UTF-8 BOM in JSONC config", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-bom-"))
   const configFile = path.join(directory, "opencode.jsonc")
   await writeFile(configFile, "\ufeff{\"plugin\":[\"existing\"]}\n")
-  const result = await install({ configDirectory: directory, context7: false, codebaseMemory: false, memoryGraph: false, provisionDependencies: false, force: false, dryRun: false })
+  const result = await install({ configDirectory: directory, context7: false, codebaseMemory: false, memoryGraph: false, provisionDependencies: false, force: false, dryRun: false, pluginCacheDirectory: path.join(directory, "packages") })
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
   assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest", SUPER_POWERS_ENTRY])
   assert.ok(result.changed.includes("plugin"))
@@ -203,6 +209,7 @@ test("installer keeps an existing @latest entry unchanged and idempotent", async
     provisionDependencies: false,
     force: false,
     dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
   })
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
 
@@ -224,6 +231,7 @@ test("installer skips the Superpowers entry with superpowers: false", async () =
     provisionDependencies: false,
     force: false,
     dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
   })
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
 
@@ -249,6 +257,7 @@ test("installer preserves an existing Superpowers entry in any form", async () =
       provisionDependencies: false,
       force: false,
       dryRun: false,
+      pluginCacheDirectory: path.join(directory, "packages"),
     })
     const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
 
@@ -270,10 +279,34 @@ test("installer dry-run reports intended changes without writing files", async (
     provisionDependencies: false,
     force: false,
     dryRun: true,
+    pluginCacheDirectory: path.join(directory, "packages"),
   })
 
   assert.ok(result.changed.includes("plugin"))
   assert.ok(result.changed.includes("orchestra.jsonc"))
   assert.equal(result.backup, undefined)
   await assert.rejects(readFile(path.join(directory, "opencode.json"), "utf8"), { code: "ENOENT" })
+})
+
+test("installer reports the OpenCode plugin cache refresh without touching unrelated entries", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-cache-wiring-"))
+  const packagesRoot = path.join(directory, "packages")
+  const superpowersDirectory = path.join(packagesRoot, "superpowers@git+https:/github.com")
+  await mkdir(superpowersDirectory, { recursive: true })
+  await writeFile(path.join(superpowersDirectory, "marker.txt"), "keep me")
+
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    superpowers: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+    pluginCacheDirectory: packagesRoot,
+  })
+
+  assert.deepEqual(result.pluginCache, { upToDate: [], reinstalled: [], invalidated: [] })
+  assert.equal(await readFile(path.join(superpowersDirectory, "marker.txt"), "utf8"), "keep me")
 })
