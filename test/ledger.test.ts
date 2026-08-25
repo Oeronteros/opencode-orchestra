@@ -88,3 +88,54 @@ test("recordText persists prompt and reply when storeTexts is enabled", async ()
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("recordAssistant stores pricingStatus and counts unknown-price calls", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const ledger = new Ledger(root, ".orchestra", true, [], false, () => "unknown")
+
+  try {
+    await ledger.recordAssistant({
+      id: "msg",
+      sessionID: "session-1",
+      role: "assistant",
+      mode: "build",
+      providerID: "mystery",
+      modelID: "gpt-5",
+      cost: 0,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    })
+    const state = JSON.parse(await readFile(path.join(root, ".orchestra", "state.json"), "utf8")) as {
+      sessions: Record<string, { unknownPriceCalls: number; messages: Record<string, { pricingStatus?: string; cost: number }> }>
+    }
+    const session = state.sessions["session-1"]
+    assert.equal(session?.messages["msg"]?.pricingStatus, "unknown")
+    assert.equal(session?.messages["msg"]?.cost, 0)
+    assert.equal(session?.unknownPriceCalls, 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("freeWorkerCalls counts discovered free models via resolved status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const ledger = new Ledger(root, ".orchestra", true, [], false, () => "free")
+
+  try {
+    await ledger.recordAssistant({
+      id: "msg",
+      sessionID: "session-1",
+      role: "assistant",
+      mode: "orch-code",
+      providerID: "discovered",
+      modelID: "free-model",
+      cost: 0,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    })
+    const state = JSON.parse(await readFile(path.join(root, ".orchestra", "state.json"), "utf8")) as {
+      sessions: Record<string, { freeWorkerCalls: number }>
+    }
+    assert.equal(state.sessions["session-1"]?.freeWorkerCalls, 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

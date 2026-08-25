@@ -42,12 +42,12 @@ test("refreshPrices merges remote over snapshot and survives failure", async () 
   assert.deepEqual(fail.snapshot, snapshot)
 });
 
-test("estimateCost sums worker/lead/judge and applies buffer", () => {
+test("estimateCost sums worker/lead/judge and applies buffer", async () => {
   const pool: ModelCandidateInput[] = [
     { id: "vendor/paid", cost: "paid", tier: "lead", priority: 80, capabilities: ["code", "reasoning", "review"], scores: { code: 8, reasoning: 8, review: 8 }, priceInput: 5, priceOutput: 20 },
   ]
   const plan = planTask("debug", [], { maxNodes: 2 })
-  const estimate = estimateCost({
+  const estimate = await estimateCost({
     budget: "quality",
     plan,
     workerPools: { code: pool, reasoning: pool, research: pool, vision: pool, image: pool },
@@ -60,11 +60,56 @@ test("estimateCost sums worker/lead/judge and applies buffer", () => {
   assert.ok(estimate.total > 0)
   assert.ok(estimate.breakdown.workersCost > 0)
   assert.equal(estimate.breakdown.workers, plan.nodes.length)
+  assert.equal(estimate.breakdown.unknownCalls, 0)
+  assert.ok(estimate.breakdown.paidCalls > 0)
   assert.ok(estimate.summary.includes("quality"))
-});
+})
+
+test("estimateCost excludes unknown-price calls from the total but counts them", async () => {
+  const pool: ModelCandidateInput[] = [
+    { id: "vendor/mystery", cost: "paid", tier: "worker", priority: 50, capabilities: [], scores: {} },
+  ]
+  const plan = planTask("debug", [], { maxNodes: 2 })
+  const estimate = await estimateCost({
+    budget: "quality",
+    plan,
+    workerPools: { code: pool, reasoning: [], research: [], vision: [], image: [] },
+    leadPool: [],
+    judgePool: [],
+    workerPoolOf: () => "code",
+    snapshot: { updatedAt: "2026-01", prices: {} },
+  })
+  assert.equal(estimate.total, 0)
+  assert.equal(estimate.breakdown.workersCost, 0)
+  assert.equal(estimate.breakdown.unknownCalls, plan.nodes.length)
+  assert.ok(estimate.summary.includes("unknown"))
+})
+
+test("estimateCost reports free and subscription calls with zero cost", async () => {
+  const freePool: ModelCandidateInput[] = [
+    { id: "vendor/free", cost: "free", tier: "worker", priority: 50, capabilities: [], scores: {} },
+  ]
+  const subPool: ModelCandidateInput[] = [
+    { id: "vendor/sub", cost: "subscription", tier: "lead", priority: 80, capabilities: [], scores: {} },
+  ]
+  const plan = planTask("debug", [], { maxNodes: 2 })
+  const estimate = await estimateCost({
+    budget: "quality",
+    plan,
+    workerPools: { code: freePool, reasoning: [], research: [], vision: [], image: [] },
+    leadPool: subPool,
+    judgePool: [],
+    workerPoolOf: () => "code",
+    snapshot: { updatedAt: "2026-01", prices: {} },
+  })
+  assert.equal(estimate.total, 0)
+  assert.equal(estimate.breakdown.freeCalls, plan.nodes.length)
+  assert.equal(estimate.breakdown.subscriptionCalls, 1)
+  assert.equal(estimate.breakdown.unknownCalls, 0)
+})
 
 test("formatEstimateWarning triggers above threshold only", () => {
-  const base = { total: 1.0, budget: "quality" as const, breakdown: { workers: 1, workersCost: 0, leadCost: 0, judgeCost: 0, subtotal: 1, total: 1.2 }, summary: "x" }
+  const base = { total: 1.0, budget: "quality" as const, breakdown: { workers: 1, workersCost: 0, leadCost: 0, judgeCost: 0, subtotal: 1, total: 1.2, unknownCalls: 0, freeCalls: 0, subscriptionCalls: 0, paidCalls: 1 }, summary: "x" }
   assert.ok(formatEstimateWarning(base, 0.5))
   assert.equal(formatEstimateWarning({ ...base, total: 0.01 }, 0.5), undefined)
 });

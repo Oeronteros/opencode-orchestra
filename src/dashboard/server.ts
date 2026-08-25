@@ -354,8 +354,8 @@ function rowsForScope(data: SnapshotData, scope: ExportScope): { headers: string
   switch (scope) {
     case "activity":
       return {
-        headers: ["id", "sessionID", "agent", "provider", "model", "createdAt", "completedAt", "finish", "cost", "tokensInput", "tokensOutput", "tokensReasoning", "cacheRead", "cacheWrite"],
-        rows: data.activity.map((row) => [row.id, row.sessionID, row.agent ?? "", row.provider ?? "", row.model ?? "", isoOrEmpty(row.createdAt), isoOrEmpty(row.completedAt), row.finish ?? "", row.cost, row.tokens.input, row.tokens.output, row.tokens.reasoning, row.tokens.cache.read, row.tokens.cache.write]),
+        headers: ["id", "sessionID", "agent", "provider", "model", "createdAt", "completedAt", "finish", "cost", "tokensInput", "tokensOutput", "tokensReasoning", "cacheRead", "cacheWrite", "pricingStatus"],
+        rows: data.activity.map((row) => [row.id, row.sessionID, row.agent ?? "", row.provider ?? "", row.model ?? "", isoOrEmpty(row.createdAt), isoOrEmpty(row.completedAt), row.finish ?? "", row.cost, row.tokens.input, row.tokens.output, row.tokens.reasoning, row.tokens.cache.read, row.tokens.cache.write, row.pricingStatus ?? ""]),
       }
     case "models":
     case "agents":

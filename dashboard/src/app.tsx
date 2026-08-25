@@ -59,6 +59,15 @@ function formatCost(value: number): string {
   return value > 0 ? `$${value.toFixed(value < 1 ? 4 : 2)}` : "—"
 }
 
+function pricingLabel(status?: "paid" | "free" | "subscription" | "unknown"): string {
+  switch (status) {
+    case "free": return "free · $0"
+    case "subscription": return "subscription · $0"
+    case "unknown": return "unknown price"
+    default: return "—"
+  }
+}
+
 function totalTokens(row: AggregateRow): number {
   return row.tokens.input + row.tokens.output + row.tokens.reasoning
 }
@@ -349,6 +358,7 @@ const activityColumns = activityHelper.columns([
   activityHelper.accessor((row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown", { id: "model", header: "Модель", size: 300 }),
   activityHelper.accessor((row) => row.tokens.input + row.tokens.output + row.tokens.reasoning, { id: "tokens", header: "Токены", cell: ({ getValue }) => formatNumber(getValue()), size: 120 }),
   activityHelper.accessor("cost", { header: "Цена", cell: ({ getValue }) => formatCost(getValue()), size: 100 }),
+  activityHelper.accessor("pricingStatus", { header: "Цена/источник", cell: ({ row }) => pricingLabel(row.original.pricingStatus), size: 120 }),
   activityHelper.accessor("finish", { header: "Статус", cell: ({ getValue }) => getValue() ?? "—", size: 110 }),
 ])
 

@@ -23,7 +23,7 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     sessions: {
       one: {
         agents: { "orch-lead": 1 }, premiumEscalations: 0, estimatedPaidUsage: 0.01, freeWorkerCalls: 0,
-        messages: { msg: { cost: 0.01, agent: "orch-lead", provider: "openai", model: "gpt-test", tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 20, write: 0 } } } },
+        messages: { msg: { cost: 0.01, agent: "orch-lead", provider: "openai", model: "gpt-test", pricingStatus: "paid", tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 20, write: 0 } } } },
       },
     },
   }))
@@ -60,8 +60,9 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     assert.match(csv.headers.get("content-type") ?? "", /text\/csv/)
     assert.match(csv.headers.get("content-disposition") ?? "", /attachment; filename="project-orchestra-activity-/)
     const csvText = await csv.text()
-    assert.ok(csvText.startsWith("id,sessionID,agent,provider,model,createdAt,completedAt,finish,cost,tokensInput,tokensOutput,tokensReasoning,cacheRead,cacheWrite"))
+    assert.ok(csvText.startsWith("id,sessionID,agent,provider,model,createdAt,completedAt,finish,cost,tokensInput,tokensOutput,tokensReasoning,cacheRead,cacheWrite,pricingStatus"))
     assert.ok(csvText.includes("msg,one,orch-lead,openai,gpt-test"))
+    assert.ok(csvText.includes(",paid"))
 
     const json = await fetch(new URL("/api/export?scope=models&format=json", url), { headers: { "X-Orchestra-Token": token } })
     assert.equal(json.status, 200)

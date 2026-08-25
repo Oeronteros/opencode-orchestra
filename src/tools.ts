@@ -9,6 +9,7 @@ import { planTask } from "./routing/planner.js"
 import { createBudgetGuard, paidBudgetFor } from "./routing/budget-guard.js"
 import { estimateCost, formatEstimateWarning } from "./routing/pricing/estimate.js"
 import type { PriceSnapshot } from "./routing/pricing/prices.js"
+import type { ModelAliasEntry, OpenRouterSource } from "./pricing/resolver.js"
 import { workerCapability, workerPoolKey } from "./agents/workers.js"
 import type { Ledger } from "./telemetry/ledger.js"
 import { formatPluginStatus, type PluginStatus } from "./plugin-status.js"
@@ -21,6 +22,8 @@ const classificationCache = createClassifierCache()
 
 export interface PricingContext {
   snapshot: PriceSnapshot
+  aliases?: ModelAliasEntry[]
+  openRouter?: OpenRouterSource
 }
 
 export function createOrchestraTools(
@@ -87,9 +90,9 @@ export function createOrchestraTools(
         if (sessionID) await ledger.setProfile(sessionID, profile)
 
         // Pre-run cost estimate (informational; does not block execution).
-        let estimate: ReturnType<typeof estimateCost> | undefined
+        let estimate: Awaited<ReturnType<typeof estimateCost>> | undefined
         if (config.pricing.estimate && pricing?.snapshot) {
-          estimate = estimateCost({
+          estimate = await estimateCost({
             budget: config.budget,
             plan,
             workerPools: config.models.worker,
@@ -99,6 +102,8 @@ export function createOrchestraTools(
             workerCapabilityOf: workerCapability,
             snapshot: pricing.snapshot,
             tokens: { workerTokens: 4000, leadTokens: 6000, judgeTokens: 4000 },
+            ...(pricing.aliases?.length ? { aliases: pricing.aliases } : {}),
+            ...(pricing.openRouter ? { openRouter: pricing.openRouter } : {}),
           })
         }
 

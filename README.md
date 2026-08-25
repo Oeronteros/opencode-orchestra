@@ -214,7 +214,11 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
     "endpoint": "https://internal.example.com/prices.json",
     "refreshIntervalHours": 24,
     "estimate": true,
-    "warnThresholdUSD": 0.5
+    "warnThresholdUSD": 0.5,
+    "openrouter": { "enabled": true, "ttlHours": 12 },
+    "aliases": [
+      { "canonical": "gpt-5.6-sol", "aliases": ["GPT-5.6 Sol", "CX/GPT-5.6 Sol"] }
+    ]
   }
 }
 ```
@@ -222,7 +226,11 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
 - `endpoint` — self-hosted JSON `{ "updatedAt": "...", "prices": { "provider/model": { "input": 0.27, "output": 1.1 } } }`; при недоступности остаётся встроенный snapshot;
 - `refreshIntervalHours` — период опроса (0 отключает);
 - `estimate` — включает прогноз стоимости до запуска в ответе `orchestra_route`;
-- `warnThresholdUSD` — порог, выше которого роутер добавляет предупреждение «эта задача в `quality` обойдётся примерно в $X».
+- `warnThresholdUSD` — порог, выше которого роутер добавляет предупреждение «эта задача в `quality` обойдётся примерно в $X»;
+- `openrouter.enabled` — опциональный fallback на публичный каталог OpenRouter (`/api/v1/models`, без API-ключа) для моделей, у которых нет цены провайдера; список кэшируется на `ttlHours` часов, офлайн-оценка не зависит от сети;
+- `aliases` — ручные псевдонимы моделей: raw-имя посредника (`CX/GPT-5.6 Sol`) сводится к канонической модели. Пользовательский alias имеет высший приоритет над всеми внешними источниками цен.
+
+Как определяется стоимость: raw model ID нормализуется (регистр, разделители, префикс провайдера, namespace-обёртки, `:free`-суффиксы), затем цена ищется в порядке: явная цена из конфига → псевдонимы → snapshot провайдера → OpenRouter. Совпадение по ключевым словам/нечёткое сравнение защищено от ложных срабатываний: похожие модели семейства (`GPT-5.6`, `GPT-5.6 Mini`, `GPT-5.6 Sol`) не схлопываются. Итог всегда один из четырёх статусов: `paid` (цена известна), `free` ($0, токены считаются), `subscription` ($0 + статус подписки) или `unknown` (токены считаются, стоимость — `null`, никогда не выдаётся за бесплатную). Токены и биллинг — две независимые величины.
 
 Resolver формирует упорядоченный список более дешёвых fallback-кандидатов для execution-слоёв, которые умеют повторять вызовы. Сам плагин не перехватывает provider-вызовы OpenCode и поэтому не заявляет автоматический retry. Прогноз стоимости — информативное поле: выполнение не блокируется, а предупреждение помогает подтвердить расходы заранее.
 
@@ -342,7 +350,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install
 - dashboard по умолчанию слушает только `127.0.0.1` и защищён случайным токеном;
 - telemetry хранится локально в `.orchestra`;
 - тексты сообщений не сохраняются без `telemetry.storeTexts: true`;
-- pricing endpoint настраивается пользователем и не требуется для offline-оценки;
+- pricing endpoint настраивается пользователем и не требуется для offline-оценки; OpenRouter-фолбэк опционален (`pricing.openrouter.enabled`, по умолчанию выключен) и тоже не обязателен для offline-оценки;
 - перед публикацией или баг-репортом не прикладывайте локальный ledger, если включали сохранение текстов;
 - установщик (`install`) и `entrypoint` с 1.0.9 усилены: резервная копия создаётся даже при частичных изменениях, BOM-префиксы (`﻿`) в `opencode.json` и `orchestra.jsonc` корректно обрабатываются `doctor` и `dashboard`, а существующие MCP-записи не удаляются без явного `--force`.
 

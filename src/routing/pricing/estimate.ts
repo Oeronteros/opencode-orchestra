@@ -1,8 +1,9 @@
 import type { BudgetMode, ModelCandidateInput } from "../../config/schema.js"
-import { normalizeCandidate, resolveModel } from "../model-resolver.js"
+import { resolveModel } from "../model-resolver.js"
 import type { PriceSnapshot } from "./prices.js"
-import { lookupPrice, combinedPrice } from "./prices.js"
+import { combinedPrice, lookupPrice } from "./prices.js"
 import type { TaskPlan } from "../planner.js"
+import { resolvePricing, type ModelAliasEntry, type OpenRouterSource, type ResolverConfig, type ResolvedPricing, type ResolverInput } from "../../pricing/resolver.js"
 
 // Where money actually flows: a resolved model id maps to a price. Free /
 // subscription pools cost nothing here (actual spend is the ledger's job).
@@ -45,6 +46,10 @@ export interface CostEstimateInput {
   workerCapabilityOf?: (worker: string) => Parameters<typeof resolveModel>[0]["capability"]
   snapshot: PriceSnapshot
   tokens?: TokenEstimates
+  /** User-defined model aliases (config pricing.aliases). */
+  aliases?: ModelAliasEntry[]
+  /** Optional OpenRouter fallback source (config pricing.openrouter). */
+  openRouter?: OpenRouterSource
 }
 
 export interface CostBreakdown {
@@ -55,6 +60,14 @@ export interface CostBreakdown {
   subtotal: number
   /** Conservative +20% buffer for retries / cache misses / reasoning tokens. */
   total: number
+  /** Calls whose price could not be determined; excluded from all totals. */
+  unknownCalls: number
+  /** Calls priced $0 because the model is free (tokens still counted). */
+  freeCalls: number
+  /** Calls priced $0 because the model runs inside a subscription. */
+  subscriptionCalls: number
+  /** Calls priced with a known USD rate. */
+  paidCalls: number
 }
 
 export interface CostEstimate {
@@ -74,12 +87,17 @@ function costOfTokens(price: ModelPriceLike | undefined, tokens: number): number
   return (input * price.input + output * price.output) / 1_000_000
 }
 
-function resolvePoolPriceId(
+/**
+ * Resolve the pool's chosen model for a budget/capability, then resolve its
+ * pricing through the full ladder (config declarations -> explicit price ->
+ * aliases -> provider snapshot -> OpenRouter fallback).
+ */
+async function resolvePoolPricing(
   pool: ModelCandidateInput[],
   budget: BudgetMode,
   capability: Parameters<typeof resolveModel>[0]["capability"],
-  snapshot: PriceSnapshot,
-): { id?: string; price?: ModelPriceLike } {
+  config: ResolverConfig,
+): Promise<{ id?: string; resolution?: ResolvedPricing }> {
   const resolved = resolveModel({
     pool,
     capability,
@@ -93,31 +111,71 @@ function resolvePoolPriceId(
         : ["worker"],
   })
   if (!resolved) return {}
-  const configuredPrice = resolved.priceInput !== undefined && resolved.priceOutput !== undefined
-    ? { input: resolved.priceInput, output: resolved.priceOutput }
-    : undefined
-  const price = configuredPrice ?? lookupPrice(snapshot, resolved.id)
-  // Only paid models carry a dollar estimate; free/subscription resolve to 0.
-  const resolvedPrice = resolved.cost === "paid" ? price : undefined
-  return { id: resolved.id, ...(resolvedPrice ? { price: resolvedPrice } : {}) }
+  const input: ResolverInput = {
+    id: resolved.id,
+    declaredCost: resolved.cost,
+    ...(resolved.priceInput !== undefined && resolved.priceOutput !== undefined
+      ? { explicitPrice: { input: resolved.priceInput, output: resolved.priceOutput } }
+      : {}),
+  }
+  const resolution = await resolvePricing(input, config)
+  return { id: resolved.id, resolution }
 }
 
-export function estimateCost(input: CostEstimateInput): CostEstimate {
+export async function estimateCost(input: CostEstimateInput): Promise<CostEstimate> {
   const tokens = input.tokens ?? DEFAULT_TOKEN_ESTIMATES
-  const lead = resolvePoolPriceId(input.leadPool, input.budget, "reasoning", input.snapshot)
-  const judge = resolvePoolPriceId(input.judgePool, input.budget, "review", input.snapshot)
+  const config: ResolverConfig = {
+    snapshot: input.snapshot,
+    ...(input.aliases?.length ? { aliases: input.aliases } : {}),
+    ...(input.openRouter ? { openRouter: input.openRouter } : {}),
+  }
+  const lead = await resolvePoolPricing(input.leadPool, input.budget, "reasoning", config)
+  const judge = await resolvePoolPricing(input.judgePool, input.budget, "review", config)
 
-  const workersCost = input.plan.nodes.reduce((sum, node) => {
+  let workersCost = 0
+  let paidCalls = 0
+  let freeCalls = 0
+  let subscriptionCalls = 0
+  let unknownCalls = 0
+
+  for (const node of input.plan.nodes) {
     const poolKey = input.workerPoolOf(node.worker)
     const pool = input.workerPools[poolKey] ?? []
     const capability = input.workerCapabilityOf?.(node.worker)
       ?? (poolKey === "image" ? "image" : poolKey === "vision" ? "vision" : poolKey === "research" ? "research" : poolKey === "reasoning" ? "reasoning" : "code")
-    const { price } = resolvePoolPriceId(pool, input.budget, capability, input.snapshot)
-    return sum + costOfTokens(price, tokens.workerTokens)
-  }, 0)
+    const { resolution } = await resolvePoolPricing(pool, input.budget, capability, config)
+    if (!resolution) continue
+    if (resolution.status === "paid") {
+      workersCost += costOfTokens({ input: resolution.input ?? 0, output: resolution.output ?? 0 }, tokens.workerTokens)
+      paidCalls += 1
+    } else if (resolution.status === "free") {
+      freeCalls += 1
+    } else if (resolution.status === "subscription") {
+      subscriptionCalls += 1
+    } else {
+      unknownCalls += 1
+    }
+  }
 
-  const leadCost = costOfTokens(lead.price, tokens.leadTokens)
-  const judgeCost = costOfTokens(judge.price, tokens.judgeTokens)
+  const leadCost = lead.resolution?.status === "paid"
+    ? costOfTokens({ input: lead.resolution.input ?? 0, output: lead.resolution.output ?? 0 }, tokens.leadTokens)
+    : 0
+  const judgeCost = judge.resolution?.status === "paid"
+    ? costOfTokens({ input: judge.resolution.input ?? 0, output: judge.resolution.output ?? 0 }, tokens.judgeTokens)
+    : 0
+  if (lead.resolution) {
+    if (lead.resolution.status === "paid") paidCalls += 1
+    else if (lead.resolution.status === "free") freeCalls += 1
+    else if (lead.resolution.status === "subscription") subscriptionCalls += 1
+    else unknownCalls += 1
+  }
+  if (judge.resolution) {
+    if (judge.resolution.status === "paid") paidCalls += 1
+    else if (judge.resolution.status === "free") freeCalls += 1
+    else if (judge.resolution.status === "subscription") subscriptionCalls += 1
+    else unknownCalls += 1
+  }
+
   const subtotal = workersCost + leadCost + judgeCost
   const total = subtotal * 1.2
 
@@ -128,13 +186,18 @@ export function estimateCost(input: CostEstimateInput): CostEstimate {
     judgeCost,
     subtotal,
     total,
+    unknownCalls,
+    freeCalls,
+    subscriptionCalls,
+    paidCalls,
   }
 
+  const unknownNote = unknownCalls > 0 ? `, ${unknownCalls} call(s) with unknown price excluded` : ""
   return {
     budget: input.budget,
     total,
     breakdown,
-    summary: `This task in ${input.budget} mode will cost roughly $${total.toFixed(2)} (${breakdown.workers} worker calls, lead, ${judge.price ? "plus judge" : "no judge"} arbitration).`,
+    summary: `This task in ${input.budget} mode will cost roughly $${total.toFixed(2)} (${breakdown.workers} worker calls, lead, ${judge.resolution?.status === "paid" ? "plus judge" : "no judge"} arbitration${unknownNote}).`,
   }
 }
 

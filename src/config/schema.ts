@@ -121,8 +121,33 @@ export const orchestraConfigSchema = z.object({
       estimate: z.boolean().default(true),
       /** Dollar threshold above which orchestra_route emits a pre-run warning. */
       warnThresholdUSD: z.number().min(0).default(0.5),
+      /** OpenRouter pricing fallback for models without provider pricing. */
+      openrouter: z
+        .object({
+          /** Fetch the public OpenRouter model list when a price is unknown. */
+          enabled: z.boolean().default(false),
+          /** Cache lifetime in hours for the fetched OpenRouter model list. */
+          ttlHours: z.number().int().min(1).max(24 * 30).default(12),
+        })
+        .default({ enabled: false, ttlHours: 12 }),
+      /** User-defined model aliases: raw names that map to a canonical model id. */
+      aliases: z
+        .array(
+          z.object({
+            canonical: z.string().min(1),
+            aliases: z.array(z.string().min(1)).min(1),
+          }),
+        )
+        .default([]),
     })
-    .default({ endpoint: undefined, refreshIntervalHours: 0, estimate: true, warnThresholdUSD: 0.5 }),
+    .default({
+      endpoint: undefined,
+      refreshIntervalHours: 0,
+      estimate: true,
+      warnThresholdUSD: 0.5,
+      openrouter: { enabled: false, ttlHours: 12 },
+      aliases: [],
+    }),
 })
 
 export type OrchestraConfig = z.infer<typeof orchestraConfigSchema>

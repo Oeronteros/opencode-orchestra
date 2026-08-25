@@ -11,10 +11,11 @@ import { applyDiscoveredModels, discoverConnectedModels } from "./routing/model-
 import { primarySystemHint } from "./superpowers/compatibility.js"
 import { Ledger } from "./telemetry/ledger.js"
 import { LiveStream } from "./telemetry/live.js"
-import { lookupPrice } from "./routing/pricing/prices.js"
 import { createOrchestraTools } from "./tools.js"
 import { createStreamObserver, type StreamObserver } from "./routing/observer.js"
 import { createPriceRefresher, type RefreshSource } from "./routing/pricing/refresh.js"
+import { createOpenRouterCache } from "./pricing/openrouter.js"
+import { resolvePricingSync } from "./pricing/resolver.js"
 import { detectMcpPresence, resolvePluginVersion, PACKAGE_NAME, type PluginStatus } from "./plugin-status.js"
 
 type MutableConfig = Omit<Config, "agent" | "command"> & {
@@ -143,20 +144,35 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
     ...Object.values(orchestra.models.worker),
     orchestra.models.judge,
   ]
-  const ledger = new Ledger(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, pools, orchestra.telemetry.storeTexts)
+  const ledger = new Ledger(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, pools, orchestra.telemetry.storeTexts, (providerID, modelID) =>
+    resolvePricingSync({
+      ...(providerID ? { providerID } : {}),
+      ...(modelID ? { modelID } : {}),
+    }, pricingConfig()).status)
   storeTextsFlag = orchestra.telemetry.storeTexts
   const refreshSource: RefreshSource | undefined = orchestra.pricing.endpoint
     ? { endpoint: orchestra.pricing.endpoint, refreshIntervalHours: orchestra.pricing.refreshIntervalHours }
     : undefined
   const priceRefresher = createPriceRefresher(undefined, refreshSource)
   priceRefresher.start()
+  // Optional OpenRouter pricing fallback: used when neither provider data nor
+  // the price snapshot can price a model. Opt-in so offline behavior never
+  // changes unless explicitly configured.
+  const openRouter = orchestra.pricing.openrouter.enabled
+    ? createOpenRouterCache({ ttlMs: orchestra.pricing.openrouter.ttlHours * 3_600_000 })
+    : undefined
+  const pricingAliases = orchestra.pricing.aliases
+  const pricingConfig = (): { snapshot: typeof priceRefresher.snapshot; aliases?: typeof pricingAliases } => ({
+    snapshot: priceRefresher.snapshot,
+    ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
+  })
   // Live orchestration activity feed: records which agents are generating and
   // what they produce (plus an estimated cost-so-far) for the dashboard SSE.
   const live = new LiveStream(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, (provider, model) => {
     if (!model) return undefined
-    const snapshot = priceRefresher.snapshot
-    const key = provider ? `${provider}/${model}` : model
-    return lookupPrice(snapshot, key) ?? (provider ? lookupPrice(snapshot, model) : undefined)
+    const resolution = resolvePricingSync({ ...(provider ? { providerID: provider } : {}), modelID: model }, pricingConfig())
+    if (resolution.status !== "paid") return undefined
+    return { input: resolution.input ?? 0, output: resolution.output ?? 0 }
   }, 200, 450, orchestra.telemetry.storeTexts)
   const systemHint = primarySystemHint(orchestra)
   const pluginStatus: PluginStatus = {
@@ -224,6 +240,8 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
     },
     tool: createOrchestraTools(orchestra, ledger, pluginStatus, {
       get snapshot() { return priceRefresher.snapshot },
+      ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
+      ...(openRouter ? { openRouter } : {}),
     }),
     dispose: async () => {
       priceRefresher.stop()
@@ -240,7 +258,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
     "chat.message": async ({ sessionID, agent, model }, output) => {
       if (!sessionID) return
       if (agent) sessionAgent.set(sessionID, agent)
-      if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: model.modelID })
+      if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: model.modelID ?? (model as { id?: string }).id ?? "" })
       if (!storeTextsFlag) return
       const text = output.parts
         .filter((part) => part.type === "text")
@@ -257,7 +275,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
       // deltas can attribute activity before the assistant message finalizes.
       if (!sessionID) return
       if (agent) sessionAgent.set(sessionID, agent)
-      if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: model.id })
+      if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: (model as { modelID?: string }).modelID ?? model.id })
     },
     event: async ({ event }) => {
       if (event.type === "message.part.updated") {

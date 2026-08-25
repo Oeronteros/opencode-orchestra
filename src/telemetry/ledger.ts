@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { ModelCandidateInput, ModelCost, ProfileName } from "../config/schema.js"
 import { normalizeCandidate } from "../routing/model-resolver.js"
+import type { PricingStatus } from "../pricing/cost.js"
 
 export interface TokenUsage {
   input: number
@@ -22,6 +23,8 @@ export interface MessageUsage {
   completedAt?: number
   finish?: string
   tokens: TokenUsage
+  /** How pricing was classified at record time (unknown = no rate found). */
+  pricingStatus?: PricingStatus
   /** Opt-in debug text: only recorded when telemetry.storeTexts is enabled. */
   prompt?: string
   reply?: string
@@ -33,6 +36,7 @@ export interface SessionLedger {
   premiumEscalations: number
   estimatedPaidUsage: number
   freeWorkerCalls: number
+  unknownPriceCalls: number
   consensus?: number
   messages: Record<string, MessageUsage>
 }
@@ -65,6 +69,7 @@ function emptySession(): SessionLedger {
     premiumEscalations: 0,
     estimatedPaidUsage: 0,
     freeWorkerCalls: 0,
+    unknownPriceCalls: 0,
     messages: {},
   }
 }
@@ -96,6 +101,7 @@ function upgradeState(input: unknown): LedgerState {
     session.premiumEscalations ??= 0
     session.estimatedPaidUsage ??= 0
     session.freeWorkerCalls ??= 0
+    session.unknownPriceCalls ??= 0
     for (const [id, message] of Object.entries(session.messages)) {
       session.messages[id] = {
         ...message,
@@ -124,6 +130,7 @@ export class Ledger {
   readonly stateFile: string
   private readonly storeTexts: boolean
   private readonly modelCosts: Map<string, ModelCost>
+  private readonly pricingStatusOf: ((providerID: string | undefined, modelID: string | undefined) => PricingStatus | undefined) | undefined
   private state?: LedgerState
   private queue = Promise.resolve()
 
@@ -133,9 +140,11 @@ export class Ledger {
     enabled: boolean,
     pools: ModelCandidateInput[][],
     storeTexts = false,
+    pricingStatusOf?: (providerID: string | undefined, modelID: string | undefined) => PricingStatus | undefined,
   ) {
     this.enabled = enabled
     this.storeTexts = storeTexts
+    this.pricingStatusOf = pricingStatusOf
     this.stateFile = path.resolve(directory, telemetryDirectory, "state.json")
     this.modelCosts = new Map(
       pools.flat().map((candidate) => {
@@ -197,6 +206,8 @@ export class Ledger {
 
   async recordAssistant(info: AssistantInfo): Promise<void> {
     const agent = info.mode ?? "default"
+    const model = info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined
+    const pricingStatus = this.pricingStatusOf?.(info.providerID, info.modelID)
     await this.mutate((state) => {
       const session = (state.sessions[info.sessionID] ??= emptySession())
       const previous = session.messages[info.id]
@@ -207,8 +218,12 @@ export class Ledger {
       if (!previous) {
         session.agents[agent] = (session.agents[agent] ?? 0) + 1
         if (agent === "orch-judge") session.premiumEscalations += 1
-        const model = info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined
-        if (agent.startsWith("orch-") && agent !== "orch-lead" && agent !== "orch-judge" && model && this.modelCosts.get(model) === "free") {
+        const declared = model ? this.modelCosts.get(model) : undefined
+        if (pricingStatus === "unknown") {
+          session.unknownPriceCalls += 1
+        }
+        if (agent.startsWith("orch-") && agent !== "orch-lead" && agent !== "orch-judge" && model
+          && (declared === "free" || (declared === undefined && pricingStatus === "free"))) {
           session.freeWorkerCalls += 1
         }
       }
@@ -222,6 +237,7 @@ export class Ledger {
         ...(info.time?.completed ? { completedAt: info.time.completed } : {}),
         ...(info.finish ? { finish: info.finish } : {}),
         tokens: normalizeTokens(info.tokens),
+        ...(pricingStatus ? { pricingStatus } : {}),
         ...(previous?.prompt !== undefined ? { prompt: previous.prompt } : {}),
         ...(previous?.reply !== undefined ? { reply: previous.reply } : {}),
       }
@@ -273,6 +289,7 @@ export class Ledger {
       `premium escalations: ${session.premiumEscalations}`,
       `estimated paid usage: $${session.estimatedPaidUsage.toFixed(4)}`,
       `free worker calls: ${session.freeWorkerCalls}`,
+      `unknown price calls: ${session.unknownPriceCalls}`,
       `consensus: ${session.consensus === undefined ? "not recorded" : `${Math.round(session.consensus * 100)}%`}`,
     ].join("\n")
   }

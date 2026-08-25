@@ -56,7 +56,7 @@
     "prepublishOnly": "npm run check",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p dashboard/tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/config.test.js dist-test/test/classifier.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/dashboard.test.js dist-test/test/live.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/config.test.js dist-test/test/classifier.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/dashboard.test.js dist-test/test/live.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js dist-test/test/model-match.test.js dist-test/test/cost.test.js dist-test/test/openrouter.test.js dist-test/test/pricing-resolver.test.js",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {

@@ -24,6 +24,8 @@ export interface ActivityRow {
   createdAt?: number
   completedAt?: number
   finish?: string
+  /** How pricing was classified: "unknown" means no rate could be found. */
+  pricingStatus?: "paid" | "free" | "subscription" | "unknown"
   tokens: TokenUsage
   prompt?: string
   reply?: string
