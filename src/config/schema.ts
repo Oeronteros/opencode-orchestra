@@ -71,6 +71,15 @@ export const orchestraConfigSchema = z.object({
         })
         .default({ code: [], reasoning: [], research: [], vision: [], image: [] }),
       judge: poolSchema,
+      /** Automatic model fallback when the resolved model fails at call time. */
+      fallback: z
+        .object({
+          /** Switch to the next similar-cost available model after a provider error. */
+          enabled: z.boolean().default(true),
+          /** Maximum model switches per single request. */
+          maxRetries: z.number().int().min(0).max(5).default(2),
+        })
+        .default({ enabled: true, maxRetries: 2 }),
     })
     .default({
       strategy: "auto",
@@ -78,6 +87,7 @@ export const orchestraConfigSchema = z.object({
       lead: [],
       worker: { code: [], reasoning: [], research: [], vision: [], image: [] },
       judge: [],
+      fallback: { enabled: true, maxRetries: 2 },
     }),
   orchestration: z
     .object({
@@ -88,7 +98,7 @@ export const orchestraConfigSchema = z.object({
       worktreeRoot: z.string().min(1).optional(),
       maxWorkers: z.number().int().min(1).max(12).default(5),
       premiumEscalation: z.boolean().default(true),
-      maxPremiumCallsPerTask: z.number().int().min(0).max(5).default(1),
+      maxPremiumCallsPerTask: z.number().int().min(0).max(24).default(1),
       confidenceThreshold: z.number().min(0).max(1).default(0.72),
       exposeWorkers: z.boolean().default(false),
       profiles: z.partialRecord(profileNameSchema, z.boolean()).default({}),
@@ -115,8 +125,10 @@ export const orchestraConfigSchema = z.object({
       enabled: z.boolean().default(true),
       directory: z.string().min(1).default(".orchestra"),
       storeTexts: z.boolean().default(false),
+      /** Standard deviations from the daily-cost mean that count as an anomaly. */
+      anomalySigma: z.number().min(0.5).max(6).default(2),
     })
-    .default({ enabled: true, directory: ".orchestra", storeTexts: false }),
+    .default({ enabled: true, directory: ".orchestra", storeTexts: false, anomalySigma: 2 }),
   pricing: z
     .object({
       /** Self-hosted price-list endpoint that overrides the built-in snapshot. */

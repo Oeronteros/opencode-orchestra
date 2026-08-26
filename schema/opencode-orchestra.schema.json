@@ -29,7 +29,16 @@
             "image": { "$ref": "#/$defs/modelPool" }
           }
         },
-        "judge": { "$ref": "#/$defs/modelPool" }
+        "judge": { "$ref": "#/$defs/modelPool" },
+        "fallback": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "maxRetries": { "type": "integer", "minimum": 0, "maximum": 5, "default": 2 }
+          },
+          "default": { "enabled": true, "maxRetries": 2 }
+        }
       }
     },
     "orchestration": {
@@ -41,7 +50,7 @@
         "worktreeRoot": { "type": "string", "minLength": 1 },
         "maxWorkers": { "type": "integer", "minimum": 1, "maximum": 12, "default": 5 },
         "premiumEscalation": { "type": "boolean", "default": true },
-        "maxPremiumCallsPerTask": { "type": "integer", "minimum": 0, "maximum": 5, "default": 1 },
+        "maxPremiumCallsPerTask": { "type": "integer", "minimum": 0, "maximum": 24, "default": 1 },
         "confidenceThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.72 },
         "exposeWorkers": { "type": "boolean", "default": false },
         "profiles": {
@@ -75,7 +84,8 @@
       "properties": {
         "enabled": { "type": "boolean", "default": true },
         "directory": { "type": "string", "minLength": 1, "default": ".orchestra" },
-        "storeTexts": { "type": "boolean", "default": false }
+        "storeTexts": { "type": "boolean", "default": false },
+        "anomalySigma": { "type": "number", "minimum": 0.5, "maximum": 6, "default": 2 }
       }
     },
     "pricing": {
