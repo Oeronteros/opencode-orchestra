@@ -242,6 +242,8 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   const analytics = analyzeDaily(daily, new Date(), config.telemetry.anomalySigma)
   const activityLimit = options.activityLimit ?? 5_000
   const dailyLimit = options.dailyLimit ?? 30
+  const { worktreeRoot: _worktreeRoot, ...dashboardOrchestration } = config.orchestration
+  const { endpoint: _pricingEndpoint, ...dashboardPricing } = config.pricing
   return {
     projectId: projectId(directory),
     updatedAt: ledger.updatedAt,
@@ -251,10 +253,10 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     config: {
       budget: config.budget,
        models: { strategy: config.models.strategy, agents: config.models.agents },
-       orchestration: config.orchestration,
+       orchestration: dashboardOrchestration,
        superpowers: config.superpowers,
        telemetry: { enabled: config.telemetry.enabled, storeTexts: config.telemetry.storeTexts, anomalySigma: config.telemetry.anomalySigma },
-       pricing: config.pricing,
+       pricing: dashboardPricing,
     },
     summary: {
       sessions: Object.keys(ledger.sessions).length,
