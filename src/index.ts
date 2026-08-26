@@ -287,6 +287,20 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         const part = event.properties.part
         const delta = event.properties.delta ?? ""
         trackStreamDelta(part.sessionID, part, delta)
+        // Assistant messages announce themselves via assistant-only part kinds
+        // (step-start begins every LLM step; reasoning/tool parts never appear
+        // in user messages). LiveStream.start() is idempotent per key, so this
+        // fills `active` even when text deltas don't arrive (tool/non-streaming).
+        if (part.type === "step-start" || part.type === "reasoning" || part.type === "tool") {
+          const m = sessionModel.get(part.sessionID)
+          live.start({
+            key: part.messageID, // === assistant info.id (see SDK Part.messageID)
+            sessionID: part.sessionID,
+            agent: sessionAgent.get(part.sessionID),
+            provider: m?.providerID,
+            model: m?.modelID,
+          })
+        }
         if (delta) {
           const model = sessionModel.get(part.sessionID)
           const liveText = appendLiveText(part.messageID, delta)
@@ -305,6 +319,21 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (event.type !== "message.updated") return
       const info = event.properties.info
       if (info.role !== "assistant") return
+      // If a turn emits no assistant-only part (e.g. some non-streaming path),
+      // start the live row from the still-running assistant message instead.
+      const finished =
+        info.time.completed !== undefined || info.finish !== undefined || info.error !== undefined
+      if (!finished) {
+        const m = sessionModel.get(info.sessionID)
+        live.start({
+          key: info.id,
+          sessionID: info.sessionID,
+          agent: sessionAgent.get(info.sessionID),
+          provider: m?.providerID,
+          model: m?.modelID,
+        })
+        return // do not finalize a still-running message
+      }
       endStream(info.id)
       // Always finalize the live row so an active entry never goes stale, even
       // for sessions whose agent/model were not captured by chat.params yet.

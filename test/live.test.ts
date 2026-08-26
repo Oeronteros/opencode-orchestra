@@ -30,6 +30,21 @@ test("LiveStream records start/delta/finish and estimates live cost", async () =
   assert.ok(recent.some((event) => event.e === "delta" && typeof event.cost === "number"))
 })
 
+test("LiveStream.start is idempotent per key and records a single start event", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-start-"))
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5, true)
+  live.start({ key: "msg-2", sessionID: "s2", agent: "orch-lead", provider: "openai", model: "gpt-test" })
+  // The live panel calls start() on every assistant-only part update; a repeat
+  // for the same key must not mint a second start event or reset the row.
+  live.start({ key: "msg-2", sessionID: "s2", agent: "orch-lead", provider: "openai", model: "gpt-test" })
+  const snapshot = live.current()
+  assert.equal(snapshot.active.length, 1)
+  assert.equal(snapshot.active[0]?.key, "msg-2")
+  assert.equal(snapshot.active[0]?.agent, "orch-lead")
+  assert.equal(snapshot.recent.filter((event) => event.e === "start").length, 1)
+  await live.dispose()
+})
+
 test("LiveStream keeps running agents in the active set", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-active-"))
   const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => undefined, 100, 5, true)
