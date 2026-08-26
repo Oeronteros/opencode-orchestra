@@ -3,17 +3,17 @@
   "models": {
     "strategy": "manual",
     "agents": {
-      "orch-lead": "opencode/x-preview-f-free",
-      "orch-judge": "opencode/x-preview-f-free",
-      "orch-repo": "opencode/x-preview-f-free",
-      "orch-tests": "opencode/x-preview-f-free",
-      "orch-critic": "opencode/x-preview-f-free",
-      "orch-docs": "opencode/x-preview-f-free",
-      "orch-research": "opencode/x-preview-f-free",
-      "orch-security": "opencode/x-preview-f-free",
-      "orch-visual-reference": "opencode/x-preview-f-free",
-      "orch-visual-generate": "opencode/x-preview-f-free",
-      "orch-visual-review": "opencode/x-preview-f-free"
+      "orch-lead": "opencode-go/glm-5.3-flash",
+      "orch-judge": "opencode-go/glm-5.3-flash",
+      "orch-repo": "opencode-go/glm-5.3-flash",
+      "orch-tests": "opencode-go/glm-5.3-flash",
+      "orch-critic": "opencode-go/glm-5.3-flash",
+      "orch-docs": "opencode-go/glm-5.3-flash",
+      "orch-research": "opencode-go/glm-5.3-flash",
+      "orch-security": "opencode-go/glm-5.3-flash",
+      "orch-visual-reference": "opencode-go/glm-5.3-flash",
+      "orch-visual-generate": "opencode-go/glm-5.3-flash",
+      "orch-visual-review": "opencode-go/glm-5.3-flash"
     },
     "lead": [],
     "worker": {
@@ -32,7 +32,8 @@
     "maxPremiumCallsPerTask": 1,
     "confidenceThreshold": 0.72,
     "exposeWorkers": false,
-    "profiles": {}
+    "profiles": {},
+    "parallelEditors": 0
   },
   "superpowers": {
     "compatibility": true,
@@ -46,6 +47,11 @@
   "pricing": {
     "refreshIntervalHours": 0,
     "estimate": true,
-    "warnThresholdUSD": 0.5
+    "warnThresholdUSD": 0.5,
+    "openrouter": {
+      "enabled": false,
+      "ttlHours": 12
+    },
+    "aliases": []
   }
 }
