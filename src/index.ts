@@ -136,7 +136,7 @@ function logStreamFlag(sessionID: string, partID: string, observation: { confide
 export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_workspace }, rawOptions = {}) => {
   // Experimental OpenCode workspace integration: editors can be assigned isolated git worktrees.
   const loaded = await loadConfig(directory, rawOptions)
-  experimental_workspace.register("git", createGitWorktreeAdapter(directory, loaded.config.orchestration.worktreeRoot))
+  experimental_workspace?.register("git", createGitWorktreeAdapter(directory, loaded.config.orchestration.worktreeRoot))
   await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)
   const orchestra = applyDiscoveredModels(applyBudgetPreset(loaded.config), discovered)
