@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
+import fs from "node:fs"
 import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -160,6 +161,22 @@ function executableName(name: string): string {
   return process.platform === "win32" ? `${name}.exe` : name
 }
 
+/** Resolve a bare command name against PATH, returning the first executable hit. */
+function resolvePathExecutable(name: string): string | undefined {
+  const env = process.env.PATH ?? ""
+  for (const directory of env.split(path.delimiter)) {
+    if (!directory) continue
+    const candidate = path.join(directory, executableName(name))
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {
+      // Keep scanning PATH entries.
+    }
+  }
+  return undefined
+}
+
 function localBin(name: string): string {
   return path.join(os.homedir(), ".local", "bin", executableName(name))
 }
@@ -259,7 +276,12 @@ async function ensureUv(): Promise<ProvisionedDependency & { command: string }> 
 async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDependency> {
   if (!enabled) return { command: "memorygraph", status: "skipped" }
   const current = executable(["memorygraph", localBin("memorygraph")])
-  if (current) return { command: current, status: "existing" }
+  if (current) {
+    return {
+      command: current === "memorygraph" ? (resolvePathExecutable("memorygraph") ?? current) : current,
+      status: "existing",
+    }
+  }
   // uv provisioning failures abort before the try so they surface verbatim.
   const uv = await ensureUv()
   try {
@@ -276,7 +298,7 @@ async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDepend
     // PyPI ships a `memorygraph` launcher; fall back to an ephemeral uvx run.
     const uvx = executable([path.join(path.dirname(uv.command), executableName("uvx")), localBin("uvx"), "uvx"])
     if (!uvx) throw error
-    return { command: [uvx, "memorygraph"], status: "installed" }
+    return { command: [uvx, "memorygraph"], status: "installed", reason: `uv tool install failed (${failureReason(error)}); using ephemeral uvx` }
   }
 }
 

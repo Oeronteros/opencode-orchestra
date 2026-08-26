@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -126,4 +126,43 @@ test("runDoctor flags an absent plugin entry", async () => {
   const report = await runDoctor({ configDirectory: directory })
   const entry = report.checks.find((c: Check) => c.id === "plugin-entry")
   assert.equal(entry?.status, "warning")
+})
+
+test("runDoctor probes the full argv for multi-command local MCPs", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-argv-"))
+  const bin = path.join(directory, "bin")
+  await mkdir(bin, { recursive: true })
+  const fakeUvx = path.join(bin, "uvx")
+  await writeFile(
+    fakeUvx,
+    [
+      "#!/bin/sh",
+      'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then exit 0; fi',
+      'if [ "$#" -eq 2 ] && [ "$1" = "memorygraph" ] && [ "$2" = "--version" ]; then exit 0; fi',
+      "exit 1",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  await chmod(fakeUvx, 0o755)
+
+  const configFile = path.join(directory, "opencode.json")
+  await writeFile(
+    configFile,
+    JSON.stringify({ plugin: ["@oeronteros-1/opencode-orchestra@latest"], mcp: { memorygraph: { type: "local", command: [fakeUvx, "memorygraph"] } } }),
+    "utf8",
+  )
+  const working = await runDoctor({ configDirectory: directory })
+  const ok = working.checks.find((c: Check) => c.id === "mcp-memorygraph")
+  assert.equal(ok?.status, "ok")
+  assert.equal(ok?.detail, `${fakeUvx} memorygraph`)
+
+  await writeFile(
+    configFile,
+    JSON.stringify({ plugin: ["@oeronteros-1/opencode-orchestra@latest"], mcp: { memorygraph: { type: "local", command: [fakeUvx, "bogus"] } } }),
+    "utf8",
+  )
+  const broken = await runDoctor({ configDirectory: directory })
+  const warning = broken.checks.find((c: Check) => c.id === "mcp-memorygraph")
+  assert.equal(warning?.status, "warning")
 })

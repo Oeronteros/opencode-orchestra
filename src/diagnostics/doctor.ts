@@ -165,7 +165,15 @@ export function collectLocalMcps(parsed: Record<string, unknown>): {
       nonLocalCount += 1
       continue
     }
-    const resolved = executable(argv)
+    let resolved: string | undefined
+    if (argv.length === 1) {
+      resolved = executable(argv)
+    } else {
+      const first = argv[0]
+      if (first && isExecutable(first) && spawnSync(first, [...argv.slice(1), "--version"], { stdio: "ignore" }).status === 0) {
+        resolved = argv.join(" ")
+      }
+    }
     local.push({ name, commands: argv, ...(resolved ? { executable: resolved } : {}) })
   }
   return { local, nonLocalCount }
@@ -357,7 +365,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   push({
     id: "memorygraph",
     label: "MemoryGraph",
-    status: memorygraph.executable ? "ok" : "info",
+    status: memorygraph.executable ? "ok" : "warning",
     detail: memorygraph.executable ? `${memorygraph.executable} — ${memorygraph.version ?? "unknown"}` : "not installed",
     ...(memorygraph.executable ? {} : { hint: "Run `uv tool install memorygraphMCP`, or `opencode-orchestra install`." }),
   })

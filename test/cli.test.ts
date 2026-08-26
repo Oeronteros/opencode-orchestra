@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -7,6 +7,30 @@ import { parse } from "jsonc-parser"
 import { failureReason, install } from "../src/cli.js"
 
 const SUPER_POWERS_ENTRY = "superpowers@git+https://github.com/obra/superpowers.git"
+
+async function writeExecutable(file: string, script: string): Promise<void> {
+  await writeFile(file, script, "utf8")
+  await chmod(file, 0o755)
+}
+
+/** Fake toolchain that shadows the real uv/uvx/memorygraph on this machine. */
+async function fakeToolchain(prefix: string): Promise<{ bin: string; home: string; uvx: string }> {
+  const bin = path.join(prefix, "bin")
+  const home = path.join(prefix, "home")
+  const homeBin = path.join(home, ".local", "bin")
+  await mkdir(bin, { recursive: true })
+  await mkdir(homeBin, { recursive: true })
+  // Shadow real PATH hits so provisioning is exercised deterministically.
+  await writeExecutable(path.join(bin, "uv"), "#!/bin/sh\nexit 1\n")
+  await writeExecutable(path.join(bin, "memorygraph"), "#!/bin/sh\nexit 1\n")
+  await writeExecutable(path.join(bin, "uvx"), "#!/bin/sh\nexit 1\n")
+  // Absolute-path candidates found via ~/.local/bin: uv passes the
+  // --version probe (so ensureUv accepts it) but fails every real command.
+  await writeExecutable(path.join(homeBin, "uv"), '#!/bin/sh\nif [ "$1" = "--version" ]; then exit 0; fi\nexit 1\n')
+  const uvx = path.join(homeBin, "uvx")
+  await writeExecutable(uvx, "#!/bin/sh\nexit 0\n")
+  return { bin, home, uvx }
+}
 
 test("installer merges plugin and MCPs while preserving existing entries", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-install-"))
@@ -327,4 +351,70 @@ test("failureReason truncates long messages to 200 characters", () => {
 test("failureReason returns undefined for empty or blank input", () => {
   assert.equal(failureReason(""), undefined)
   assert.equal(failureReason("   \n\t "), undefined)
+})
+
+test("memoryGraph provisioning falls back to uvx and keeps the original error text", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-uvx-fallback-"))
+  const { bin, home, uvx } = await fakeToolchain(directory)
+
+  const originalPath = process.env.PATH
+  const originalHome = process.env.HOME
+  process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ""}`
+  process.env.HOME = home
+  try {
+    const result = await install({
+      configDirectory: directory,
+      context7: false,
+      codebaseMemory: false,
+      memoryGraph: true,
+      playwright: false,
+      superpowers: false,
+      provisionDependencies: true,
+      force: false,
+      dryRun: false,
+      pluginCacheDirectory: path.join(directory, "packages"),
+    })
+    assert.equal(result.dependencies.memoryGraph.status, "installed")
+    assert.deepEqual(result.dependencies.memoryGraph.command, [uvx, "memorygraph"])
+    assert.match(result.dependencies.memoryGraph.reason ?? "", /uv tool install failed/)
+    const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { mcp: Record<string, unknown> }
+    const entry = config.mcp.memorygraph as { command: string[] } | undefined
+    assert.deepEqual(entry?.command, [uvx, "memorygraph"])
+  } finally {
+    process.env.PATH = originalPath
+    process.env.HOME = originalHome
+  }
+})
+
+test("memoryGraph provisioning failure skips the MCP entry when no uvx is available", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-uvx-missing-"))
+  const { bin, home } = await fakeToolchain(directory)
+  // Broken uvx everywhere: the absolute-path candidate must fail too.
+  await writeExecutable(path.join(home, ".local", "bin", "uvx"), "#!/bin/sh\nexit 1\n")
+
+  const originalPath = process.env.PATH
+  const originalHome = process.env.HOME
+  process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ""}`
+  process.env.HOME = home
+  try {
+    const result = await install({
+      configDirectory: directory,
+      context7: false,
+      codebaseMemory: false,
+      memoryGraph: true,
+      playwright: false,
+      superpowers: false,
+      provisionDependencies: true,
+      force: false,
+      dryRun: false,
+      pluginCacheDirectory: path.join(directory, "packages"),
+    })
+    assert.equal(result.dependencies.memoryGraph.status, "failed")
+    assert.ok((result.dependencies.memoryGraph.reason ?? "").length > 0)
+    const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { mcp?: Record<string, unknown> }
+    assert.equal(config.mcp?.memorygraph, undefined)
+  } finally {
+    process.env.PATH = originalPath
+    process.env.HOME = originalHome
+  }
 })

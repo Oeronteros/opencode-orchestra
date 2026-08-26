@@ -92,7 +92,7 @@ export async function detectMcpPresence(configDirectory: string = openCodeConfig
 export async function formatPluginStatus(status: PluginStatus): Promise<string> {
   const mcp = Object.entries({ ...status.mcp })
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, present]) => `  ${name.padEnd(24)} ${present ? "connected" : "not configured"}`)
+    .map(([name, present]) => `  ${name.padEnd(24)} ${present ? "configured" : "not configured"}`)
     .join("\n")
   return [
     "OpenCode Orchestra plugin status",

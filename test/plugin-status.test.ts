@@ -23,7 +23,7 @@ test("formatPluginStatus renders the plugin identity and runtime fields", async 
   assert.ok(report.includes("discovered models: 9"))
   assert.ok(report.includes("config source: /tmp/orchestra.jsonc"))
   assert.ok(report.includes("context7"))
-  assert.ok(report.includes("connected"))
+  assert.ok(report.includes("configured"))
 })
 
 test("plugin exposes the /plugin-status command and orchestra_plugin_status tool", async () => {
