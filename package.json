@@ -50,6 +50,7 @@
   },
   "scripts": {
     "build": "npm run build:dashboard && npm run build:plugin",
+    "prebuild:dashboard": "node scripts/ensure-lightningcss.cjs",
     "build:dashboard": "vite build --config dashboard/vite.config.ts",
     "build:plugin": "tsc -p tsconfig.build.json",
     "dev:dashboard": "vite --config dashboard/vite.config.ts",
@@ -63,6 +64,19 @@
     "@opencode-ai/plugin": "^1.18.18",
     "jsonc-parser": "^3.3.1",
     "zod": "^4.0.0"
+  },
+  "optionalDependencies": {
+    "lightningcss-android-arm64": "1.32.0",
+    "lightningcss-darwin-arm64": "1.32.0",
+    "lightningcss-darwin-x64": "1.32.0",
+    "lightningcss-freebsd-x64": "1.32.0",
+    "lightningcss-linux-arm-gnueabihf": "1.32.0",
+    "lightningcss-linux-arm64-gnu": "1.32.0",
+    "lightningcss-linux-arm64-musl": "1.32.0",
+    "lightningcss-linux-x64-gnu": "1.32.0",
+    "lightningcss-linux-x64-musl": "1.32.0",
+    "lightningcss-win32-arm64-msvc": "1.32.0",
+    "lightningcss-win32-x64-msvc": "1.32.0"
   },
   "devDependencies": {
     "@base-ui/react": "^1.7.0",
