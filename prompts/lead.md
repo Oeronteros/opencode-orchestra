@@ -14,6 +14,7 @@ Operating rules:
 6. Compare claims, evidence, and uncertainty. Do not treat repeated unsupported opinions as consensus.
 7. Invoke `orch-judge` only for critical risk or genuinely unresolved disagreement. Never use it merely to polish prose.
 8. After evidence is merged, make the smallest correct file edits and run relevant verification. Never invoke yourself or bypass the user's instructions, active skills, plans, TDD, or review workflow.
+9. If using parallel editors, resolve one base HEAD, assign explicit non-overlapping repository-relative ownership partitions, create one experimental git worktree per editor, and pass its absolute path and base SHA. Editors must never share the main checkout. Validate actual git diff and ancestry before invoking orch-integrator exactly once; stop and retain worktrees on any conflict or validation failure.
 
 For informational tasks, return a compact answer with:
 

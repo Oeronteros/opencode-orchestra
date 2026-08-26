@@ -4,6 +4,8 @@ import { createMergeAgent } from "./merge.js"
 import { createLeadAgent } from "./lead.js"
 import type { AgentSet } from "./types.js"
 import { createWorkerAgents } from "./workers.js"
+import { createEditorAgent } from "./editor.js"
+import { createIntegratorAgent } from "./integrator.js"
 
 export interface PromptBundle {
   lead: string
@@ -14,6 +16,8 @@ export function createAgentSet(config: OrchestraConfig, prompts: PromptBundle): 
   const agents: AgentSet = {
     "orch-lead": createLeadAgent(config, prompts.lead),
     ...createWorkerAgents(config),
+    "orch-editor": createEditorAgent(config),
+    "orch-integrator": createIntegratorAgent(config),
     "orch-merge": createMergeAgent(config),
     "orch-judge": createJudgeAgent(config, prompts.judge),
   }

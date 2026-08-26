@@ -123,6 +123,10 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
 {
   "$schema": "https://unpkg.com/@oeronteros-1/opencode-orchestra@latest/schema/opencode-orchestra.schema.json",
   "budget": "balanced",
+  "orchestration": {
+    "parallelEditors": 0,
+    "worktreeRoot": ".orchestra/worktrees"
+  },
   "models": {
     "strategy": "auto",
     "agents": {}
@@ -147,7 +151,7 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
 }
 ```
 
-Доступные имена: `orch-lead`, `orch-repo`, `orch-docs`, `orch-tests`, `orch-research`, `orch-critic`, `orch-security`, `orch-visual-reference`, `orch-visual-generate`, `orch-visual-review`, `orch-judge`.
+Доступные имена: `orch-lead`, `orch-repo`, `orch-docs`, `orch-tests`, `orch-research`, `orch-critic`, `orch-security`, `orch-visual-reference`, `orch-visual-generate`, `orch-visual-review`, `orch-editor`, `orch-integrator`, `orch-merge`, `orch-judge`.
 
 ### Ручные пулы
 
@@ -238,7 +242,7 @@ Resolver формирует упорядоченный список более �
 
 Плагин добавляет один публичный primary-агент `orch-lead`, скрытых workers, скрытый reduce-агент `orch-merge` и скрытый `orch-judge`. Workers не могут редактировать файлы или делегировать работу дальше; lead может вызывать только агентов Orchestra, после чего сам реализует изменения и проверяет результат.
 
-`orch-lead` строит dependency-aware DAG: независимые ветки одного уровня запускаются параллельно через OpenCode Task tool в пределах `parallelWorkers`, downstream-узлы ждут свои зависимости, а после всех веток `orch-merge` один раз объединяет результаты с сохранением источников, конфликтов и неопределённости. Затем `orch-lead` редактирует файлы и запускает релевантную проверку. Это явный fan-out/fan-in pipeline, а не последовательный список рекомендаций.
+`orch-lead` строит dependency-aware DAG: независимые ветки одного уровня запускаются параллельно через OpenCode Task tool в пределах `parallelWorkers`, downstream-узлы ждут свои зависимости, а после всех веток `orch-merge` один раз объединяет результаты с сохранением источников, конфликтов и неопределённости. Затем `orch-lead` редактирует файлы и запускает релевантную проверку. Для безопасной параллельной реализации можно явно задать непересекающиеся ownership partitions и включить `orchestration.parallelEditors`: каждый `orch-editor` работает в отдельном experimental Git worktree, коммитит изменения, а `orch-integrator` проверяет фактический diff и интегрирует коммиты в детерминированном порядке. При конфликте worktrees сохраняются для диагностики; значение `0` (по умолчанию) полностью отключает editor mode. Это явный fan-out/fan-in pipeline, а не последовательный список рекомендаций.
 
 ### `orch-judge` — арбитр для критических решений
 
@@ -274,6 +278,8 @@ Context7 остаётся удалённым MCP для актуальной д�
 Codebase Memory отвечает за знания, которые можно восстановить из исходников: символы, вызовы, зависимости, маршруты и impact analysis. Установщик использует официальный Linux-инсталлятор с `--skip-config`, чтобы тот не создавал конкурирующие агенты и инструкции, после чего включает `auto_index`. Индекс хранится локально в `~/.cache/codebase-memory-mcp/`.
 
 MemoryGraph отвечает за знания, которых нет непосредственно в коде: принятые архитектурные решения, проверенные исправления и повторно используемые паттерны. Используется core-профиль с локальным SQLite в `~/.local/share/memorygraph/`. Lead вызывает `recall_memories` не более одного раза в начале релевантной задачи и сохраняет только проверенные устойчивые знания.
+
+Пакет ставится с PyPI (`memorygraphMCP`, Python ≥3.10, SQLite работает без настройки). GitHub-ветка `main` того же репозитория переписана на TypeScript/Bun и не совместима с PyPI-пакетом, поэтому установщик опирается именно на PyPI-дистрибутив. Если persistent-установка через `uv tool install` не удалась, используется фолбэк `uvx memorygraph`; при полном провале MCP-запись в конфиг не пишется — причина сбоя видна в выводе установщика и doctor.
 
 Разделение намеренное:
 

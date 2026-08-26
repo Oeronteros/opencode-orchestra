@@ -17,6 +17,7 @@ import { createPriceRefresher, type RefreshSource } from "./routing/pricing/refr
 import { createOpenRouterCache } from "./pricing/openrouter.js"
 import { resolvePricingSync } from "./pricing/resolver.js"
 import { detectMcpPresence, resolvePluginVersion, PACKAGE_NAME, type PluginStatus } from "./plugin-status.js"
+import { createGitWorktreeAdapter } from "./orchestration/worktree-adapter.js"
 
 type MutableConfig = Omit<Config, "agent" | "command"> & {
   agent?: Record<string, RuntimeAgentConfig>
@@ -132,8 +133,10 @@ function logStreamFlag(sessionID: string, partID: string, observation: { confide
   })
 }
 
-export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions = {}) => {
+export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_workspace }, rawOptions = {}) => {
+  // Experimental OpenCode workspace integration: editors can be assigned isolated git worktrees.
   const loaded = await loadConfig(directory, rawOptions)
+  experimental_workspace.register("git", createGitWorktreeAdapter(directory, loaded.config.orchestration.worktreeRoot))
   await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)
   const orchestra = applyDiscoveredModels(applyBudgetPreset(loaded.config), discovered)
@@ -217,11 +220,13 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
       mutable.agent ??= {}
       for (const [name, agent] of Object.entries(agents)) {
         const merged = mergeAgent(agent, mutable.agent[name])
-        // orch-lead is the single implementation writer; keep its edit access
-        // available even when a broad inherited agent rule denies it.
+        // Keep the primary lead writable; isolated editors write only inside their OpenCode workspaces.
+        // The integrator remains Git-only even if a user override broadly enables edit.
         mutable.agent[name] = name === "orch-lead"
           ? { ...merged, permission: { ...merged.permission, edit: "allow" } }
-          : merged
+          : name === "orch-integrator"
+            ? { ...merged, permission: { ...merged.permission, edit: "deny" } }
+            : merged
       }
       mutable.command ??= {}
       mutable.command["orchestra-status"] ??= {
@@ -235,7 +240,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory }, rawOptions 
       mutable.command.orchestra ??= {
         description: "Classify a task and execute it through orch-lead",
         agent: "orch-lead",
-        template: "Call orchestra_route for this task: $ARGUMENTS. Then execute the returned plan yourself as orch-lead: dispatch ready worker nodes through task, wait for dependencies, call orch-merge once after evidence nodes complete, implement the requested change, and verify it.",
+        template: "Call orchestra_route for this task: $ARGUMENTS. Then execute the returned plan yourself as orch-lead. For safe parallel implementation, call orchestration_prepare_edit_plan with explicit ownership, run each orch-editor in its own experimental git workspace, validate every commit with orchestration_validate_commit, then call orch-integrator once. Otherwise implement directly. Always verify the result.",
       }
     },
     tool: createOrchestraTools(orchestra, ledger, pluginStatus, {

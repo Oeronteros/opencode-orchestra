@@ -82,6 +82,10 @@ export const orchestraConfigSchema = z.object({
   orchestration: z
     .object({
       parallelWorkers: z.number().int().min(1).max(8).default(3),
+      /** Maximum isolated editor workers; 0 disables editor execution. */
+      parallelEditors: z.number().int().min(0).max(8).default(0),
+      /** Repository-relative or absolute root for experimental git worktrees. */
+      worktreeRoot: z.string().min(1).optional(),
       maxWorkers: z.number().int().min(1).max(12).default(5),
       premiumEscalation: z.boolean().default(true),
       maxPremiumCallsPerTask: z.number().int().min(0).max(5).default(1),
@@ -91,6 +95,8 @@ export const orchestraConfigSchema = z.object({
     })
     .default({
       parallelWorkers: 3,
+      parallelEditors: 0,
+      worktreeRoot: undefined,
       maxWorkers: 5,
       premiumEscalation: true,
       maxPremiumCallsPerTask: 1,

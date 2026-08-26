@@ -46,12 +46,7 @@ const WORKERS: Record<string, WorkerSpec> = {
     capability: "code",
     permission: {
       ...READ_ONLY,
-      bash: {
-        "*": "ask",
-        "git status*": "allow",
-        "git diff*": "allow",
-        "*test*": "allow",
-      },
+      bash: "allow",
     },
   },
   "orch-research": {

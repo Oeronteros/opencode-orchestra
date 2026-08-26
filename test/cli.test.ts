@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { parse } from "jsonc-parser"
-import { install } from "../src/cli.js"
+import { failureReason, install } from "../src/cli.js"
 
 const SUPER_POWERS_ENTRY = "superpowers@git+https://github.com/obra/superpowers.git"
 
@@ -311,4 +311,20 @@ test("installer reports the OpenCode plugin cache refresh without touching unrel
 
   assert.deepEqual(result.pluginCache, { upToDate: [], reinstalled: [], invalidated: [] })
   assert.equal(await readFile(path.join(foreignDirectory, "marker.txt"), "utf8"), "keep me")
+})
+
+test("failureReason collapses newlines and repeated whitespace into single spaces", () => {
+  assert.equal(failureReason(new Error("first\nsecond\r\nthird")), "first second third")
+  assert.equal(failureReason(new Error("a\n\n   b\tc")), "a b c")
+})
+
+test("failureReason truncates long messages to 200 characters", () => {
+  const reason = failureReason(new Error("x".repeat(500)))
+  assert.equal(reason?.length, 200)
+  assert.equal(reason, "x".repeat(200))
+})
+
+test("failureReason returns undefined for empty or blank input", () => {
+  assert.equal(failureReason(""), undefined)
+  assert.equal(failureReason("   \n\t "), undefined)
 })

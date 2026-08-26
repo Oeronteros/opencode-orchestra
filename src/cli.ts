@@ -60,14 +60,15 @@ export interface InstallResult {
   backup?: string
   pluginCache: PluginCacheReport
   dependencies: {
-    codebaseMemory: DependencyStatus
-    memoryGraph: DependencyStatus
+    codebaseMemory: ProvisionedDependency
+    memoryGraph: ProvisionedDependency
   }
 }
 
 interface ProvisionedDependency {
-  command: string
+  command: string | string[]
   status: DependencyStatus
+  reason?: string
 }
 
 const FORMATTING = { insertSpaces: true, tabSize: 2, eol: "\n" }
@@ -182,8 +183,16 @@ function run(command: string, args: string[], env?: NodeJS.ProcessEnv): void {
   if (result.status !== 0) throw new Error(`Command failed (${result.status ?? "unknown"}): ${command} ${args.join(" ")}`)
 }
 
+// Exported for unit tests: installer output must stay single-line and bounded.
+export function failureReason(error: unknown): string | undefined {
+  const raw = error instanceof Error ? error.message : String(error)
+  const reason = raw.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200)
+  return reason || undefined
+}
+
 async function downloadScript(url: string, filename: string): Promise<{ directory: string; file: string }> {
-  const response = await fetch(url, { redirect: "follow" })
+  // Bounded fetch: a hung registry mirror must not stall the whole install.
+  const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(30_000) })
   if (!response.ok) throw new Error(`Failed to download ${url}: HTTP ${response.status}`)
   const directory = await mkdtemp(path.join(os.tmpdir(), "opencode-orchestra-"))
   const file = path.join(directory, filename)
@@ -220,7 +229,7 @@ async function provisionCodebaseMemory(enabled: boolean): Promise<ProvisionedDep
   return { command: installed, status: "installed" }
 }
 
-async function ensureUv(): Promise<ProvisionedDependency> {
+async function ensureUv(): Promise<ProvisionedDependency & { command: string }> {
   const current = executable(["uv", localBin("uv")])
   if (current) return { command: current, status: "existing" }
   const windows = process.platform === "win32"
@@ -251,26 +260,40 @@ async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDepend
   if (!enabled) return { command: "memorygraph", status: "skipped" }
   const current = executable(["memorygraph", localBin("memorygraph")])
   if (current) return { command: current, status: "existing" }
+  // uv provisioning failures abort before the try so they surface verbatim.
   const uv = await ensureUv()
-  run(uv.command, ["tool", "install", "memorygraphMCP"])
-  const toolBin = capture(uv.command, ["tool", "dir", "--bin"])
-  const installed = executable([
-    ...(toolBin ? [path.join(toolBin, executableName("memorygraph"))] : []),
-    localBin("memorygraph"),
-    "memorygraph",
-  ])
-  if (!installed) throw new Error("memorygraphMCP installed, but its executable was not found.")
-  return { command: installed, status: "installed" }
+  try {
+    run(uv.command, ["tool", "install", "memorygraphMCP>=0.12"])
+    const toolBin = capture(uv.command, ["tool", "dir", "--bin"])
+    const installed = executable([
+      ...(toolBin ? [path.join(toolBin, executableName("memorygraph"))] : []),
+      localBin("memorygraph"),
+      "memorygraph",
+    ])
+    if (!installed) throw new Error("memorygraphMCP installed, but its executable was not found.")
+    return { command: installed, status: "installed" }
+  } catch (error) {
+    // PyPI ships a `memorygraph` launcher; fall back to an ephemeral uvx run.
+    const uvx = executable([path.join(path.dirname(uv.command), executableName("uvx")), localBin("uvx"), "uvx"])
+    if (!uvx) throw error
+    return { command: [uvx, "memorygraph"], status: "installed" }
+  }
 }
 
 export async function install(options: InstallOptions): Promise<InstallResult> {
   const shouldProvision = options.provisionDependencies && !options.dryRun
   // Companion MCPs are optional: failed provisioning must not prevent plugin setup.
   const codebase = options.codebaseMemory
-    ? await provisionCodebaseMemory(shouldProvision).catch(() => ({ command: "codebase-memory-mcp", status: "failed" as const }))
+    ? await provisionCodebaseMemory(shouldProvision).catch((error: unknown) => {
+        const reason = failureReason(error)
+        return { command: "codebase-memory-mcp", status: "failed" as const, ...(reason ? { reason } : {}) }
+      })
     : { command: "codebase-memory-mcp", status: "skipped" as const }
   const memoryGraph = options.memoryGraph
-    ? await provisionMemoryGraph(shouldProvision).catch(() => ({ command: "memorygraph", status: "failed" as const }))
+    ? await provisionMemoryGraph(shouldProvision).catch((error: unknown) => {
+        const reason = failureReason(error)
+        return { command: "memorygraph", status: "failed" as const, ...(reason ? { reason } : {}) }
+      })
     : { command: "memorygraph", status: "skipped" as const }
 
   const configDirectory = path.resolve(options.configDirectory ?? openCodeConfigDirectory())
@@ -394,18 +417,19 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   if (options.playwright !== false) {
     addMcp("playwright", { type: "local", command: PLAYWRIGHT_COMMAND, enabled: true, timeout: 30_000 })
   }
-  if (options.codebaseMemory) {
+  // A failed provisioning never persists an MCP entry pointing at a dead command.
+  if (options.codebaseMemory && codebase.status !== "failed") {
     addMcp("codebase-memory", {
       type: "local",
-      command: [codebase.command],
+      command: Array.isArray(codebase.command) ? codebase.command : [codebase.command],
       enabled: true,
       timeout: 30_000,
     })
   }
-  if (options.memoryGraph) {
+  if (options.memoryGraph && memoryGraph.status !== "failed") {
     addMcp("memorygraph", {
       type: "local",
-      command: [memoryGraph.command],
+      command: Array.isArray(memoryGraph.command) ? memoryGraph.command : [memoryGraph.command],
       enabled: true,
       timeout: 30_000,
     })
@@ -458,8 +482,8 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     ...(backup ? { backup } : {}),
     pluginCache,
     dependencies: {
-      codebaseMemory: codebase.status,
-      memoryGraph: memoryGraph.status,
+      codebaseMemory: codebase,
+      memoryGraph: memoryGraph,
     },
   }
 }
@@ -623,8 +647,9 @@ async function main(): Promise<void> {
     console.log(`Agent settings: ${result.orchestraConfig}`)
     const cacheSummary = formatPluginCacheReport(result.pluginCache, parsed.options.dryRun)
     console.log(`OpenCode plugin cache: ${cacheSummary ?? "no cached Orchestra entries"}`)
-    console.log(`Codebase Memory: ${result.dependencies.codebaseMemory}`)
-    console.log(`MemoryGraph: ${result.dependencies.memoryGraph}`)
+    const dependencyLine = ({ status, reason }: ProvisionedDependency): string => `${status}${reason ? ` (${reason})` : ""}`
+    console.log(`Codebase Memory: ${dependencyLine(result.dependencies.codebaseMemory)}`)
+    console.log(`MemoryGraph: ${dependencyLine(result.dependencies.memoryGraph)}`)
     if (result.changed.length > 0) console.log(`Changed: ${result.changed.join(", ")}`)
     if (result.preserved.length > 0) console.log(`Preserved: ${result.preserved.join(", ")}`)
     if (result.backup) console.log(`Backup: ${result.backup}`)

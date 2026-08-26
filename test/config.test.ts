@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { loadConfig } from "../src/config/load.js"
+import { orchestraConfigSchema } from "../src/config/schema.js"
 
 test("config discovery layers global, preferred project JSONC, and options", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-config-"))
@@ -35,4 +36,11 @@ test("explicit config path is resolved from project", async () => {
   const loaded = await loadConfig(project, { configFile: "custom.jsonc" })
   assert.equal(loaded.config.budget, "quality")
   assert.equal(loaded.source, path.join(project, "custom.jsonc"))
+})
+
+test("parallel editor configuration is opt-in and bounded", () => {
+  assert.equal(orchestraConfigSchema.parse({}).orchestration.parallelEditors, 0)
+  assert.equal(orchestraConfigSchema.parse({ orchestration: { parallelEditors: 8, worktreeRoot: ".tmp/worktrees" } }).orchestration.worktreeRoot, ".tmp/worktrees")
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelEditors: 9 } }))
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelEditors: -1 } }))
 })

@@ -6,6 +6,8 @@ import { classifyTask, type Classification } from "./routing/classifier.js"
 import { createClassifierCache } from "./routing/classifier-cache.js"
 import { decideEscalation } from "./routing/escalation.js"
 import { planTask } from "./routing/planner.js"
+import { validateOwnership, validateChangedFiles } from "./orchestration/ownership.js"
+import { assertCommitDescendsFromBase, collectCommitChanges, systemGit } from "./orchestration/worktrees.js"
 import { createBudgetGuard, paidBudgetFor } from "./routing/budget-guard.js"
 import { estimateCost, formatEstimateWarning } from "./routing/pricing/estimate.js"
 import type { PriceSnapshot } from "./routing/pricing/prices.js"
@@ -33,6 +35,41 @@ export function createOrchestraTools(
   pricing?: PricingContext,
 ): Record<string, ToolDefinition> {
   return {
+    orchestration_prepare_edit_plan: tool({
+      description: "Validate explicit non-overlapping ownership partitions and prepare an isolated editor DAG.",
+      args: {
+        task: tool.schema.string().min(1),
+        profile: tool.schema.string().optional(),
+        partitions: tool.schema.array(tool.schema.object({ id: tool.schema.string().min(1), description: tool.schema.string().min(1), ownership: tool.schema.array(tool.schema.string().min(1)).min(1) })).min(1),
+      },
+      async execute(args) {
+        if (config.orchestration.parallelEditors === 0) return "Parallel editor mode is disabled (orchestration.parallelEditors is 0)."
+        if (args.partitions.length > config.orchestration.parallelEditors) return JSON.stringify({ ok: false, violations: ["editor partition count exceeds parallelEditors"] }, null, 2)
+        const violations = validateOwnership(args.partitions.map((p) => ({ id: p.id, paths: p.ownership })))
+        if (violations.length) return JSON.stringify({ ok: false, violations }, null, 2)
+        const classification = classifyTask(args.task, config.orchestration.profiles)
+        const profile = args.profile && profileNameSchema.safeParse(args.profile).success ? args.profile as ProfileName : classification.profile
+        const plan = planTask(profile, classification.secondaryProfiles, { maxNodes: config.orchestration.maxWorkers, editorPartitions: args.partitions, includeIntegrator: true })
+        const planProblems = plan.nodes.length > config.orchestration.maxWorkers ? ["editor plan exceeds maxWorkers; reduce evidence workers or partitions"] : []
+        if (planProblems.length) return JSON.stringify({ ok: false, violations: planProblems, plan }, null, 2)
+        return JSON.stringify({ ok: true, plan, parallelEditors: Math.min(config.orchestration.parallelEditors, args.partitions.length), worktreeRoot: config.orchestration.worktreeRoot ?? ".orchestra/worktrees" }, null, 2)
+      },
+    }),
+    orchestration_validate_commit: tool({
+      description: "Validate an editor commit using the actual git diff and explicit ownership, never worker claims.",
+      args: {
+        baseSha: tool.schema.string().min(7), commitSha: tool.schema.string().min(7), nodeId: tool.schema.string().min(1),
+        partitions: tool.schema.array(tool.schema.object({ id: tool.schema.string().min(1), ownership: tool.schema.array(tool.schema.string().min(1)).min(1) })).min(1),
+      },
+      async execute(args, context) {
+        await assertCommitDescendsFromBase(systemGit, context.worktree, args.baseSha, args.commitSha)
+        const changes = await collectCommitChanges(systemGit, context.worktree, args.baseSha, args.commitSha)
+        const changed = Object.fromEntries(args.partitions.map((p) => [p.id, p.id === args.nodeId ? changes.flatMap((c) => c.oldPath ? [c.oldPath, c.path] : [c.path]) : []]))
+        const ownership = args.partitions.map((p) => ({ id: p.id, paths: p.ownership }))
+        const violations = validateChangedFiles(ownership, changed)
+        return JSON.stringify({ ok: violations.length === 0, nodeId: args.nodeId, baseSha: args.baseSha, commitSha: args.commitSha, changes, violations }, null, 2)
+      },
+    }),
     orchestra_route: tool({
       description: "Classify a complex task and return the recommended OpenCode Orchestra worker team for the active budget mode. This does not execute the team.",
       args: {

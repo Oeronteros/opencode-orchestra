@@ -1,4 +1,5 @@
 import type { ProfileName } from "../config/schema.js"
+import { validateOwnership } from "../orchestration/ownership.js"
 
 /** A node in the dependency-aware specialist execution DAG. */
 export interface PlanNode {
@@ -6,7 +7,9 @@ export interface PlanNode {
   description: string
   worker: string
   dependsOn: string[]
-  role: "specialist" | "reviewer" | "merger"
+  role: "specialist" | "reviewer" | "merger" | "editor" | "integrator"
+  ownership?: string[]
+  worktree?: { branch: string; path: string; baseRevision: string }
 }
 
 export interface TaskPlan {
@@ -15,6 +18,7 @@ export interface TaskPlan {
   levels: string[][]
   maxParallel: number
   mergerNodeId?: string
+  integratorNodeId?: string
 }
 
 const PROFILE_WORKERS: Partial<Record<ProfileName, string[]>> = {
@@ -34,6 +38,8 @@ export interface PlanOptions {
   maxNodes?: number
   dependencyAware?: boolean
   includeMerger?: boolean
+  editorPartitions?: Array<{ id?: string; description: string; ownership: string[] }>
+  includeIntegrator?: boolean
 }
 
 const REVIEWERS = new Set(["orch-critic", "orch-security", "orch-visual-review"])
@@ -86,7 +92,25 @@ export function planTask(profile: ProfileName, secondaryProfiles: ProfileName[] 
     levels.push([mergerNodeId])
   }
 
-  return { nodes, levels, maxParallel: levels.reduce((max, level) => Math.max(max, level.length), 0), ...(mergerNodeId ? { mergerNodeId } : {}) }
+  let integratorNodeId: string | undefined
+  const partitions = options.editorPartitions ?? []
+  if (partitions.length) {
+    const editorDeps = mergerNodeId ? [mergerNodeId] : evidence
+    const editorIds: string[] = []
+    for (let i = 0; i < partitions.length; i++) {
+      const partition = partitions[i]!
+      const id = partition.id ?? "editor-" + i
+      nodes.push({ id, description: partition.description, worker: "orch-editor", dependsOn: editorDeps, role: "editor", ownership: partition.ownership })
+      editorIds.push(id)
+    }
+    levels.push(editorIds)
+    if (options.includeIntegrator ?? true) {
+      integratorNodeId = "integrator"
+      nodes.push({ id: integratorNodeId, description: "Integrate validated editor commits in deterministic order.", worker: "orch-integrator", dependsOn: editorIds, role: "integrator" })
+      levels.push([integratorNodeId])
+    }
+  }
+  return { nodes, levels, maxParallel: levels.reduce((max, level) => Math.max(max, level.length), 0), ...(mergerNodeId ? { mergerNodeId } : {}), ...(integratorNodeId ? { integratorNodeId } : {}) }
 }
 
 export function validatePlan(plan: TaskPlan): string[] {
@@ -94,8 +118,10 @@ export function validatePlan(plan: TaskPlan): string[] {
   const problems: string[] = []
   for (const node of plan.nodes) {
     if (byId.has(node.id)) problems.push("duplicate node " + node.id)
+    if (node.role === "editor" && (!node.ownership || node.ownership.length === 0)) problems.push("editor node " + node.id + " has no ownership")
     byId.set(node.id, node)
   }
+  problems.push(...validateOwnership(plan.nodes.filter((node) => node.role === "editor").map((node) => ({ id: node.id, paths: node.ownership ?? [] }))))
   const visiting = new Set<string>(), visited = new Set<string>()
   const visit = (id: string): void => {
     if (visiting.has(id)) { problems.push("cycle includes " + id); return }

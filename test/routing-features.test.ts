@@ -123,3 +123,23 @@ test("classifier cache evicts over its entry cap", () => {
 test("fingerprints fold case and punctuation", () => {
   assert.equal(cacheFingerprint("Fix, the BUG!"), cacheFingerprint("fix the bug"))
 })
+
+test("planner adds isolated editor wave and deterministic integrator", () => {
+  const plan = planTask("architecture", [], { maxNodes: 8, editorPartitions: [
+    { id: "edit-api", description: "Implement API", ownership: ["src/api"] },
+    { id: "edit-ui", description: "Implement UI", ownership: ["src/ui"] },
+  ] })
+  assert.deepEqual(plan.levels.at(-2), ["edit-api", "edit-ui"])
+  assert.equal(plan.nodes.find((node) => node.id === "edit-api")?.role, "editor")
+  assert.deepEqual(plan.nodes.at(-1)?.dependsOn, ["edit-api", "edit-ui"])
+  assert.equal(plan.nodes.at(-1)?.role, "integrator")
+  assert.deepEqual(validatePlan(plan), [])
+})
+
+test("planner rejects overlapping editor ownership", () => {
+  const plan = planTask("architecture", [], { maxNodes: 8, editorPartitions: [
+    { id: "a", description: "A", ownership: ["src"] },
+    { id: "b", description: "B", ownership: ["src/api"] },
+  ] })
+  assert.ok(validatePlan(plan).some((problem) => problem.includes("ownership overlap")))
+})
