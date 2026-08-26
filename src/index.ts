@@ -61,12 +61,52 @@ const sessionModel = new Map<string, { providerID: string; modelID: string }>()
 // show "what the agent is doing" in the live dashboard panel. Bounded.
 const liveTexts = new Map<string, string>()
 const liveTextLengths = new Map<string, number>()
+// Estimated reasoning accumulation, split from output text so the live output
+// tok/s is not inflated by thinking output. Only lengths are kept; reasoning
+// text is never persisted (same privacy policy as output snippets).
+const liveReasoningLengths = new Map<string, number>()
+// Per-part dedupe between the two delta sources OpenCode can use:
+// `message.part.delta` carries incremental chunks, while
+// `message.part.updated` carries cumulative `part.text`. `livePartSeen` is how
+// many characters per part have already been fed from either source, so the
+// cumulative view only ever appends the unseen suffix (no double counting).
+const livePartSeen = new Map<string, number>()
+// Part type remembered from part events so reasoning deltas (which arrive with
+// field "text", same as output) can be routed to the reasoning estimate.
+const livePartKinds = new Map<string, string>()
+// Message ids finalized by message.updated; guards against a late delta
+// resurrecting an active row that no finish will ever remove.
+const finishedLiveMessages = new Set<string>()
 
 function pruneOldest(map: Map<string, string>): void {
   while (map.size > MAX_TEXT_BUFFERS) {
     const oldest = map.keys().next().value
     if (oldest === undefined) break
     map.delete(oldest)
+  }
+}
+
+function pruneLiveAccumulators(): void {
+  const pruneNumberMap = (map: Map<string, number>): void => {
+    while (map.size > MAX_TEXT_BUFFERS) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
+    }
+  }
+  pruneNumberMap(liveReasoningLengths)
+  const pruneSeen = (map: Map<string, number>): void => {
+    while (map.size > MAX_TEXT_BUFFERS * 4) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
+    }
+  }
+  pruneSeen(livePartSeen)
+  while (livePartKinds.size > MAX_TEXT_BUFFERS * 4) {
+    const oldest = livePartKinds.keys().next().value
+    if (oldest === undefined) break
+    livePartKinds.delete(oldest)
   }
 }
 
@@ -84,6 +124,38 @@ function appendLiveText(messageID: string, delta: string): { text: string; chars
     liveTextLengths.delete(oldest)
   }
   return { text: next.length > 240 ? next.slice(-240) : next, chars }
+}
+
+/** Accumulate reasoning length only; reasoning text itself is never stored. */
+function appendLiveReasoning(messageID: string, delta: string): number {
+  const chars = (liveReasoningLengths.get(messageID) ?? 0) + delta.length
+  liveReasoningLengths.set(messageID, chars)
+  while (liveReasoningLengths.size > MAX_TEXT_BUFFERS) {
+    const oldest = liveReasoningLengths.keys().next().value
+    if (oldest === undefined) break
+    liveReasoningLengths.delete(oldest)
+  }
+  return chars
+}
+
+/**
+ * OpenCode 1.18.x streams text in dedicated `message.part.delta` events
+ * ({sessionID, messageID, partID, field, delta}); the v1 plugin Event union
+ * predates that event type, so it is declared and guarded locally.
+ */
+interface LivePartDeltaEvent {
+  type: "message.part.delta"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+    field: string
+    delta: string
+  }
+}
+
+function isLivePartDeltaEvent(event: unknown): event is LivePartDeltaEvent {
+  return typeof event === "object" && event !== null && (event as { type?: unknown }).type === "message.part.delta"
 }
 
 function trackStreamDelta(sessionID: string, part: { id: string; messageID: string }, delta: string): void {
@@ -177,6 +249,48 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     if (resolution.status !== "paid") return undefined
     return { input: resolution.input ?? 0, output: resolution.output ?? 0 }
   }, 200, 450, orchestra.telemetry.storeTexts)
+  /**
+   * Feed one incremental text chunk into the live stream + stream observer.
+   * Reasoning parts (announced earlier via `message.part.updated` part.type)
+   * are routed to the reasoning estimate so the dashboard output tok/s stays
+   * meaningful. Deduplicated against the cumulative part.updated view through
+   * `livePartSeen`, and skipped for already-finalized messages.
+   */
+  const feedLiveStream = (sessionID: string, messageID: string, partID: string, delta: string): void => {
+    if (!delta || finishedLiveMessages.has(messageID)) return
+    const model = sessionModel.get(sessionID)
+    const kind = livePartKinds.get(partID)
+    const seen = livePartSeen.get(partID) ?? 0
+    livePartSeen.set(partID, seen + delta.length)
+    trackStreamDelta(sessionID, { id: partID, messageID }, delta)
+    if (kind === "reasoning") {
+      const reasoningChars = appendLiveReasoning(messageID, delta)
+      const output = liveTexts.get(messageID)
+      live.delta({
+        key: messageID,
+        sessionID,
+        agent: sessionAgent.get(sessionID),
+        // Keep the last output snippet: reasoning text must not overwrite it.
+        text: output === undefined ? "" : output.length > 240 ? output.slice(-240) + "…" : output,
+        chars: liveTextLengths.get(messageID) ?? 0,
+        reasoningChars,
+        provider: model?.providerID,
+        model: model?.modelID,
+      })
+    } else {
+      const text = appendLiveText(messageID, delta)
+      live.delta({
+        key: messageID,
+        sessionID,
+        agent: sessionAgent.get(sessionID),
+        text: text.text,
+        chars: text.chars,
+        reasoningChars: liveReasoningLengths.get(messageID) ?? 0,
+        provider: model?.providerID,
+        model: model?.modelID,
+      })
+    }
+  }
   const systemHint = primarySystemHint(orchestra)
   const pluginStatus: PluginStatus = {
     name: PACKAGE_NAME,
@@ -255,6 +369,10 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       replyBuffers.clear()
       liveTexts.clear()
       liveTextLengths.clear()
+      liveReasoningLengths.clear()
+      livePartSeen.clear()
+      livePartKinds.clear()
+      finishedLiveMessages.clear()
       sessionAgent.clear()
       sessionModel.clear()
       streamObservers.clear()
@@ -286,7 +404,10 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (event.type === "message.part.updated") {
         const part = event.properties.part
         const delta = event.properties.delta ?? ""
-        trackStreamDelta(part.sessionID, part, delta)
+        // Remember the part type: reasoning deltas arrive through the channel
+        // below with field "text" and can only be split off via this record.
+        livePartKinds.set(part.id, part.type)
+        pruneLiveAccumulators()
         // Assistant messages announce themselves via assistant-only part kinds
         // (step-start begins every LLM step; reasoning/tool parts never appear
         // in user messages). LiveStream.start() is idempotent per key, so this
@@ -302,18 +423,25 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
           })
         }
         if (delta) {
-          const model = sessionModel.get(part.sessionID)
-          const liveText = appendLiveText(part.messageID, delta)
-          live.delta({
-            key: part.messageID,
-            sessionID: part.sessionID,
-            agent: sessionAgent.get(part.sessionID),
-            text: liveText.text,
-            chars: liveText.chars,
-            provider: model?.providerID,
-            model: model?.modelID,
-          })
+          // Legacy/older runtimes deliver incremental deltas here.
+          feedLiveStream(part.sessionID, part.messageID, part.id, delta)
+        } else if (typeof (part as { text?: unknown }).text === "string") {
+          // Fallback for runtimes that only publish cumulative `part.text`
+          // (bootstrap replay / non-streaming paths): feed the unseen suffix.
+          const cumulative = (part as { text: string }).text
+          const seen = livePartSeen.get(part.id) ?? 0
+          if (cumulative.length > seen) {
+            livePartSeen.set(part.id, cumulative.length)
+            feedLiveStream(part.sessionID, part.messageID, part.id, cumulative.slice(seen))
+          }
         }
+        return
+      }
+      const candidate = event as unknown
+      if (isLivePartDeltaEvent(candidate)) {
+        const properties = candidate.properties
+        if (properties.field !== "text") return
+        feedLiveStream(properties.sessionID, properties.messageID, properties.partID, properties.delta)
         return
       }
       if (event.type !== "message.updated") return
@@ -347,6 +475,14 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       })
       liveTexts.delete(info.id)
       liveTextLengths.delete(info.id)
+      liveReasoningLengths.delete(info.id)
+      // Later parts must not resurrect the finished row as a fresh active one.
+      finishedLiveMessages.add(info.id)
+      while (finishedLiveMessages.size > MAX_TEXT_BUFFERS * 2) {
+        const oldest = finishedLiveMessages.values().next().value
+        if (oldest === undefined) break
+        finishedLiveMessages.delete(oldest)
+      }
       await ledger.recordAssistant(info)
       if (storeTextsFlag) {
         const prompt = promptBuffers.get(info.sessionID)

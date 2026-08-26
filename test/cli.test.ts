@@ -13,22 +13,31 @@ async function writeExecutable(file: string, script: string): Promise<void> {
   await chmod(file, 0o755)
 }
 
-/** Fake toolchain that shadows the real uv/uvx/memorygraph on this machine. */
+/**
+ * Fake toolchain that shadows the real uv/uvx/memorygraph on this machine.
+ * Windows cannot natively spawn shell scripts, so the fakes are written as
+ * .cmd batch files there (still resolved via PATH and ~/.local/bin).
+ */
 async function fakeToolchain(prefix: string): Promise<{ bin: string; home: string; uvx: string }> {
   const bin = path.join(prefix, "bin")
   const home = path.join(prefix, "home")
   const homeBin = path.join(home, ".local", "bin")
   await mkdir(bin, { recursive: true })
   await mkdir(homeBin, { recursive: true })
+  const win = process.platform === "win32"
+  const failingExecutable = win ? "@echo off\r\n@exit /b 1\r\n" : "#!/bin/sh\nexit 1\n"
+  const workingUv = win
+    ? "@echo off\r\n@if \"%1\"==\"--version\" exit /b 0\r\n@exit /b 1\r\n"
+    : '#!/bin/sh\nif [ "$1" = "--version" ]; then exit 0; fi\nexit 1\n'
   // Shadow real PATH hits so provisioning is exercised deterministically.
-  await writeExecutable(path.join(bin, "uv"), "#!/bin/sh\nexit 1\n")
-  await writeExecutable(path.join(bin, "memorygraph"), "#!/bin/sh\nexit 1\n")
-  await writeExecutable(path.join(bin, "uvx"), "#!/bin/sh\nexit 1\n")
+  await writeExecutable(path.join(bin, win ? "uv.cmd" : "uv"), failingExecutable)
+  await writeExecutable(path.join(bin, win ? "memorygraph.cmd" : "memorygraph"), failingExecutable)
+  await writeExecutable(path.join(bin, win ? "uvx.cmd" : "uvx"), failingExecutable)
   // Absolute-path candidates found via ~/.local/bin: uv passes the
   // --version probe (so ensureUv accepts it) but fails every real command.
-  await writeExecutable(path.join(homeBin, "uv"), '#!/bin/sh\nif [ "$1" = "--version" ]; then exit 0; fi\nexit 1\n')
-  const uvx = path.join(homeBin, "uvx")
-  await writeExecutable(uvx, "#!/bin/sh\nexit 0\n")
+  await writeExecutable(path.join(homeBin, win ? "uv.cmd" : "uv"), workingUv)
+  const uvx = path.join(homeBin, win ? "uvx.cmd" : "uvx")
+  await writeExecutable(uvx, win ? "@echo off\r\n@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n")
   return { bin, home, uvx }
 }
 
@@ -390,7 +399,9 @@ test("memoryGraph provisioning failure skips the MCP entry when no uvx is availa
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-uvx-missing-"))
   const { bin, home } = await fakeToolchain(directory)
   // Broken uvx everywhere: the absolute-path candidate must fail too.
-  await writeExecutable(path.join(home, ".local", "bin", "uvx"), "#!/bin/sh\nexit 1\n")
+  const win = process.platform === "win32"
+  const brokenUvx = path.join(home, ".local", "bin", win ? "uvx.cmd" : "uvx")
+  await writeExecutable(brokenUvx, win ? "@echo off\r\n@exit /b 1\r\n" : "#!/bin/sh\nexit 1\n")
 
   const originalPath = process.env.PATH
   const originalHome = process.env.HOME

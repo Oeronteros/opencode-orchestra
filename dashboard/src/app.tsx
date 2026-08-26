@@ -343,7 +343,7 @@ function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
           <strong>{liveAgentName(row.agent)}</strong>
           <span>{row.provider && row.model ? row.provider + "/" + row.model : "модель…"}</span>
         </div>
-        <p className="live-snippet">{row.text || "начинает отвечать…"}</p>
+        <p className="live-snippet">{row.text || (row.tokens.output + row.tokens.reasoning > 0 ? "генерирует…" : "начинает отвечать…")}</p>
         <div className="live-stats">
           <span>{seconds + "s"}</span>
           <span>{formatNumber(row.tokens.output) + " output (" + formatNumber(row.tokens.reasoning) + " reasoning)"}</span>

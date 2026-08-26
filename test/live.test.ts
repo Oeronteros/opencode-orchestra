@@ -103,6 +103,33 @@ test("estimateLiveCost prices text and estimates tokens", () => {
   assert.equal(estimateLiveCost(40, undefined, 100).cost, 0)
 })
 
+test("estimateLiveCost estimates reasoning tokens separately from output", () => {
+  const est = estimateLiveCost(16, PRICE, 100, 80)
+  assert.equal(est.output, 4)
+  assert.equal(est.reasoning, 20)
+  assert.equal(est.input, 100)
+  // Reasoning text is not priced (no reasoning price in the price model).
+  assert.equal(est.cost, (100 * PRICE.input + 4 * PRICE.output) / 1_000_000)
+})
+
+test("LiveStream tracks reasoning separately from output tokens", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-reasoning-"))
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5, true)
+  live.delta({ key: "r1", text: "an output chunk from the agent", chars: 32, reasoningChars: 400 })
+  const row = live.current().active[0]!
+  assert.equal(row.tokens.output, 8)
+  assert.equal(row.tokens.reasoning, 100)
+  // The estimate does not leak reasoning into the output tok/s math.
+  live.delta({ key: "r1", text: "more output", chars: 64, reasoningChars: 800 })
+  const grown = live.current().active[0]!
+  assert.equal(grown.tokens.output, 16)
+  assert.equal(grown.tokens.reasoning, 200)
+  // The internal reasoning counter never leaks into the snapshot.
+  assert.equal((grown as unknown as Record<string, unknown>).reasoningChars, undefined)
+  assert.ok(grown.cost > row.cost)
+  await live.dispose()
+})
+
 test("parseLiveSnapshot tolerates malformed input", () => {
   const empty = parseLiveSnapshot("not json")
   assert.deepEqual(empty.active, [])

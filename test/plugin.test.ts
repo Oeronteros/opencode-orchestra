@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
+import { mkdtemp, readFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 import pluginModule, { OrchestraPlugin, server } from "../src/index.js"
+import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
 
 test("entrypoint exposes a stable id and server", () => {
   assert.equal(pluginModule.id, "opencode-orchestra")
@@ -69,4 +73,121 @@ test("ebobo routes the full worker roster with frontier arbitration", async () =
   assert.equal(result.workers.length, 9)
   assert.equal(result.parallelWorkers, 8)
   assert.equal(result.escalation.escalate, true)
+})
+
+test("event hook feeds the live stream from message.part.delta without double counting", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-hook-"))
+  const project = path.join(root, "project")
+  const initialize = OrchestraPlugin as unknown as (
+    input: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+  const hooks = await initialize(
+    {
+      directory: project,
+      client: { app: { log: async () => undefined } },
+    },
+    { telemetry: { enabled: true, storeTexts: true } },
+  )
+  const emit = hooks.event as (input: { event: unknown }) => Promise<void>
+  const file = path.join(project, ".orchestra", "live.ndjson")
+  const readSnapshot = async (): Promise<LiveSnapshot> => parseLiveSnapshot(await readFile(file, "utf8"))
+  const waitFor = async (predicate: (snapshot: LiveSnapshot) => boolean): Promise<LiveSnapshot> => {
+    for (let i = 0; i < 120; i++) {
+      try {
+        const snapshot = await readSnapshot()
+        if (predicate(snapshot)) return snapshot
+      } catch {
+        // Snapshot not flushed yet.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    return readSnapshot()
+  }
+
+  // Attribute agent/model like chat.params would for a real stream.
+  const chatParams = hooks["chat.params"] as (input: {
+    sessionID: string
+    agent?: string
+    model?: { providerID: string; modelID?: string }
+  }) => Promise<void>
+  await chatParams({ sessionID: "s1", agent: "orch-repo", model: { providerID: "opencode", modelID: "deepseek-v4-flash-free" } })
+  // A text part announces itself (empty text at start), then chunks stream in.
+  await emit({
+    event: {
+      type: "message.part.updated",
+      properties: { sessionID: "s1", part: { id: "p1", sessionID: "s1", messageID: "msg-1", type: "text", text: "" } },
+    },
+  })
+  await emit({
+    event: {
+      type: "message.part.delta",
+      properties: { sessionID: "s1", messageID: "msg-1", partID: "p1", field: "text", delta: "Hello world, a live answer while it streams." },
+    },
+  })
+  const live = await waitFor((snapshot) => snapshot.active.length === 1 && snapshot.active[0]!.tokens.output > 0)
+  assert.equal(live.active[0]?.agent, "orch-repo")
+  assert.equal(live.active[0]?.model, "deepseek-v4-flash-free")
+  assert.equal(live.active[0]?.tokens.output, 11)
+  assert.ok(live.recent.some((event) => event.e === "delta" && event.text === "Hello world, a live answer while it streams."))
+
+  // Reasoning deltas (same field "text", different part id) are routed to the
+  // reasoning estimate and never pollute the output counter.
+  await emit({
+    event: {
+      type: "message.part.updated",
+      properties: { sessionID: "s1", part: { id: "p2", sessionID: "s1", messageID: "msg-1", type: "reasoning", text: "tracing" } },
+    },
+  })
+  await emit({
+    event: {
+      type: "message.part.delta",
+      properties: { sessionID: "s1", messageID: "msg-1", partID: "p2", field: "text", delta: "thinking hard about the issue" },
+    },
+  })
+  const reasoning = await waitFor((snapshot) => (snapshot.active[0]?.tokens.reasoning ?? 0) > 0)
+  assert.equal(reasoning.active[0]?.tokens.output, 11)
+  assert.equal(reasoning.active[0]?.tokens.reasoning, 9)
+
+  // A cumulative part.updated with the same content must not re-add text.
+  const before = await readSnapshot()
+  await emit({
+    event: {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: { id: "p1", sessionID: "s1", messageID: "msg-1", type: "text", text: "Hello world, a live answer while it streams." },
+      },
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  const after = await readSnapshot()
+  assert.equal(after.active[0]?.tokens.output, before.active[0]?.tokens.output)
+
+  // Finish removes the row; a late delta must not resurrect it.
+  await emit({
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg-1",
+          sessionID: "s1",
+          role: "assistant",
+          time: { completed: Date.now() },
+          finish: "complete",
+          cost: 0.001,
+          tokens: { input: 10, output: 10, reasoning: 2 },
+        },
+      },
+    },
+  })
+  await emit({
+    event: {
+      type: "message.part.delta",
+      properties: { sessionID: "s1", messageID: "msg-1", partID: "p1", field: "text", delta: "zombie text" },
+    },
+  })
+  const ended = await waitFor((snapshot) => snapshot.active.length === 0 && snapshot.seq > 0)
+  assert.equal(ended.active.length, 0)
+  await (hooks.dispose as () => Promise<void>)()
 })

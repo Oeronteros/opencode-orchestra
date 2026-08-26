@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -132,16 +132,25 @@ test("runDoctor probes the full argv for multi-command local MCPs", async () => 
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-argv-"))
   const bin = path.join(directory, "bin")
   await mkdir(bin, { recursive: true })
-  const fakeUvx = path.join(bin, "uvx")
+  const win = process.platform === "win32"
+  const fakeUvx = path.join(bin, win ? "uvx.cmd" : "uvx")
   await writeFile(
     fakeUvx,
-    [
-      "#!/bin/sh",
-      'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then exit 0; fi',
-      'if [ "$#" -eq 2 ] && [ "$1" = "memorygraph" ] && [ "$2" = "--version" ]; then exit 0; fi',
-      "exit 1",
-      "",
-    ].join("\n"),
+    win
+      ? [
+          "@echo off",
+          'if "%1"=="--version" if "%2"=="" exit /b 0',
+          'if "%1"=="memorygraph" if "%2"=="--version" exit /b 0',
+          "exit /b 1",
+          "",
+        ].join("\r\n")
+      : [
+          "#!/bin/sh",
+          'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then exit 0; fi',
+          'if [ "$#" -eq 2 ] && [ "$1" = "memorygraph" ] && [ "$2" = "--version" ]; then exit 0; fi',
+          "exit 1",
+          "",
+        ].join("\n"),
     "utf8",
   )
   await chmod(fakeUvx, 0o755)
@@ -165,4 +174,84 @@ test("runDoctor probes the full argv for multi-command local MCPs", async () => 
   const broken = await runDoctor({ configDirectory: directory })
   const warning = broken.checks.find((c: Check) => c.id === "mcp-memorygraph")
   assert.equal(warning?.status, "warning")
+})
+
+test("runDoctor probes duplicate tool candidates once and honors HOME for ~/.local/bin", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-dedupe-"))
+  const win = process.platform === "win32"
+  const ext = win ? ".cmd" : ""
+  const home = path.join(directory, "home")
+  const homeBin = path.join(home, ".local", "bin")
+  await mkdir(homeBin, { recursive: true })
+  const counter = path.join(directory, "probes.txt")
+
+  // Fake uv: passes --version and reports ~/.local/bin as its tool bin dir,
+  // so the memorygraph candidate list contains the same path twice.
+  await writeFile(
+    path.join(homeBin, `uv${ext}`),
+    win
+      ? [
+          "@echo off",
+          'if "%1"=="--version" echo uv 1.2.3',
+          'if "%1"=="--version" exit /b 0',
+          'if "%1"=="tool" if "%2"=="dir" if "%3"=="--bin" echo ' + homeBin,
+          "exit /b 1",
+          "",
+        ].join("\r\n")
+      : [
+          "#!/bin/sh",
+          'if [ "$1" = "--version" ]; then echo "uv 1.2.3"; exit 0; fi',
+          'if [ "$1" = "tool" ] && [ "$2" = "dir" ] && [ "$3" = "--bin" ]; then echo "' + homeBin + '"; fi',
+          "exit 1",
+          "",
+        ].join("\n"),
+    "utf8",
+  )
+  await chmod(path.join(homeBin, `uv${ext}`), 0o755)
+
+  // Fake memorygraph: every probe appends to the counter file and fails.
+  await writeFile(
+    path.join(homeBin, `memorygraph${ext}`),
+    win
+      ? ["@echo off", `echo probed>>"${counter}"`, "@exit /b 1", ""].join("\r\n")
+      : ['#!/bin/sh', `echo probed >> "${counter}"`, "exit 1", ""].join("\n"),
+    "utf8",
+  )
+  await chmod(path.join(homeBin, `memorygraph${ext}`), 0o755)
+
+  const configDirectory = path.join(directory, "config")
+  await mkdir(configDirectory, { recursive: true })
+  await writeFile(
+    path.join(configDirectory, "opencode.json"),
+    JSON.stringify({ plugin: ["@oeronteros-1/opencode-orchestra@latest"] }),
+    "utf8",
+  )
+
+  const originalPath = process.env.PATH
+  const originalHome = process.env.HOME
+  const originalLocalAppData = process.env.LOCALAPPDATA
+  // Bare-name candidates must resolve to nothing (PATH empty), so only the
+  // absolute ~/.local/bin candidates can execute the counter fake.
+  delete process.env.PATH
+  process.env.HOME = home
+  delete process.env.LOCALAPPDATA
+  try {
+    const report = await runDoctor({ configDirectory })
+    const byId = new Map(report.checks.map((c: Check) => [c.id, c]))
+    assert.equal(byId.get("uv")?.status, "ok")
+    assert.match(byId.get("uv")?.detail ?? "", /uv 1\.2\.3/)
+    assert.equal(byId.get("memorygraph")?.status, "warning")
+
+    const probes = (await readFile(counter, "utf8")).split("\n").filter((line) => line.trim()).length
+    // uv's tool bin dir equals ~/.local/bin, so the duplicated candidate is
+    // probed exactly once instead of twice.
+    assert.equal(probes, 1)
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH
+    else process.env.PATH = originalPath
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+    if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA
+    else process.env.LOCALAPPDATA = originalLocalAppData
+  }
 })

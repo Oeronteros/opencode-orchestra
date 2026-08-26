@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises"
-import { spawnSync } from "node:child_process"
 import os from "node:os"
 import path from "node:path"
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser"
 import { openCodeConfigDirectory } from "../config/paths.js"
 import { resolvePluginVersion } from "../plugin-status.js"
+import { homeDirectory, spawnWithCmdFallback } from "../spawn.js"
 
 export const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 
@@ -34,15 +34,24 @@ function formatVersion(value: string | undefined): string {
   return value && value.trim() ? value.trim() : "unknown"
 }
 
+/**
+ * Probe a command's exit status. Native spawn first; Windows cannot spawn
+ * `.cmd`/`.bat` shims or scripts directly, so those retry through cmd.exe
+ * (skipped for inputs cmd.exe could reinterpret — see spawn.ts).
+ */
+function probeStatus(command: string, args: string[]): number | null {
+  return spawnWithCmdFallback(command, args, { stdio: "ignore" }).status
+}
+
 function isExecutable(pathLike: string): boolean {
-  return spawnSync(pathLike, ["--version"], { stdio: "ignore" }).status === 0
+  return probeStatus(pathLike, ["--version"]) === 0
 }
 
 /** Resolve the first executable from a list of candidates. */
 function executable(candidates: string[]): string | undefined {
   return candidates.find((name) => {
     try {
-      return spawnSync(name, ["--version"], { stdio: "ignore" }).status === 0
+      return probeStatus(name, ["--version"]) === 0
     } catch {
       return false
     }
@@ -50,8 +59,8 @@ function executable(candidates: string[]): string | undefined {
 }
 
 function captureVersion(command: string, args: string[]): string | undefined {
-  const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-  return result.status === 0 ? result.stdout.trim().split(/\r?\n/)[0] : undefined
+  const result = spawnWithCmdFallback(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+  return result.status === 0 ? String(result.stdout).trim().split(/\r?\n/)[0] : undefined
 }
 
 function pluginName(entry: unknown): string | undefined {
@@ -170,7 +179,7 @@ export function collectLocalMcps(parsed: Record<string, unknown>): {
       resolved = executable(argv)
     } else {
       const first = argv[0]
-      if (first && isExecutable(first) && spawnSync(first, [...argv.slice(1), "--version"], { stdio: "ignore" }).status === 0) {
+      if (first && isExecutable(first) && probeStatus(first, [...argv.slice(1), "--version"]) === 0) {
         resolved = argv.join(" ")
       }
     }
@@ -181,14 +190,21 @@ export function collectLocalMcps(parsed: Record<string, unknown>): {
 
 /** Resolve an executable from candidate paths, returning its version too. */
 function resolveExecutable(candidates: string[], versionArgs: string[]): { executable: string | undefined; version: string | undefined } {
-  const found = candidates.find((c) => isExecutable(c))
+  // Dedupe: uv's tool dir and ~/.local/bin often point at the same folder,
+  // and probing a slow tool twice would double the doctor's runtime.
+  const found = [...new Set(candidates)].find((c) => isExecutable(c))
   if (!found) return { executable: undefined, version: undefined }
   return { executable: found, version: captureVersion(found, versionArgs) }
 }
 
-function localBin(name: string): string {
-  const ext = process.platform === "win32" ? ".exe" : ""
-  return path.join(os.homedir(), ".local", "bin", `${name}${ext}`)
+function localBinCandidates(name: string): string[] {
+  const base = path.join(homeDirectory(), ".local", "bin")
+  if (process.platform === "win32") {
+    // Native installs are `.exe`; `.cmd` shims (uv launchers, npm-style
+    // wrappers) are accepted too so discovery matches the CLI's behavior.
+    return [path.join(base, `${name}.exe`), path.join(base, `${name}.cmd`)]
+  }
+  return [path.join(base, name)]
 }
 
 /** Candidate install locations for uv across platforms. */
@@ -200,8 +216,8 @@ function uvCandidates(): { label: string; paths: string[] }[] {
       paths: [path.join(process.env.LOCALAPPDATA, "Programs", "uv", "uv.exe")],
     })
   }
-  candidates.push({ label: "~/.local/bin", paths: [localBin("uv")] })
-  candidates.push({ label: "~/.cargo/bin", paths: [path.join(os.homedir(), ".cargo", "bin", executableName("uv"))] })
+  candidates.push({ label: "~/.local/bin", paths: localBinCandidates("uv") })
+  candidates.push({ label: "~/.cargo/bin", paths: [path.join(homeDirectory(), ".cargo", "bin", executableName("uv"))] })
   return candidates
 }
 
@@ -348,8 +364,8 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const memorygraphBin = (() => {
     if (!uv.executable) return undefined
     try {
-      const dir = spawnSync(uv.executable, ["tool", "dir", "--bin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-      return dir.status === 0 ? dir.stdout.trim() : undefined
+      const dir = spawnWithCmdFallback(uv.executable, ["tool", "dir", "--bin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      return dir.status === 0 ? String(dir.stdout).trim() : undefined
     } catch {
       return undefined
     }
@@ -357,7 +373,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   const memorygraph = resolveExecutable(
     [
       ...(memorygraphBin ? [path.join(memorygraphBin, executableName("memorygraph"))] : []),
-      localBin("memorygraph"),
+      ...localBinCandidates("memorygraph"),
       "memorygraph",
     ],
     ["--version"],
@@ -372,7 +388,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 
   const codebaseMemoryCandidates = [
     "codebase-memory-mcp",
-    localBin("codebase-memory-mcp"),
+    ...localBinCandidates("codebase-memory-mcp"),
     ...(process.platform === "win32" && process.env.LOCALAPPDATA
       ? [path.join(process.env.LOCALAPPDATA, "Programs", "codebase-memory-mcp", "codebase-memory-mcp.exe")]
       : []),

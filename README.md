@@ -14,18 +14,34 @@
 - диагностика `doctor`, проверка обновлений и shell completion;
 - идемпотентная установка без удаления пользовательской OpenCode/MCP-конфигурации.
 
-Версия плагина — **1.0.13**. Контракт 1.0 описан в [CHANGELOG.md](CHANGELOG.md) (входит в npm-пакет). GitHub release notes: [GITHUB_RELEASE_1.0.0.md](GITHUB_RELEASE_1.0.0.md), [GITHUB_RELEASE_1.0.7.md](GITHUB_RELEASE_1.0.7.md).
+Версия плагина — **1.0.25**. Полный контракт конфигурации описан в [schema/opencode-orchestra.schema.json](schema/opencode-orchestra.schema.json), рабочий пример — в [examples/.opencode/orchestra.jsonc](examples/.opencode/orchestra.jsonc).
 
-## Что нового в 1.0.9–1.0.13
+## Что нового в 1.0.9–1.0.25
 
 Полноценные разделы с примерами для пользователей.
+
+### 1.0.24–1.0.25 — параллельные редакторы и Windows-совместимость
+
+- **Параллельные редакторы**: `orchestration.parallelEditors` включает безопасный fan-out/fan-in для правок: каждый `orch-editor` работает в отдельном experimental Git worktree, а `orch-integrator` проверяет фактический diff и интегрирует коммиты в детерминированном порядке. При конфликте worktrees сохраняются для диагностики; `0` (по умолчанию) отключает режим.
+- **Windows-совместимость**: установщик и `doctor` теперь запускают `.cmd`/`.bat` shims и скрипты через `cmd.exe` (например, `uv.cmd` или `memorygraph.cmd` в `~/.local/bin`), а поиск инструментов учитывает переменную `HOME` и варианты `.exe`/`.cmd`. `doctor` дополнительно дедуплицирует кандидатов, когда `uv tool dir` и `~/.local/bin` указывают на одну папку, — диагностика не тратит время на повторные пробы.
+
+### 1.0.21–1.0.23 — установщик и OpenRouter-цены
+
+- **Установщик**: добавляет путь к навыкам Superpowers в `skills.paths` (работает даже там, где git-спека не установилась), приводит `agent.orch-lead` к `mode: "primary"` + `hidden: false` и больше не трогает явные версии/теги плагинов — на `@latest` обновляется только «голое» имя пакета.
+- **OpenRouter-фолбэк цен**: для моделей без цены провайдера можно включить `pricing.openrouter.enabled` — публичный каталог OpenRouter (`/api/v1/models`, без API-ключа) кэшируется на `ttlHours` и не ломает офлайн-оценку при недоступности сети.
+
+### 1.0.14–1.0.16 — live-панель и реестр проектов
+
+- **Live-панель в dashboard**: показывает, какие агенты генерируют прямо сейчас, короткий сниппет их вывода, оценочную стоимость и токены. Поток мостится через файловый snapshot + SSE, поэтому работает между процессами плагина и dashboard.
+- **Реестр проектов**: плагин регистрирует открытые проекты в `orchestra-projects.json`, dashboard переключается между ними.
+- **`/orchestra` закреплён за `orch-lead`**: команда вызывает `orchestra_route`, после чего lead сам выполняет план — диспетчеризация workers, `orch-merge`, правки и проверка.
 
 ### 1.0.13 — первичный агент и стабильность
 
 - **Первичный агент `orch-lead`**: ведущий агент не только координирует специалистов, но и сам редактирует файлы, запускает проверку и завершает пользовательскую задачу. Файловые операции разрешены, а shell-команды требуют подтверждения OpenCode. В `/plugin-status` и логах сессии `orch-lead` отображается как главный исполнитель, а не скрытый специалист. Пример вывода:
   ```text
   /plugin-status
-  Primary agent: orch-lead (v1.0.13)
+  Primary agent: orch-lead (v1.0.25)
   Budget: balanced
   Strategy: auto
   ```
@@ -73,7 +89,7 @@ CLI использует Bun напрямую, поэтому отдельный
 
 Установщик идемпотентен. Существующие настройки MCP он сохраняет; заменить их стандартными значениями можно только через `--force`.
 
-На Linux и macOS используются официальные shell-инсталляторы Codebase Memory и uv. На Windows загружаются официальные PowerShell-инсталляторы, исполняемые с временным `ExecutionPolicy Bypass`; Codebase Memory устанавливается в `%LOCALAPPDATA%`, а пути к `uv` и MemoryGraph определяются автоматически. Сам установщик Orchestra не изменяет системные каталоги.
+На Linux и macOS используются официальные shell-инсталляторы Codebase Memory и uv. На Windows загружаются официальные PowerShell-инсталляторы, исполняемые с временным `ExecutionPolicy Bypass`; Codebase Memory устанавливается в `%LOCALAPPDATA%`, а пути к `uv` и MemoryGraph определяются автоматически. Сам установщик Orchestra не изменяет системные каталоги. Поиск инструментов на Windows учитывает `.cmd`/`.bat` shims (`uv.cmd`, `memorygraph.cmd` и т.п.) и запускает их через `cmd.exe`, а переменная `HOME` имеет приоритет при определении `~/.local/bin`.
 
 Superpowers — фреймворк навыков для агентов (obra/superpowers) — добавляется в массив `plugin` официальной git-спекой и устанавливается через плагин-менеджер OpenCode. На некоторых Windows-сборках OpenCode git-спеки могут не установиться из-за проблем с путями кэша и `git.exe`; в этом случае выполните `npm install superpowers@git+https://github.com/obra/superpowers.git --prefix "$HOME\.config\opencode"` и добавьте запись `"~/.config/opencode/node_modules/superpowers"` в `plugin`.
 
@@ -333,6 +349,7 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
 - фактическую стоимость, которую возвращает провайдер;
 - расходы и нагрузку по моделям и агентам;
 - виртуализированный журнал activity; тексты промптов и ответов отключены по умолчанию и сохраняются только при явном `telemetry.storeTexts: true`;
+- live-панель: какие агенты генерируют прямо сейчас, сниппет их вывода, оценочная стоимость и токены;
 - статус Context7, Codebase Memory, MemoryGraph;
 - настройку режимов `eco`, `balanced`, `quality`, `ebobo` и моделей отдельных агентов;
 - месячный прогноз, детектирование аномалий и экспорт activity/models/agents/daily/summary в CSV или JSON.

@@ -85,6 +85,8 @@ export interface LiveSnapshot {
 interface ActiveState extends LiveActiveAgent {
   lastSeq: number
   chars: number
+  /** Accumulated reasoning length, estimated separately from output `chars`. */
+  reasoningChars: number
 }
 
 const MAX_RECENT = 200
@@ -127,14 +129,16 @@ export function estimateLiveCost(
   chars: number,
   price: LiveTokenPrice | undefined,
   assumedInput = 1500,
-): { cost: number; input: number; output: number } {
+  reasoningChars = 0,
+): { cost: number; input: number; output: number; reasoning: number } {
   const output = estimateOutputTokens(chars)
+  const reasoning = Math.max(0, Math.floor(reasoningChars / 4))
   const input = assumedInput
   let cost = 0
   if (price) {
     cost = (input * price.input + output * price.output) / 1_000_000
   }
-  return { cost, input, output }
+  return { cost, input, output, reasoning }
 }
 
 export class LiveStream {
@@ -204,6 +208,7 @@ export class LiveStream {
       tokens: { input: est.input, output: 0, reasoning: 0 },
       lastSeq: this.seq,
       chars: 0,
+      reasoningChars: 0,
     })
     this.makeEvent({
       e: "start",
@@ -229,6 +234,8 @@ export class LiveStream {
     text: string
     /** Total generated characters observed for this response. */
     chars?: number | undefined
+    /** Total reasoning characters observed for this response. */
+    reasoningChars?: number | undefined
     sessionID?: string | undefined
     agent?: string | undefined
     provider?: string | undefined
@@ -258,13 +265,14 @@ export class LiveStream {
     const snippet = input.text.length > 240 ? `${input.text.slice(-240)}…` : input.text
     existing.text = this.storeTexts ? snippet : ""
     existing.chars = Math.max(existing.chars, input.chars ?? input.text.length)
+    existing.reasoningChars = Math.max(existing.reasoningChars, input.reasoningChars ?? 0)
     existing.confidence = input.confidence
     existing.flags = input.flags
     existing.lastSeq = this.seq
     const price = this.estimatePrice(input.provider ?? existing.provider, input.model ?? existing.model)
-    const est = estimateLiveCost(existing.chars, price)
+    const est = estimateLiveCost(existing.chars, price, 1500, existing.reasoningChars)
     existing.cost = est.cost
-    existing.tokens = { input: est.input, output: est.output, reasoning: 0 }
+    existing.tokens = { input: est.input, output: est.output, reasoning: est.reasoning }
     this.record({
       e: "delta",
       k: input.key,
@@ -319,7 +327,7 @@ export class LiveStream {
 
   private serialize(): LiveSnapshot {
     const active = [...this.active.values()]
-      .map(({ lastSeq: _lastSeq, chars: _chars, ...rest }) => rest)
+      .map(({ lastSeq: _lastSeq, chars: _chars, reasoningChars: _reasoningChars, ...rest }) => rest)
       .sort((a, b) => a.startedAt - b.startedAt)
     return {
       version: 1,

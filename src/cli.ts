@@ -14,6 +14,7 @@ import { completionFor, SHELL_NAMES } from "./diagnostics/completion.js"
 import { formatDoctorReport, runDoctor } from "./diagnostics/doctor.js"
 import { checkForUpdates, formatUpdateResult } from "./diagnostics/update.js"
 import { resolvePluginVersion } from "./plugin-status.js"
+import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -148,7 +149,7 @@ async function atomicWrite(file: string, content: string): Promise<void> {
 }
 
 function executable(candidates: string[]): string | undefined {
-  return candidates.find((name) => spawnSync(name, ["--version"], { stdio: "ignore" }).status === 0)
+  return candidates.find((name) => spawnWithCmdFallback(name, ["--version"], { stdio: "ignore" }).status === 0)
 }
 
 function powershell(): string | undefined {
@@ -177,12 +178,29 @@ function resolvePathExecutable(name: string): string | undefined {
   return undefined
 }
 
-function localBin(name: string): string {
-  return path.join(os.homedir(), ".local", "bin", executableName(name))
+/**
+ * Candidate `~/.local/bin` locations for a tool. Native tools are `.exe`
+ * on Windows, but `.cmd` shims are accepted so discovery works with batch
+ * shims (uv's own launchers and test fixtures) too.
+ */
+function localBinCandidates(name: string): string[] {
+  const base = path.join(homeDirectory(), ".local", "bin")
+  if (process.platform === "win32") {
+    return [path.join(base, `${name}.exe`), path.join(base, `${name}.cmd`)]
+  }
+  return [path.join(base, name)]
+}
+
+/** Executables co-located with a known command (e.g. uvx next to uv). */
+function siblingExecutables(directory: string, name: string): string[] {
+  if (process.platform === "win32") {
+    return [path.join(directory, `${name}.exe`), path.join(directory, `${name}.cmd`)]
+  }
+  return [path.join(directory, name)]
 }
 
 function codebaseMemoryCandidates(): string[] {
-  const candidates = ["codebase-memory-mcp", localBin("codebase-memory-mcp")]
+  const candidates = ["codebase-memory-mcp", ...localBinCandidates("codebase-memory-mcp")]
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
     candidates.push(path.join(process.env.LOCALAPPDATA, "Programs", "codebase-memory-mcp", "codebase-memory-mcp.exe"))
   }
@@ -190,12 +208,12 @@ function codebaseMemoryCandidates(): string[] {
 }
 
 function capture(command: string, args: string[]): string | undefined {
-  const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-  return result.status === 0 ? result.stdout.trim() : undefined
+  const result = spawnWithCmdFallback(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+  return result.status === 0 ? String(result.stdout).trim() : undefined
 }
 
 function run(command: string, args: string[], env?: NodeJS.ProcessEnv): void {
-  const result = spawnSync(command, args, { stdio: "inherit", ...(env ? { env } : {}) })
+  const result = spawnWithCmdFallback(command, args, { stdio: "inherit", ...(env ? { env } : {}) })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`Command failed (${result.status ?? "unknown"}): ${command} ${args.join(" ")}`)
 }
@@ -247,7 +265,7 @@ async function provisionCodebaseMemory(enabled: boolean): Promise<ProvisionedDep
 }
 
 async function ensureUv(): Promise<ProvisionedDependency & { command: string }> {
-  const current = executable(["uv", localBin("uv")])
+  const current = executable(["uv", ...localBinCandidates("uv")])
   if (current) return { command: current, status: "existing" }
   const windows = process.platform === "win32"
   const script = await downloadScript(
@@ -268,14 +286,14 @@ async function ensureUv(): Promise<ProvisionedDependency & { command: string }> 
   } finally {
     await rm(script.directory, { recursive: true, force: true })
   }
-  const installed = executable([localBin("uv"), "uv"])
+  const installed = executable([...localBinCandidates("uv"), "uv"])
   if (!installed) throw new Error("uv installer completed, but its executable was not found.")
   return { command: installed, status: "installed" }
 }
 
 async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDependency> {
   if (!enabled) return { command: "memorygraph", status: "skipped" }
-  const current = executable(["memorygraph", localBin("memorygraph")])
+  const current = executable(["memorygraph", ...localBinCandidates("memorygraph")])
   if (current) {
     return {
       command: current === "memorygraph" ? (resolvePathExecutable("memorygraph") ?? current) : current,
@@ -289,14 +307,14 @@ async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDepend
     const toolBin = capture(uv.command, ["tool", "dir", "--bin"])
     const installed = executable([
       ...(toolBin ? [path.join(toolBin, executableName("memorygraph"))] : []),
-      localBin("memorygraph"),
+      ...localBinCandidates("memorygraph"),
       "memorygraph",
     ])
     if (!installed) throw new Error("memorygraphMCP installed, but its executable was not found.")
     return { command: installed, status: "installed" }
   } catch (error) {
     // PyPI ships a `memorygraph` launcher; fall back to an ephemeral uvx run.
-    const uvx = executable([path.join(path.dirname(uv.command), executableName("uvx")), localBin("uvx"), "uvx"])
+    const uvx = executable([...siblingExecutables(path.dirname(uv.command), "uvx"), ...localBinCandidates("uvx"), "uvx"])
     if (!uvx) throw error
     return { command: [uvx, "memorygraph"], status: "installed", reason: `uv tool install failed (${failureReason(error)}); using ephemeral uvx` }
   }
