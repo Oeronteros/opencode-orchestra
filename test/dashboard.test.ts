@@ -154,6 +154,82 @@ test("dashboard validates the full schema on the fly and rejects invalid patches
     await dashboard.close()
   }
 })
+/**
+ * Open the /api/live SSE stream and return the first `snapshot` frame, then
+ * close the connection. Mirrors the reader loop used by the streaming test so
+ * the staleness / empty-snapshot cases can assert on the served payload.
+ */
+async function readLiveSnapshotFrame(dashboardUrl: URL): Promise<Record<string, unknown>> {
+  const token = dashboardUrl.searchParams.get("token") ?? ""
+  const controller = new AbortController()
+  const response = await fetch(new URL("/api/live?token=" + encodeURIComponent(token), dashboardUrl), { signal: controller.signal })
+  assert.equal(response.status, 200)
+  const reader = response.body!.getReader()
+  const decoder = new TextDecoder()
+  let data = ""
+  const timeout = setTimeout(() => controller.abort(), 5000)
+  try {
+    for (let i = 0; i < 60 && !data.includes("event: snapshot"); i += 1) {
+      const { value, done } = await reader.read()
+      if (done) break
+      data += decoder.decode(value, { stream: true })
+    }
+  } finally {
+    clearTimeout(timeout)
+    try { await reader.cancel() } catch { /* connection already closed */ }
+    controller.abort()
+  }
+  const match = /event: snapshot\ndata: (\{.*?\})\n\n/s.exec(data)
+  assert.ok(match, "expected an SSE snapshot frame, got: " + data.slice(0, 200))
+  return JSON.parse(match[1]!) as Record<string, unknown>
+}
+
+test("dashboard /api/live clears an active set left stale by a dead plugin", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-stale-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  // No orchestra.jsonc -> config load falls through to the default ".orchestra".
+  // updatedAt is 16 minutes old, past the 15-minute staleness guard.
+  await writeFile(path.join(project, ".orchestra", "live.ndjson"), JSON.stringify({
+    version: 1,
+    updatedAt: Date.now() - 16 * 60_000,
+    seq: 5,
+    active: [{ key: "old", sessionID: "s1", agent: "orch-repo", model: "gpt-test", provider: "openai", startedAt: Date.now() - 16 * 60_000, text: "still here", cost: 0.0002, tokens: { input: 10, output: 5, reasoning: 0 } }],
+    recent: [{ seq: 4, e: "start", ts: Date.now() - 16 * 60_000, k: "old", agent: "orch-repo" }],
+  }) + "\n")
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const snapshot = await readLiveSnapshotFrame(new URL(dashboard.url)) as { active: unknown[]; seq: number }
+    assert.deepEqual(snapshot.active, [])
+    assert.equal(snapshot.seq, 5)
+  } finally {
+    await dashboard.close()
+  }
+})
+
+test("dashboard /api/live serves the literal empty snapshot when no stream file exists", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-missing-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(project, { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const snapshot = await readLiveSnapshotFrame(new URL(dashboard.url)) as { version: number; updatedAt: number; seq: number; active: unknown[]; recent: unknown[] }
+    assert.deepEqual(snapshot, { version: 1, updatedAt: 0, seq: 0, active: [], recent: [] })
+  } finally {
+    await dashboard.close()
+  }
+})
+
 test("dashboard /api/live streams the live snapshot over SSE", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-sse-"))
   const project = path.join(root, "project")

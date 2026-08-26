@@ -300,6 +300,7 @@ function LivePanel({ projectId }: { projectId: string }) {
   const active = snapshot?.active ?? []
   const totalCost = liveCostOfSet(active)
   const running = active.length > 0
+  const hasPastActivity = (snapshot?.recent.length ?? 0) > 0
   return (
     <Card className="live-card">
       <div className="card-heading">
@@ -313,6 +314,10 @@ function LivePanel({ projectId }: { projectId: string }) {
           {active.map((row: LiveActiveAgent) => <LiveAgentRow key={row.key} row={row} />)}
           <div className="live-total"><span>Идёт в эту секунду</span><strong>{active.length} {active.length === 1 ? "агент" : "агента"}</strong><span>оценочная стоимость</span><strong>{formatCost(totalCost)}</strong></div>
         </div>
+      ) : !connected ? (
+        <div className="empty-state"><HugeiconsIcon icon={Activity01Icon} size={24} /><span>{t("liveDisconnected")}</span></div>
+      ) : hasPastActivity ? (
+        <div className="empty-state"><HugeiconsIcon icon={Activity01Icon} size={24} /><span>{t("liveIdle")}</span></div>
       ) : (
         <EmptyState />
       )}

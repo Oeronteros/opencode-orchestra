@@ -25,6 +25,8 @@ const resources = {
     anomaly: "Всплеск расхода",
     anomalyNote: "выше базовой линии",
     storeTexts: "Хранить тексты промптов и ответов (для отладки)",
+    liveDisconnected: "Соединение потеряно — переподключаюсь…",
+    liveIdle: "Соединено · ожидание активности агентов…",
   } },
   en: { translation: {
     overview: "Overview",
@@ -49,6 +51,8 @@ const resources = {
     anomaly: "Spend spike",
     anomalyNote: "above baseline",
     storeTexts: "Store prompt and reply texts (for debugging)",
+    liveDisconnected: "Connection lost — reconnecting…",
+    liveIdle: "Connected · waiting for agent activity…",
   } },
 } as const
 
