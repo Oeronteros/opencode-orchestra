@@ -291,9 +291,11 @@ test("installer dry-run reports intended changes without writing files", async (
 test("installer reports the OpenCode plugin cache refresh without touching unrelated entries", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-cache-wiring-"))
   const packagesRoot = path.join(directory, "packages")
-  const superpowersDirectory = path.join(packagesRoot, "superpowers@git+https:/github.com")
-  await mkdir(superpowersDirectory, { recursive: true })
-  await writeFile(path.join(superpowersDirectory, "marker.txt"), "keep me")
+  // ":" is illegal in Windows file names, so the git-spec-shaped Superpowers
+  // entry is represented by a plain foreign scoped package here.
+  const foreignDirectory = path.join(packagesRoot, "@acme", "other-plugin@latest")
+  await mkdir(foreignDirectory, { recursive: true })
+  await writeFile(path.join(foreignDirectory, "marker.txt"), "keep me")
 
   const result = await install({
     configDirectory: directory,
@@ -308,5 +310,5 @@ test("installer reports the OpenCode plugin cache refresh without touching unrel
   })
 
   assert.deepEqual(result.pluginCache, { upToDate: [], reinstalled: [], invalidated: [] })
-  assert.equal(await readFile(path.join(superpowersDirectory, "marker.txt"), "utf8"), "keep me")
+  assert.equal(await readFile(path.join(foreignDirectory, "marker.txt"), "utf8"), "keep me")
 })

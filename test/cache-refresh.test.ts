@@ -162,16 +162,21 @@ test("refresh ignores unrelated packages and a missing packages root", async () 
   assert.deepEqual(missingReport, { upToDate: [], reinstalled: [], invalidated: [] })
 
   const foreignRoot = await mkdtemp(path.join(os.tmpdir(), "orchestra-cache-foreign-"))
-  const superpowersDirectory = path.join(foreignRoot, "superpowers@git+https:/github.com")
-  await mkdir(superpowersDirectory, { recursive: true })
-  await writeFile(path.join(superpowersDirectory, "marker.txt"), "keep me")
+  // Windows forbids ":" in file names, so the git-spec-shaped Superpowers
+  // entry cannot exist as a directory there; a scoped foreign package
+  // exercises the same "unrelated entries stay untouched" guarantee.
+  const foreignPackage = path.join(foreignRoot, "@acme", "other-plugin@latest")
+  await mkdir(foreignPackage, { recursive: true })
+  await writeFile(path.join(foreignPackage, "marker.txt"), "keep me")
+  const lookalike = path.join(foreignRoot, "@someone", "opencode-orchestra@latest")
+  await mkdir(lookalike, { recursive: true })
   const foreignReport = await refreshPluginCache({
     packagesRoot: foreignRoot,
     targetVersion: TARGET,
     runInstaller: failingInstaller(),
   })
   assert.deepEqual(foreignReport, { upToDate: [], reinstalled: [], invalidated: [] })
-  assert.equal(await readFile(path.join(superpowersDirectory, "marker.txt"), "utf8"), "keep me")
+  assert.equal(await readFile(path.join(foreignPackage, "marker.txt"), "utf8"), "keep me")
 })
 
 test("dry-run classifies stale entries without touching the cache", async () => {
