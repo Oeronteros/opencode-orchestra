@@ -41,9 +41,9 @@ function useSnapshot() {
   return useQuery({ queryKey: ["snapshot", selected], queryFn: () => api.snapshot(selected === "global" ? undefined : selected), refetchInterval: 2_500, enabled: selected !== "global" })
 }
 
-function useDashboardData() {
+function useDashboardData(range?: string) {
   const selected = useUiStore((state) => state.selectedProject)
-  return useQuery<Snapshot | GlobalSnapshot>({ queryKey: ["dashboard", selected], queryFn: async () => selected === "global" ? api.global() : api.snapshot(selected), refetchInterval: 2_500 })
+  return useQuery<Snapshot | GlobalSnapshot>({ queryKey: ["dashboard", selected, range], queryFn: async () => selected === "global" ? api.global(range) : api.snapshot(selected, range), refetchInterval: 2_500 })
 }
 
 function formatNumber(value: number): string {
@@ -217,7 +217,8 @@ function ExportMenu() {
 
 function OverviewPage() {
   const { t } = useTranslation()
-  const query = useDashboardData()
+  const [range, setRange] = useState("30")
+  const query = useDashboardData(range)
   const data = query.data
   if (query.isLoading) return <Loading />
   if (!data) return <ErrorState error={query.error} />
@@ -239,10 +240,10 @@ function OverviewPage() {
     </Card>
     <div className="dashboard-grid">
       <Card className="chart-card">
-        <div className="card-heading"><div><span className="eyebrow">{t("usage")}</span><h2>Токены и расходы</h2></div><span className="updated">{new Date(data.updatedAt).toLocaleTimeString()}</span></div>
+         <div className="card-heading"><div><span className="eyebrow">{t("usage")}</span><h2>Токены и расходы</h2></div><div className="chart-controls"><select value={range} onChange={(event) => setRange(event.target.value)} aria-label="Период графика"><option value="7">7 дней</option><option value="30">30 дней</option><option value="90">90 дней</option><option value="all">Все</option></select><span className="updated">{new Date(data.updatedAt).toLocaleTimeString()}</span></div></div>
         {data.daily.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.daily}>
           <defs><linearGradient id="tokens" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.5}/><stop offset="100%" stopColor="#8b5cf6" stopOpacity={0}/></linearGradient></defs>
-          <CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="date" tickFormatter={(v) => String(v).slice(5)} stroke="#71717a" tickLine={false} axisLine={false}/><YAxis stroke="#71717a" tickLine={false} axisLine={false} width={48} tickFormatter={formatNumber}/><Tooltip contentStyle={{ background: "#11141b", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12 }}/><Area type="monotone" dataKey="input" stackId="1" stroke="#8b5cf6" fill="url(#tokens)"/><Area type="monotone" dataKey="output" stackId="1" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.12}/>
+           <CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="date" tickFormatter={(v) => String(v).slice(5)} stroke="#71717a" tickLine={false} axisLine={false}/><YAxis stroke="#71717a" tickLine={false} axisLine={false} width={48} tickFormatter={formatNumber}/><Tooltip contentStyle={{ background: "#11141b", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12 }}/><Area type="monotone" dataKey="cost" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.12} name="Стоимость"/><Area type="monotone" dataKey="input" stackId="1" stroke="#8b5cf6" fill="url(#tokens)"/><Area type="monotone" dataKey="output" stackId="1" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.12}/>
         </AreaChart></ResponsiveContainer></div> : <EmptyState />}
       </Card>
       {!("global" in data) ? <Card className="mcp-card">
@@ -410,11 +411,17 @@ const AGENTS = [
   { id: "orch-visual-reference", name: "Visual Reference", role: "Анализ визуальных референсов", group: "Визуальные" },
   { id: "orch-visual-generate", name: "Visual Generate", role: "Генерация изображений", group: "Визуальные" },
   { id: "orch-visual-review", name: "Visual Review", role: "Визуальная проверка", group: "Визуальные" },
+  { id: "orch-editor", name: "Editor", role: "Изолированное редактирование", group: "Разработка" },
+  { id: "orch-integrator", name: "Integrator", role: "Интеграция изменений", group: "Разработка" },
+  { id: "orch-merge", name: "Merge", role: "Слияние worktree", group: "Разработка" },
 ] as const
 const settingsSchema = z.object({
   budget: z.enum(["eco", "balanced", "quality", "ebobo"]),
   models: z.object({ strategy: z.enum(["auto", "manual"]), agents: z.record(z.string(), z.string()) }),
-  telemetry: z.object({ enabled: z.boolean(), storeTexts: z.boolean() }),
+  telemetry: z.object({ enabled: z.boolean(), storeTexts: z.boolean(), anomalySigma: z.number().min(0.5).max(6) }),
+  orchestration: z.object({ parallelWorkers: z.number().int().min(1).max(8), parallelEditors: z.number().int().min(0).max(8), maxWorkers: z.number().int().min(1).max(12), premiumEscalation: z.boolean(), maxPremiumCallsPerTask: z.number().int().min(0).max(24), confidenceThreshold: z.number().min(0).max(1), exposeWorkers: z.boolean(), worktreeRoot: z.string().optional() }),
+  superpowers: z.object({ compatibility: z.boolean(), injectPrimaryHint: z.boolean() }),
+  pricing: z.object({ endpoint: z.string().optional(), refreshIntervalHours: z.number().int().min(0).max(2160), estimate: z.boolean(), warnThresholdUSD: z.number().min(0), openrouter: z.object({ enabled: z.boolean(), ttlHours: z.number().int().min(1).max(720) }), aliases: z.array(z.object({ canonical: z.string(), aliases: z.array(z.string()) })) }),
 })
 
 function SettingsPage() {
@@ -431,7 +438,10 @@ function SettingsPage() {
     <form onSubmit={form.handleSubmit((value) => save.mutate(value))} className="settings-stack">
       <Card className="settings-card"><div className="setting-title"><div><h2>Режим бюджета</h2><p>Один активный runtime-профиль для всей команды.</p></div></div><Controller name="budget" control={form.control} render={({ field }) => <div className="budget-grid">{(["eco", "balanced", "quality", "ebobo"] as const).map((mode) => <button type="button" key={mode} className={cn("budget-option", field.value === mode && "selected")} onClick={() => field.onChange(mode)}><strong>{mode}</strong><span>{({ eco: "Бесплатные workers", balanced: "Разумный баланс", quality: "Качество прежде цены", ebobo: "Максимальный роинг" })[mode]}</span></button>)}</div>} /></Card>
       <Card className="settings-card model-settings"><div className="setting-title"><div><h2>Назначение моделей</h2><p>Выберите подключённую модель отдельно для каждого участника команды.</p></div><select {...form.register("models.strategy")}><option value="auto">Автоподбор</option><option value="manual">Ручной режим</option></select></div>{query.data.availableModels.length === 0 && <div className="model-empty">OpenCode не вернул подключённые модели. Проверьте авторизацию провайдера и команду <code>opencode models</code>.</div>}<div className="agent-model-list">{AGENTS.map((agent) => <div className="agent-model-row" key={agent.id}><div className="agent-identity"><strong>{agent.name}</strong><span>{agent.role}</span><small>{agent.id}</small></div><select aria-label={`Модель для ${agent.name}`} {...form.register(`models.agents.${agent.id}`)}><option value="">Автоматически</option>{query.data.availableModels.map((model) => <option key={model} value={model}>{model}</option>)}</select></div>)}</div></Card>
-      <Card className="settings-card inline-setting"><div><h2>Локальная телеметрия</h2><p>Хранить только usage-метаданные. Тексты запросов и ответов не записываются.</p></div><Controller name="telemetry.enabled" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></Card>
+       <Card className="settings-card"><div className="setting-title"><div><h2>Оркестрация</h2><p>Параллельность, эскалация и экспериментальные worktree.</p></div></div><div className="settings-fields">{([ ["parallelWorkers","Параллельные workers"],["parallelEditors","Параллельные editors"],["maxWorkers","Максимум workers"],["maxPremiumCallsPerTask","Premium вызовов на задачу"],["confidenceThreshold","Порог уверенности"] ] as const).map(([name,label]) => <label key={name}>{label}<input type="number" step={name === "confidenceThreshold" ? "0.01" : "1"} {...form.register(`orchestration.${name}`, { valueAsNumber: true })} /></label>)}<label>Корень worktree<input {...form.register("orchestration.worktreeRoot")} placeholder="не задан" /></label><label className="check-setting">Premium escalation<Controller name="orchestration.premiumEscalation" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></label><label className="check-setting">Показывать workers<Controller name="orchestration.exposeWorkers" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></label></div></Card>
+       <Card className="settings-card"><div className="setting-title"><div><h2>Pricing</h2><p>Оценки стоимости и резервный прайс-лист.</p></div></div><div className="settings-fields"><label>Endpoint<input {...form.register("pricing.endpoint")} placeholder="не задан" /></label><label>Предупреждать выше USD<input type="number" step="0.01" {...form.register("pricing.warnThresholdUSD", { valueAsNumber: true })} /></label><label>Обновление прайса, часов<input type="number" {...form.register("pricing.refreshIntervalHours", { valueAsNumber: true })} /></label><label className="check-setting">Оценивать стоимость<Controller name="pricing.estimate" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></label><label className="check-setting">OpenRouter fallback<Controller name="pricing.openrouter.enabled" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></label><label>TTL OpenRouter, часов<input type="number" {...form.register("pricing.openrouter.ttlHours", { valueAsNumber: true })} /></label></div></Card>
+       <Card className="settings-card"><div className="setting-title"><div><h2>Аномалии</h2><p>Сколько стандартных отклонений считать всплеском расходов.</p></div></div><label className="settings-field">Sigma<input type="number" min="0.5" max="6" step="0.1" {...form.register("telemetry.anomalySigma", { valueAsNumber: true })} /></label></Card>
+       <Card className="settings-card inline-setting"><div><h2>Локальная телеметрия</h2><p>Хранить только usage-метаданные. Тексты запросов и ответы не записываются.</p></div><Controller name="telemetry.enabled" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></Card>
       <Card className="settings-card inline-setting"><div><h2>{t("storeTexts")}</h2><p>Опционально, для отладки. По умолчанию выключено — журнал остаётся без промптов и ответов.</p></div><Controller name="telemetry.storeTexts" control={form.control} render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />} /></Card>
       <div className="form-actions"><span>{save.isError ? (save.error as Error).message : save.isSuccess ? "Настройки сохранены" : query.data.configPath}</span><Button type="submit" disabled={save.isPending}>{save.isPending ? "Сохраняю…" : "Сохранить настройки"}</Button></div>
     </form>

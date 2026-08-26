@@ -157,8 +157,11 @@ interface SnapshotData {
   configPath: string
   config: {
     budget: string
-    models: { strategy: string; agents: Record<string, string> }
-    telemetry: { enabled: boolean; storeTexts: boolean }
+    models: { strategy: "auto" | "manual"; agents: Record<string, string> }
+    orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; worktreeRoot?: string }
+    superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
+    telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
+    pricing: { endpoint?: string; refreshIntervalHours: number; estimate: boolean; warnThresholdUSD: number; openrouter: { enabled: boolean; ttlHours: number }; aliases: Array<{ canonical: string; aliases: string[] }> }
   }
   summary: {
     sessions: number
@@ -169,6 +172,8 @@ interface SnapshotData {
   models: AggregateRow[]
   agents: AggregateRow[]
   activity: ActivityRow[]
+  activityTotal: number
+  activityTruncated: boolean
   daily: Array<{ date: string; cost: number; input: number; output: number; reasoning: number }>
   projection: MonthProjection
   anomalies: DailyAnomaly[]
@@ -206,7 +211,7 @@ function connectedModels(directory: string): string[] {
   return [...new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
 }
 
-async function snapshot(directory: string, configDirectory: string, includeModels = true): Promise<SnapshotData> {
+async function snapshot(directory: string, configDirectory: string, includeModels = true, options: { activityLimit?: number; dailyLimit?: number } = {}): Promise<SnapshotData> {
   const configPath = path.join(configDirectory, "orchestra.jsonc")
   const config = (await loadConfigForDirectory(directory, configDirectory)).config
   const ledger = await readLedgerState(path.resolve(directory, config.telemetry.directory, "state.json"))
@@ -234,7 +239,9 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     dailyMap.set(date, point)
   }
   const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
-  const analytics = analyzeDaily(daily)
+  const analytics = analyzeDaily(daily, new Date(), config.telemetry.anomalySigma)
+  const activityLimit = options.activityLimit ?? 5_000
+  const dailyLimit = options.dailyLimit ?? 30
   return {
     projectId: projectId(directory),
     updatedAt: ledger.updatedAt,
@@ -243,8 +250,11 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     configPath,
     config: {
       budget: config.budget,
-      models: { strategy: config.models.strategy, agents: config.models.agents },
-      telemetry: { enabled: config.telemetry.enabled, storeTexts: config.telemetry.storeTexts },
+       models: { strategy: config.models.strategy, agents: config.models.agents },
+       orchestration: config.orchestration,
+       superpowers: config.superpowers,
+       telemetry: { enabled: config.telemetry.enabled, storeTexts: config.telemetry.storeTexts, anomalySigma: config.telemetry.anomalySigma },
+       pricing: config.pricing,
     },
     summary: {
       sessions: Object.keys(ledger.sessions).length,
@@ -254,8 +264,10 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     },
     models: aggregate(activity, (row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown"),
     agents: aggregate(activity, (row) => row.agent ?? "unknown"),
-    activity: activity.slice(0, 5_000),
-    daily: daily.slice(-30),
+     activity: activityLimit === 0 ? activity : activity.slice(0, activityLimit),
+     activityTotal: activity.length,
+     activityTruncated: activityLimit > 0 && activity.length > activityLimit,
+     daily: dailyLimit === 0 ? daily : daily.slice(-dailyLimit),
     projection: analytics.projection,
     anomalies: analytics.anomalies,
     mcp: await mcpStatus(configDirectory),
@@ -288,9 +300,9 @@ async function knownProjects(directory: string, configDirectory: string): Promis
   return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-async function projectSnapshots(directory: string, configDirectory: string): Promise<SnapshotData[]> {
+async function projectSnapshots(directory: string, configDirectory: string, options: { dailyLimit?: number } = {}): Promise<SnapshotData[]> {
   const results = await Promise.all((await knownProjects(directory, configDirectory)).map(async (project) => {
-    try { return await snapshot(project.directory, configDirectory, false) } catch { return undefined }
+    try { return await snapshot(project.directory, configDirectory, false, options) } catch { return undefined }
   }))
   return results.filter((item): item is SnapshotData => Boolean(item))
 }
@@ -299,8 +311,8 @@ function projectInfo(data: SnapshotData): ProjectInfo {
   return { id: data.projectId, name: data.project, directory: data.directory, lastSeenAt: data.updatedAt, updatedAt: data.updatedAt, summary: data.summary }
 }
 
-async function globalSnapshot(directory: string, configDirectory: string): Promise<GlobalSnapshot> {
-  const snapshots = await projectSnapshots(directory, configDirectory)
+async function globalSnapshot(directory: string, configDirectory: string, dailyLimit = 30): Promise<GlobalSnapshot> {
+  const snapshots = await projectSnapshots(directory, configDirectory, { dailyLimit: 0 })
   const tokens = emptyTokens()
   let sessions = 0
   let calls = 0
@@ -320,8 +332,9 @@ async function globalSnapshot(directory: string, configDirectory: string): Promi
       dailyMap.set(row.date, point)
     }
   }
-  const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-30)
-  const analytics = analyzeDaily(daily)
+  const completeDaily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
+  const daily = dailyLimit === 0 ? completeDaily : completeDaily.slice(-dailyLimit)
+  const analytics = analyzeDaily(completeDaily)
   return {
     global: true,
     updatedAt: snapshots.map((item) => item.updatedAt).sort().at(-1) ?? new Date(0).toISOString(),
@@ -411,13 +424,19 @@ async function exportReport(response: ServerResponse, directory: string, configD
     sendJson(response, 400, { error: "Missing or unsupported export format (expected csv or json)" })
     return
   }
-  const data = await snapshot(directory, configDirectory)
+  // Exports intentionally bypass dashboard snapshot caps. The ledger is read
+  // completely, while the response advertises any caller-provided bound.
+  const requestedLimit = Number(searchParams.get("limit") ?? "0")
+  const activityLimit = requestedLimit > 0 ? requestedLimit : 0
+  const data = await snapshot(directory, configDirectory, true, { activityLimit, dailyLimit: 0 })
   const { headers, rows } = rowsForScope(data, scope as ExportScope)
   const filename = exportFilename(scope as ExportScope, format, directory)
+  const truncated = data.activityTruncated
   if (format === "csv") {
+    if (truncated) response.setHeader("X-Orchestra-Truncated", "true")
     sendFile(response, 200, filename, "text/csv; charset=utf-8", toCsv(headers, rows))
   } else {
-    sendFile(response, 200, filename, "application/json; charset=utf-8", toJson(scope as ExportScope, headers, rows))
+    sendFile(response, 200, filename, "application/json; charset=utf-8", `${JSON.stringify({ scope, generatedAt: new Date().toISOString(), truncated, totalRows: rows.length, rows: rows.map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index]]))) }, null, 2)}\n`)
   }
 }
 
@@ -657,7 +676,9 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
         if (request.method === "GET" && url.pathname === "/api/snapshot") {
           const target = await resolveProject(url.searchParams.get("project"))
           if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
-          sendJson(response, 200, await snapshot(target, configDirectory))
+           const range = url.searchParams.get("range")
+           const dailyLimit = range === "all" ? 0 : Math.max(1, Math.min(90, Number(range) || 30))
+           sendJson(response, 200, await snapshot(target, configDirectory, true, { dailyLimit }))
           return
         }
         if (request.method === "GET" && url.pathname === "/api/projects") {
@@ -666,7 +687,9 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
           return
         }
         if (request.method === "GET" && url.pathname === "/api/global") {
-          sendJson(response, 200, await globalSnapshot(directory, configDirectory))
+           const range = url.searchParams.get("range")
+           const dailyLimit = range === "all" ? 0 : Math.max(1, Math.min(90, Number(range) || 30))
+           sendJson(response, 200, await globalSnapshot(directory, configDirectory, dailyLimit))
           return
         }
         if (request.method === "GET" && url.pathname === "/api/export") {

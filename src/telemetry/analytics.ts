@@ -30,7 +30,7 @@ export interface MonthProjection {
   isAheadOfPace: boolean
 }
 
-const SIGMA = 2
+export const DEFAULT_ANOMALY_SIGMA = 2
 
 function mean(values: number[]): number {
   if (values.length === 0) return 0
@@ -50,7 +50,7 @@ function stdev(values: number[]): number {
  * exists to form a stable baseline; the first days are therefore never
  * flagged, and a single outlier does not poison the baseline.
  */
-export function detectAnomalies(daily: DailyPoint[], sigma = SIGMA): DailyAnomaly[] {
+export function detectAnomalies(daily: DailyPoint[], sigma = DEFAULT_ANOMALY_SIGMA): DailyAnomaly[] {
   const ordered = [...daily].sort((a, b) => a.date.localeCompare(b.date))
   const anomalies: DailyAnomaly[] = []
   const history: number[] = []
@@ -105,9 +105,9 @@ export function projectMonth(daily: DailyPoint[], now = new Date()): MonthProjec
 }
 
 /** Convenience: run both analyses and expose a combined result. */
-export function analyzeDaily(daily: DailyPoint[], now = new Date()) {
+export function analyzeDaily(daily: DailyPoint[], now = new Date(), sigma = DEFAULT_ANOMALY_SIGMA) {
   return {
-    anomalies: detectAnomalies(daily),
+    anomalies: detectAnomalies(daily, sigma),
     projection: projectMonth(daily, now),
   }
 }

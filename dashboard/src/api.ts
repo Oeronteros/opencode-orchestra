@@ -56,9 +56,9 @@ export function subscribeLive(projectId: string, onSnapshot: (snapshot: LiveSnap
 }
 
 export const api = {
-  snapshot: (projectId?: string) => request<Snapshot>(`/api/snapshot${projectId ? `?project=${encodeURIComponent(projectId)}` : ""}`),
+  snapshot: (projectId?: string, range?: string) => request<Snapshot>(`/api/snapshot?${new URLSearchParams({ ...(projectId ? { project: projectId } : {}), ...(range ? { range } : {}) })}`),
   projects: () => request<ProjectInfo[]>("/api/projects"),
-  global: () => request<GlobalSnapshot>("/api/global"),
+  global: (range?: string) => request<GlobalSnapshot>(`/api/global${range ? `?range=${encodeURIComponent(range)}` : ""}`),
   saveConfig: (config: DashboardConfig, projectId?: string) => request<{ ok: true }>("/api/config" + (projectId ? "?project=" + encodeURIComponent(projectId) : ""), {
     method: "PUT",
     body: JSON.stringify(config),
