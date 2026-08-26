@@ -34,6 +34,11 @@ test("paid models are excluded when premium use is not allowed", () => {
   assert.equal(result?.id, "vendor/free-code")
 })
 
+test("paid models are excluded after the session cap", () => {
+  const result = resolveModel({ pool, capability: "code", budget: "quality", allowPaid: true, paidCallsUsed: 2, maxPaidCalls: 2 })
+  assert.equal(result?.id, "vendor/free-code")
+})
+
 test("returns undefined for an empty pool so OpenCode can preserve user defaults", () => {
   const result = resolveModel({ pool: [], capability: "reasoning", budget: "balanced", allowPaid: false })
 

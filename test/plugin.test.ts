@@ -46,7 +46,20 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   assert.ok(tools.orchestra_route)
   assert.ok(tools.orchestra_status)
   assert.ok(tools.orchestra_plugin_status)
+  assert.ok(tools.orchestration_report)
   assert.equal("experimental.chat.system.transform" in hooks, false)
+})
+
+test("consensus report requires and updates the current session", async () => {
+  const initialize = OrchestraPlugin as unknown as (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, unknown>>
+  const hooks = await initialize({ directory: process.cwd(), client: { app: { log: async () => undefined } } }, { telemetry: { enabled: true, directory: ".orchestra-test-report" } })
+  const report = (hooks.tool as Record<string, { execute: (args: Record<string, unknown>, context: Record<string, unknown>) => Promise<string> }>).orchestration_report!
+  assert.equal(JSON.parse(await report.execute({ consensus: 0.2 }, {})).ok, false)
+  assert.equal(JSON.parse(await report.execute({ consensus: 0.2, uncertainty: 0.4 }, { sessionID: "report-session" })).ok, true)
+  const route = (hooks.tool as Record<string, { execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string> }>).orchestra_route!
+  const result = JSON.parse(await route.execute({ task: "implement a module" }, { sessionID: "report-session" })) as { escalation: { reason: string } }
+  assert.equal(result.escalation.reason, "worker disagreement")
+  await (hooks.dispose as () => Promise<void>)()
 })
 
 test("ebobo routes the full worker roster with frontier arbitration", async () => {

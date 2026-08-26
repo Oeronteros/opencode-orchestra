@@ -15,6 +15,7 @@ import type { ModelAliasEntry, OpenRouterSource } from "./pricing/resolver.js"
 import { workerCapability, workerPoolKey } from "./agents/workers.js"
 import type { Ledger } from "./telemetry/ledger.js"
 import { formatPluginStatus, type PluginStatus } from "./plugin-status.js"
+import { buildFallbackChain } from "./routing/fallback.js"
 
 interface ToolContextLike {
   sessionID?: string
@@ -108,6 +109,21 @@ export function createOrchestraTools(
           ? Array.from(new Set(enabledWorkers))
           : definition.workers
         const workers = workerPool.slice(0, config.orchestration.maxWorkers)
+        const sessionID = (context as ToolContextLike).sessionID
+        const session = sessionID ? await ledger.getSession(sessionID) : undefined
+        const paidBudget = paidBudgetFor(config.budget, {
+          maxPaidCalls: config.orchestration.maxPremiumCallsPerTask,
+        })
+        const paidCallsUsed = session?.paidCallsUsed ?? 0
+        const fallbackChains = config.models.fallback.enabled
+          ? Object.fromEntries(Object.entries(config.models.worker).map(([capability, pool]) => {
+              const chain = buildFallbackChain(pool, capability as Parameters<typeof buildFallbackChain>[1], config.budget, paidCallsUsed < paidBudget.maxPaidCalls, {
+                paidCallsUsed,
+                maxPaidCalls: paidBudget.maxPaidCalls,
+              })
+              return [capability, chain?.all.slice(0, config.models.fallback.maxRetries + 1) ?? []]
+            }))
+          : {}
 
         const planOptions = {
           maxNodes: config.orchestration.maxWorkers,
@@ -117,13 +133,13 @@ export function createOrchestraTools(
         }
         const plan = planTask(profile, classification.secondaryProfiles, planOptions)
 
-        const paidBudget = paidBudgetFor(config.budget, {
-          maxPaidCalls: config.orchestration.maxPremiumCallsPerTask,
-        })
         const guard = createBudgetGuard(paidBudget)
-
-        const escalation = decideEscalation(config, { classification })
-        const sessionID = (context as ToolContextLike).sessionID
+        for (let i = 0; i < paidCallsUsed; i++) guard.recordPaidCall("paid")
+        const escalation = decideEscalation(config, {
+          classification,
+          ...(session?.consensus !== undefined ? { consensus: session.consensus } : {}),
+          premiumCallsUsed: paidCallsUsed,
+        })
         if (sessionID) await ledger.setProfile(sessionID, profile)
 
         // Pre-run cost estimate (informational; does not block execution).
@@ -153,6 +169,8 @@ export function createOrchestraTools(
             profile,
             secondaryProfiles: classification.secondaryProfiles,
             confidence: classification.confidence,
+            classificationFallback: classification.fallback,
+            classificationWarning: classification.fallback ? "No domain signals matched; architecture is a provisional default." : null,
             critical: classification.critical,
             cached,
             workers,
@@ -162,6 +180,16 @@ export function createOrchestraTools(
               maxPaidCalls: paidBudget.maxPaidCalls,
               remaining: guard.remaining(),
               enabled: paidBudget.enabled,
+              paidCallsUsed,
+              warning: paidCallsUsed > 0 && paidCallsUsed >= Math.max(1, Math.ceil(paidBudget.maxPaidCalls * paidBudget.warnAt))
+                ? "Premium budget is nearly exhausted. Paid models will be excluded at the cap."
+                : null,
+            },
+            fallback: {
+              enabled: config.models.fallback.enabled,
+              maxRetries: config.models.fallback.maxRetries,
+              chains: fallbackChains,
+              note: "Provider retry interception is not claimed; chains are surfaced for safe dispatch failover.",
             },
             escalation,
             ...(estimate ? { estimate } : {}),
@@ -171,6 +199,20 @@ export function createOrchestraTools(
           null,
           2,
         )
+      },
+    }),
+    orchestration_report: tool({
+      description: "Record the current session's consensus for disagreement-aware orchestration.",
+      args: {
+        consensus: tool.schema.number().min(0).max(1),
+        uncertainty: tool.schema.number().min(0).max(1).optional(),
+        notes: tool.schema.string().optional(),
+      },
+      async execute(args, context) {
+        const sessionID = (context as ToolContextLike).sessionID
+        if (!sessionID) return JSON.stringify({ ok: false, error: "Cannot record consensus: current session ID was not provided." })
+        await ledger.setConsensus(sessionID, args.consensus, { ...(args.uncertainty !== undefined ? { uncertainty: args.uncertainty } : {}), ...(args.notes !== undefined ? { notes: args.notes } : {}) })
+        return JSON.stringify({ ok: true, sessionID, consensus: args.consensus, ...(args.uncertainty !== undefined ? { uncertainty: args.uncertainty } : {}), ...(args.notes !== undefined ? { notes: args.notes } : {}) })
       },
     }),
     orchestra_status: tool({

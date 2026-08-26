@@ -88,6 +88,12 @@ test("unknown model resolves to none without guessing", () => {
   assert.equal(match.familyAmbiguous, undefined)
 })
 
+test("empty normalized ids never keyword-match the catalog", () => {
+  const match = matchModel("---", entries(GPT_SOL))
+  assert.equal(match.method, "none")
+  assert.equal(match.canonical, "")
+})
+
 test("fuzzy tier matches a close name when confident", () => {
   const match = matchModel("claude-sonnet-45", entries(CLAUDE_45))
   assert.equal(match.canonical, "claude-sonnet-4-5")

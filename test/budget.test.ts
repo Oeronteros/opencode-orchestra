@@ -22,3 +22,16 @@ test("eco judge requires both criticality and worker disagreement", () => {
   assert.equal(decideEscalation(config, { classification }).escalate, false)
   assert.equal(decideEscalation(config, { classification, consensus: 0.1 }).escalate, true)
 })
+
+test("budget presets apply to implicit defaults and preserve explicit caps", () => {
+  assert.equal(applyBudgetPreset(orchestraConfigSchema.parse({ budget: "eco" })).orchestration.maxPremiumCallsPerTask, 0)
+  assert.equal(applyBudgetPreset(orchestraConfigSchema.parse({ budget: "quality" })).orchestration.maxPremiumCallsPerTask, 6)
+  assert.equal(applyBudgetPreset(orchestraConfigSchema.parse({ budget: "quality", orchestration: { maxPremiumCallsPerTask: 9 } })).orchestration.maxPremiumCallsPerTask, 9)
+})
+
+test("opaque classifier fallback alone does not request a judge", () => {
+  const config = orchestraConfigSchema.parse({ budget: "balanced" })
+  const classification = classifyTask("Please handle the requested change")
+  assert.equal(classification.fallback, true)
+  assert.equal(decideEscalation(config, { classification }).escalate, false)
+})

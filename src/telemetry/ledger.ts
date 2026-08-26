@@ -37,7 +37,11 @@ export interface SessionLedger {
   estimatedPaidUsage: number
   freeWorkerCalls: number
   unknownPriceCalls: number
+  /** Number of distinct assistant calls priced as paid in this session. */
+  paidCallsUsed: number
   consensus?: number
+  consensusUncertainty?: number
+  consensusNotes?: string
   messages: Record<string, MessageUsage>
 }
 
@@ -70,6 +74,7 @@ function emptySession(): SessionLedger {
     estimatedPaidUsage: 0,
     freeWorkerCalls: 0,
     unknownPriceCalls: 0,
+    paidCallsUsed: 0,
     messages: {},
   }
 }
@@ -102,6 +107,7 @@ function upgradeState(input: unknown): LedgerState {
     session.estimatedPaidUsage ??= 0
     session.freeWorkerCalls ??= 0
     session.unknownPriceCalls ??= 0
+    session.paidCallsUsed ??= 0
     for (const [id, message] of Object.entries(session.messages)) {
       session.messages[id] = {
         ...message,
@@ -197,10 +203,12 @@ export class Ledger {
     })
   }
 
-  async setConsensus(sessionID: string, consensus: number): Promise<void> {
+  async setConsensus(sessionID: string, consensus: number, details?: { uncertainty?: number; notes?: string }): Promise<void> {
     await this.mutate((state) => {
       const session = (state.sessions[sessionID] ??= emptySession())
       session.consensus = consensus
+      if (details?.uncertainty !== undefined) session.consensusUncertainty = details.uncertainty
+      if (details?.notes !== undefined) session.consensusNotes = details.notes
     })
   }
 
@@ -219,6 +227,7 @@ export class Ledger {
         session.agents[agent] = (session.agents[agent] ?? 0) + 1
         if (agent === "orch-judge") session.premiumEscalations += 1
         const declared = model ? this.modelCosts.get(model) : undefined
+        if (declared === "paid" || (declared === undefined && pricingStatus === "paid")) session.paidCallsUsed += 1
         if (pricingStatus === "unknown") {
           session.unknownPriceCalls += 1
         }
@@ -290,7 +299,9 @@ export class Ledger {
       `estimated paid usage: $${session.estimatedPaidUsage.toFixed(4)}`,
       `free worker calls: ${session.freeWorkerCalls}`,
       `unknown price calls: ${session.unknownPriceCalls}`,
+      `paid calls used: ${session.paidCallsUsed}`,
       `consensus: ${session.consensus === undefined ? "not recorded" : `${Math.round(session.consensus * 100)}%`}`,
+      ...(session.consensusUncertainty !== undefined ? [`consensus uncertainty: ${Math.round(session.consensusUncertainty * 100)}%`] : []),
     ].join("\n")
   }
 }

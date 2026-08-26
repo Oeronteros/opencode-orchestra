@@ -77,6 +77,7 @@ const livePartKinds = new Map<string, string>()
 // Message ids finalized by message.updated; guards against a late delta
 // resurrecting an active row that no finish will ever remove.
 const finishedLiveMessages = new Set<string>()
+const recoveryNotices = new Set<string>()
 
 function pruneOldest(map: Map<string, string>): void {
   while (map.size > MAX_TEXT_BUFFERS) {
@@ -373,6 +374,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       livePartSeen.clear()
       livePartKinds.clear()
       finishedLiveMessages.clear()
+      recoveryNotices.clear()
       sessionAgent.clear()
       sessionModel.clear()
       streamObservers.clear()
@@ -401,6 +403,22 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: (model as { modelID?: string }).modelID ?? model.id })
     },
     event: async ({ event }) => {
+      const eventRecord = event as unknown as { type?: string; properties?: { sessionID?: string; error?: unknown } }
+      if (eventRecord.type === "session.error" || eventRecord.type === "session.idle") {
+        const sessionID = eventRecord.properties?.sessionID
+        if (sessionID && !recoveryNotices.has(`${sessionID}:${eventRecord.type}`)) {
+          recoveryNotices.add(`${sessionID}:${eventRecord.type}`)
+          await client.app.log({ body: {
+            service: "opencode-orchestra",
+            level: eventRecord.type === "session.error" ? "warn" : "info",
+            message: eventRecord.type === "session.error"
+              ? "Orchestra session encountered an error; no automatic continuation was submitted."
+              : "Orchestra session is idle; orchestration remains available for the next explicit request.",
+            extra: { sessionID, ...(eventRecord.properties?.error ? { error: eventRecord.properties.error } : {}) },
+          } }).catch(() => undefined)
+        }
+        return
+      }
       if (event.type === "message.part.updated") {
         const part = event.properties.part
         const delta = event.properties.delta ?? ""

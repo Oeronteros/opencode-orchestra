@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { Ledger } from "../src/telemetry/ledger.js"
+import type { ModelCandidateInput } from "../src/config/schema.js"
 
 test("records assistant responses outside the orchestra subagent modes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
@@ -135,6 +136,24 @@ test("freeWorkerCalls counts discovered free models via resolved status", async 
       sessions: Record<string, { freeWorkerCalls: number }>
     }
     assert.equal(state.sessions["session-1"]?.freeWorkerCalls, 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("tracks distinct paid calls and session consensus", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const paid: ModelCandidateInput = { id: "vendor/paid", cost: "paid", tier: "frontier", priority: 50, capabilities: [], scores: {} }
+  const ledger = new Ledger(root, ".orchestra", true, [[paid]])
+  try {
+    const info = { id: "paid-1", sessionID: "s", role: "assistant" as const, providerID: "vendor", modelID: "paid", tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }
+    await ledger.recordAssistant(info)
+    await ledger.recordAssistant(info)
+    await ledger.setConsensus("s", 0.4, { uncertainty: 0.3, notes: "workers differ" })
+    const session = await ledger.getSession("s")
+    assert.equal(session.paidCallsUsed, 1)
+    assert.equal(session.consensus, 0.4)
+    assert.equal(session.consensusUncertainty, 0.3)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

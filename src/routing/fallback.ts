@@ -23,6 +23,10 @@ export interface FallbackChain {
 
 const COST_RANK: Record<ModelCost, number> = { paid: 2, subscription: 1, free: 0 }
 
+function compareCodepoints(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
 interface RetryableError {
   /** HTTP status or "timeout". Rate-limit (429) and 5xx are retryable. */
   kind: "rate-limit" | "server" | "timeout" | "other"
@@ -73,6 +77,8 @@ export function buildFallbackChain(
   options: {
     preferredCosts?: ModelCost[]
     preferredTiers?: Parameters<typeof resolveModel>[0]["preferredTiers"]
+    paidCallsUsed?: number
+    maxPaidCalls?: number
   } = {},
 ): FallbackChain | undefined {
   const normalized = pool.map(normalizeCandidate)
@@ -85,6 +91,8 @@ export function buildFallbackChain(
     allowPaid,
     ...(options.preferredCosts ? { preferredCosts: options.preferredCosts } : {}),
     ...(options.preferredTiers ? { preferredTiers: options.preferredTiers } : {}),
+    ...(options.paidCallsUsed !== undefined ? { paidCallsUsed: options.paidCallsUsed } : {}),
+    ...(options.maxPaidCalls !== undefined ? { maxPaidCalls: options.maxPaidCalls } : {}),
   })
   const primary = winner?.id ?? normalized[0]?.id
   if (!primary) return undefined
@@ -93,7 +101,7 @@ export function buildFallbackChain(
   const primaryEntry = toEntry(byId.get(primary))
   const alternatives = normalized
     .filter((candidate) => candidate.id !== primary)
-    .sort((a, b) => COST_RANK[a.cost] - COST_RANK[b.cost] || a.id.localeCompare(b.id))
+    .sort((a, b) => COST_RANK[a.cost] - COST_RANK[b.cost] || compareCodepoints(a.id, b.id))
     .map((candidate) => toEntry(candidate))
 
   return {

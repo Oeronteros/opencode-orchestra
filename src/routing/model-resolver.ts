@@ -28,6 +28,9 @@ export interface ResolveModelRequest {
   allowPaid: boolean
   preferredCosts?: ModelCost[]
   preferredTiers?: ModelTier[]
+  /** Session-level cap: paid candidates are excluded once this is reached. */
+  paidCallsUsed?: number
+  maxPaidCalls?: number
 }
 
 export interface ResolvedModel {
@@ -71,6 +74,10 @@ export function normalizeCandidate(input: ModelCandidateInput): ModelCandidate {
 
 const COST_ORDER: Record<ModelCost, number> = { paid: 2, subscription: 1, free: 0 }
 
+function compareCodepoints(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
 function priceAdjustment(candidate: ModelCandidate): number {
   // A monetary price is a separate ranking signal from the coarse cost class:
   // all else equal, cheaper models win. Log-scale so differences are gentle.
@@ -84,6 +91,7 @@ export function resolveModel(request: ResolveModelRequest): ResolvedModel | unde
   const ranked = request.pool
     .map(normalizeCandidate)
     .filter((candidate) => request.allowPaid || candidate.cost !== "paid")
+    .filter((candidate) => candidate.cost !== "paid" || request.maxPaidCalls === undefined || (request.paidCallsUsed ?? 0) < request.maxPaidCalls)
     .map((candidate) => {
       const explicit = candidate.scores[request.capability] ?? 0
       const declared = candidate.capabilities.includes(request.capability) ? 18 : 0
@@ -113,14 +121,14 @@ export function resolveModel(request: ResolveModelRequest): ResolvedModel | unde
       ]
       return { candidate, score, reason }
     })
-    .sort((a, b) => b.score - a.score || a.candidate.id.localeCompare(b.candidate.id))
+    .sort((a, b) => b.score - a.score || compareCodepoints(a.candidate.id, b.candidate.id))
 
   const winner = ranked[0]
   if (!winner) return undefined
 
   const fallback = ranked
     .slice(1)
-    .sort((a, b) => COST_ORDER[a.candidate.cost] - COST_ORDER[b.candidate.cost] || a.score - b.score || a.candidate.id.localeCompare(b.candidate.id))
+    .sort((a, b) => COST_ORDER[a.candidate.cost] - COST_ORDER[b.candidate.cost] || a.score - b.score || compareCodepoints(a.candidate.id, b.candidate.id))
     .map((item) => item.candidate.id)
 
   return {

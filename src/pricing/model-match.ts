@@ -147,6 +147,7 @@ export function matchModel(rawId: string, entries: ModelEntry[], opts?: MatchOpt
     if (alias) return { canonical: alias.id, method: "alias" }
 
     const candidateTokens = tokensOf(norm)
+    if (candidateTokens.length === 0) continue
     const keywordHits = entries.filter((entry) => hasAllTokens(entryTokenSet(entry), candidateTokens))
     if (keywordHits.length === 1) {
       return { canonical: keywordHits[0]!.id, method: "keyword" }

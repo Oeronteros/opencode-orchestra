@@ -24,7 +24,11 @@ export function decideEscalation(
     return { escalate: false, reason: "premium call budget exhausted" }
   }
 
-  const uncertain = input.classification.confidence < config.orchestration.confidenceThreshold
+  // A signal-free architecture fallback is explicitly provisional, but is not
+  // itself evidence that a premium judge is needed. Real criticality or stored
+  // worker disagreement can still escalate it.
+  const uncertain = input.classification.fallback !== true
+    && input.classification.confidence < config.orchestration.confidenceThreshold
   const disagreement = input.consensus !== undefined && input.consensus < config.orchestration.confidenceThreshold
 
   if (config.budget === "ebobo") {

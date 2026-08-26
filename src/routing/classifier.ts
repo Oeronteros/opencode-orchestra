@@ -7,6 +7,8 @@ export interface Classification {
   matchedSignals: string[]
   securityRelevant: boolean
   critical: boolean
+  /** True when no domain signal matched and architecture is only a safe default. */
+  fallback?: boolean
 }
 
 const SIGNALS: Record<ProfileName, string[]> = {
@@ -175,5 +177,6 @@ export function classifyTask(
     matchedSignals: winner?.matched ?? [],
     securityRelevant: profile === "security" || ranked.some((item) => item.profile === "security" && item.score > 0),
     critical: CRITICAL_SIGNALS.some((signal) => normalized.includes(signal)),
+    fallback: topScore === 0,
   }
 }
