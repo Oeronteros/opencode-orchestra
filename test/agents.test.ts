@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { createAgentSet } from "../src/agents/build.js"
 import { orchestraConfigSchema } from "../src/config/schema.js"
+import { loadPrompts } from "../src/prompts/load.js"
 
 const prompts = { lead: "Lead prompt", judge: "Judge prompt" }
 
@@ -98,4 +99,33 @@ test("balanced uses a subscription lead, free worker, and frontier judge", () =>
   assert.equal(agents["orch-lead"]?.model, "vendor/sub-lead")
   assert.equal(agents["orch-repo"]?.model, "vendor/free-worker")
   assert.equal(agents["orch-judge"]?.model, "vendor/frontier-judge")
+})
+
+test("loads external specialist prompts and safely falls back for missing names", async () => {
+  const loaded = await loadPrompts([
+    "lead", "judge", "repo", "docs", "research", "tests", "critic", "security",
+    "visual-reference", "visual-generate", "visual-review", "editor", "integrator", "merge", "missing",
+  ])
+
+  assert.match(loaded.repo ?? "", /Return exactly:/)
+  assert.match(loaded.security ?? "", /Attack path/)
+  assert.match(loaded.merge ?? "", /orchestration_report/)
+  assert.match(loaded.editor ?? "", /ownership partition/)
+  assert.match(loaded.missing ?? "", /internal specialist agent/)
+})
+
+test("agent constructions use external contracts without changing names or permissions", async () => {
+  const config = orchestraConfigSchema.parse({ orchestration: { exposeWorkers: true } })
+  const loaded = await loadPrompts([
+    "lead", "judge", "repo", "docs", "research", "tests", "critic", "security",
+    "visual-reference", "visual-generate", "visual-review", "editor", "integrator", "merge",
+  ])
+  const agents = createAgentSet(config, loaded)
+
+  assert.match(agents["orch-repo"]?.prompt ?? "", /Return exactly:/)
+  assert.match(agents["orch-editor"]?.prompt ?? "", /Base revision and commit/)
+  assert.match(agents["orch-integrator"]?.prompt ?? "", /ownership validation/)
+  assert.match(agents["orch-merge"]?.prompt ?? "", /exactly once.*consensus/s)
+  assert.equal(agents["orch-tests"]?.permission.bash, "allow")
+  assert.equal(agents["orch-repo"]?.hidden, false)
 })

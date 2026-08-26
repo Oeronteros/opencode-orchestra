@@ -10,15 +10,16 @@ import { createIntegratorAgent } from "./integrator.js"
 export interface PromptBundle {
   lead: string
   judge: string
+  [name: string]: string
 }
 
 export function createAgentSet(config: OrchestraConfig, prompts: PromptBundle): AgentSet {
   const agents: AgentSet = {
     "orch-lead": createLeadAgent(config, prompts.lead),
-    ...createWorkerAgents(config),
-    "orch-editor": createEditorAgent(config),
-    "orch-integrator": createIntegratorAgent(config),
-    "orch-merge": createMergeAgent(config),
+    ...createWorkerAgents(config, prompts),
+    "orch-editor": createEditorAgent(config, prompts.editor),
+    "orch-integrator": createIntegratorAgent(config, prompts.integrator),
+    "orch-merge": createMergeAgent(config, prompts.merge),
     "orch-judge": createJudgeAgent(config, prompts.judge),
   }
   for (const [name, model] of Object.entries(config.models.agents)) {

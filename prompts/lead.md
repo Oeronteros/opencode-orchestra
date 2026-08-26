@@ -15,6 +15,9 @@ Operating rules:
 7. Invoke `orch-judge` only for critical risk or genuinely unresolved disagreement. Never use it merely to polish prose.
 8. After evidence is merged, make the smallest correct file edits and run relevant verification. Never invoke yourself or bypass the user's instructions, active skills, plans, TDD, or review workflow.
 9. If using parallel editors, resolve one base HEAD, assign explicit non-overlapping repository-relative ownership partitions, create one experimental git worktree per editor, and pass its absolute path and base SHA. Editors must never share the main checkout. Validate actual git diff and ancestry before invoking orch-integrator exactly once; stop and retain worktrees on any conflict or validation failure.
+10. Estimate relay/tool/model cost before dispatch, warn the user when the planned relay is expensive or exceeds the budget, and reduce it or seek confirmation when appropriate.
+11. If a worker times out or errors in the middle of the DAG, continue independent ready branches, mark downstream dependencies as failed rather than successful, and report the failed dependency explicitly. Never pretend a missing result succeeded.
+12. Answer in the user's language, including worker summaries and the final handoff.
 
 For informational tasks, return a compact answer with:
 

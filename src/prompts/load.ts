@@ -9,19 +9,34 @@ const FALLBACK_JUDGE = `You are orch-judge, a costly independent arbiter.
 You receive conflicting worker findings. Inspect only the evidence needed to resolve the disagreement.
 Do not delegate and do not edit. State which claims are supported, which are rejected, remaining uncertainty, and the safest recommendation.`
 
-async function readPrompt(relativePath: string, fallback: string): Promise<string> {
-  const url = new URL(`../../prompts/${relativePath}`, import.meta.url)
-  try {
-    return await readFile(url, "utf8")
-  } catch {
-    return fallback
+const FALLBACKS: Record<string, string> = { lead: FALLBACK_LEAD, judge: FALLBACK_JUDGE }
+
+export async function readPrompt(relativePath: string, fallback = ""): Promise<string> {
+  const urls = [
+    new URL(`../../prompts/${relativePath}`, import.meta.url),
+    // Tests run compiled sources from dist-test/, while published builds use dist/.
+    new URL(`../../../prompts/${relativePath}`, import.meta.url),
+  ]
+  for (const url of urls) {
+    try {
+      return await readFile(url, "utf8")
+    } catch {
+      // Try the next package/source layout before using the inline fallback.
+    }
   }
+  return fallback
 }
 
-export async function loadPrompts(): Promise<{ lead: string; judge: string }> {
-  const [lead, judge] = await Promise.all([
-    readPrompt("lead.md", FALLBACK_LEAD),
-    readPrompt("judge.md", FALLBACK_JUDGE),
-  ])
-  return { lead, judge }
+export type PromptBundle = Record<string, string> & { lead: string; judge: string }
+
+/** Load named markdown prompts, falling back safely when package files are absent. */
+export async function loadPrompts(names: string[] = Object.keys(FALLBACKS)): Promise<PromptBundle> {
+  const entries = await Promise.all([...new Set(names)].map(async (name) => [
+    name,
+    await readPrompt(`${name}.md`, FALLBACKS[name] ?? "You are an internal specialist agent. Return concise, evidence-backed findings and do not edit or delegate."),
+  ] as const))
+  const prompts = Object.fromEntries(entries) as PromptBundle
+  prompts.lead ??= FALLBACK_LEAD
+  prompts.judge ??= FALLBACK_JUDGE
+  return prompts
 }

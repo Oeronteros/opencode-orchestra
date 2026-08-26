@@ -1,6 +1,7 @@
 import type { OrchestraConfig } from "../config/schema.js"
 import { resolveModel } from "../routing/model-resolver.js"
 import type { AgentSet, RuntimeAgentConfig } from "./types.js"
+import type { PromptBundle } from "./build.js"
 
 interface WorkerSpec {
   description: string
@@ -93,7 +94,7 @@ const WORKERS: Record<string, WorkerSpec> = {
   },
 }
 
-export function createWorkerAgents(config: OrchestraConfig): AgentSet {
+export function createWorkerAgents(config: OrchestraConfig, prompts?: PromptBundle): AgentSet {
   return Object.fromEntries(
     Object.entries(WORKERS).map(([name, spec]) => {
       const resolved = resolveModel({
@@ -111,7 +112,7 @@ export function createWorkerAgents(config: OrchestraConfig): AgentSet {
       const agent: RuntimeAgentConfig = {
         description: spec.description,
         mode: "subagent",
-        prompt: spec.prompt,
+        prompt: prompts?.[name.slice("orch-".length)] ?? spec.prompt,
         hidden: !config.orchestration.exposeWorkers,
         temperature: 0.15,
         permission: spec.permission,
