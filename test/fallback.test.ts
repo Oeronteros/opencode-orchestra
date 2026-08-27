@@ -128,3 +128,64 @@ test("FallbackEntry exposes compatible, priority, and tier metadata", () => {
   assert.equal(primary.compatible, true)
   assert.equal(primary.tier, "frontier")
 });
+
+test("paid candidates are excluded from alternatives when paid is not allowed", () => {
+  const codePool: ModelCandidateInput[] = [
+    { id: "vendor/free", cost: "free", tier: "worker", priority: 50, capabilities: ["code"], scores: { code: 5 } },
+    { id: "vendor/paid", cost: "paid", tier: "frontier", priority: 90, capabilities: ["code"], scores: { code: 10 } },
+  ]
+  const chain = buildFallbackChain(codePool, "code", "quality", false)!
+  assert.equal(chain.primary, "vendor/free")
+  assert.deepEqual(chain.alternatives.map((entry) => entry.id), [])
+});
+
+test("paid candidates are excluded from alternatives once the paid cap is reached", () => {
+  const codePool: ModelCandidateInput[] = [
+    { id: "vendor/free", cost: "free", tier: "worker", priority: 50, capabilities: ["code"], scores: { code: 5 } },
+    { id: "vendor/paid", cost: "paid", tier: "frontier", priority: 90, capabilities: ["code"], scores: { code: 10 } },
+  ]
+  const chain = buildFallbackChain(codePool, "code", "quality", true, { paidCallsUsed: 2, maxPaidCalls: 2 })!
+  assert.equal(chain.primary, "vendor/free")
+  assert.deepEqual(chain.alternatives.map((entry) => entry.id), [])
+});
+
+test("eco cost tie-break prefers free over paid at equal priority/tier/compatibility", () => {
+  const codePool: ModelCandidateInput[] = [
+    { id: "vendor/primary", cost: "free", tier: "frontier", priority: 95, capabilities: ["code"], scores: { code: 10 } },
+    { id: "vendor/free-alt", cost: "free", tier: "worker", priority: 50, capabilities: ["code"], scores: {} },
+    { id: "vendor/paid-alt", cost: "paid", tier: "worker", priority: 50, capabilities: ["code"], scores: {} },
+  ]
+  const chain = buildFallbackChain(codePool, "code", "eco", true)!
+  assert.equal(chain.primary, "vendor/primary")
+  assert.deepEqual(chain.alternatives.map((entry) => entry.id), ["vendor/free-alt", "vendor/paid-alt"])
+});
+
+test("balanced cost tie-break orders subscription, free, then paid", () => {
+  const codePool: ModelCandidateInput[] = [
+    { id: "vendor/primary", cost: "free", tier: "frontier", priority: 95, capabilities: ["code"], scores: { code: 10 } },
+    { id: "vendor/free-alt", cost: "free", tier: "worker", priority: 50, capabilities: ["code"], scores: {} },
+    { id: "vendor/sub-alt", cost: "subscription", tier: "worker", priority: 50, capabilities: ["code"], scores: {} },
+    { id: "vendor/paid-alt", cost: "paid", tier: "worker", priority: 50, capabilities: ["code"], scores: {} },
+  ]
+  const chain = buildFallbackChain(codePool, "code", "balanced", true)!
+  assert.equal(chain.primary, "vendor/primary")
+  assert.deepEqual(chain.alternatives.map((entry) => entry.id), ["vendor/sub-alt", "vendor/free-alt", "vendor/paid-alt"])
+});
+
+test("an ebobo incompatible frontier never becomes primary", () => {
+  const visionPool: ModelCandidateInput[] = [
+    { id: "vendor/incompatible-frontier", cost: "paid", tier: "frontier", priority: 90, capabilities: ["reasoning"], scores: {} },
+    { id: "vendor/compatible-worker", cost: "free", tier: "worker", priority: 50, capabilities: ["vision"], scores: { vision: 5 } },
+  ]
+  const chain = buildFallbackChain(visionPool, "vision", "ebobo", true)!
+  assert.equal(chain.primary, "vendor/compatible-worker")
+  assert.deepEqual(chain.alternatives.map((entry) => entry.id), [])
+});
+
+test("a fully incompatible pool yields no fallback chain", () => {
+  const visionPool: ModelCandidateInput[] = [
+    { id: "vendor/code-only", cost: "paid", tier: "frontier", priority: 90, capabilities: ["code"], scores: {} },
+  ]
+  const chain = buildFallbackChain(visionPool, "vision", "ebobo", true)
+  assert.equal(chain, undefined)
+});

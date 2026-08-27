@@ -14,7 +14,7 @@ import {
 export interface FallbackEntry {
   id: string
   cost: ModelCost
-  /** Cost class rank: paid (2) > subscription (1) > free (0). */
+  /** Static cost-class rank: paid (2) > subscription (1) > free (0). */
   costRank: number
   /** True when the capability is declared or explicitly scored; false when unknown. */
   compatible: boolean
@@ -35,8 +35,36 @@ const COST_RANK: Record<ModelCost, number> = { paid: 2, subscription: 1, free: 0
 
 const TIER_RANK: Record<ModelTier, number> = { frontier: 2, lead: 1, worker: 0 }
 
+/**
+ * Budget-aware cost-class preference applied as the tie-break after priority
+ * and tier. `ModelCost` is a closed union, so an unknown cost can never be
+ * coerced into a cheaper class.
+ */
+const BUDGET_COST_PREFERENCE: Record<BudgetMode, ModelCost[]> = {
+  eco: ["free", "subscription", "paid"],
+  balanced: ["subscription", "free", "paid"],
+  quality: ["subscription", "paid", "free"],
+  ebobo: ["paid", "subscription", "free"],
+}
+
 function compareCodepoints(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0
+}
+
+function costPreferenceOrder(budget: BudgetMode, preferredCosts?: ModelCost[]): ModelCost[] {
+  if (preferredCosts && preferredCosts.length > 0) return preferredCosts
+  return BUDGET_COST_PREFERENCE[budget]
+}
+
+function costPreferenceRank(cost: ModelCost, order: ModelCost[]): number {
+  const index = order.indexOf(cost)
+  return index === -1 ? order.length : index
+}
+
+function isBudgetEligible(candidate: ModelCandidate, allowPaid: boolean, paidCallsUsed: number, maxPaidCalls?: number): boolean {
+  if (candidate.cost !== "paid") return true
+  if (!allowPaid) return false
+  return maxPaidCalls === undefined || paidCallsUsed < maxPaidCalls
 }
 
 export type ErrorKind = "rate-limit" | "server" | "timeout" | "auth" | "invalid-request" | "other"
@@ -87,9 +115,11 @@ export function isRetryable(kind: RetryableError["kind"]): boolean {
 /**
  * Build a failover chain for a capability pool. The primary is the current
  * winner; alternatives are the remaining candidates ranked deterministically:
- * capability compatibility, then priority, tier, cost class, and model id.
- * Explicitly incompatible candidates are excluded; unknown-capability
- * candidates stay eligible but rank below compatible ones.
+ * capability compatibility, then priority, tier, budget-aware cost class, and
+ * model id. Explicitly incompatible candidates are excluded before resolution
+ * so the primary is always compatible; unknown-capability candidates stay
+ * eligible but rank below compatible ones. Budget filters (paid exclusion)
+ * apply to alternatives as well as the primary.
  */
 export function buildFallbackChain(
   pool: ModelCandidateInput[],
@@ -106,8 +136,14 @@ export function buildFallbackChain(
   const normalized = pool.map(normalizeCandidate)
   if (normalized.length === 0) return undefined
 
+  // The primary must always be capability-compatible: drop explicitly
+  // incompatible candidates before resolution so a high-priority incompatible
+  // model (e.g. an ebobo frontier) cannot take the primary slot.
+  const compatiblePool = normalized.filter((candidate) => !isCapabilityIncompatible(candidate, capability))
+  if (compatiblePool.length === 0) return undefined
+
   const winner = resolveModel({
-    pool,
+    pool: compatiblePool,
     capability,
     budget,
     allowPaid,
@@ -116,22 +152,25 @@ export function buildFallbackChain(
     ...(options.paidCallsUsed !== undefined ? { paidCallsUsed: options.paidCallsUsed } : {}),
     ...(options.maxPaidCalls !== undefined ? { maxPaidCalls: options.maxPaidCalls } : {}),
   })
-  const primary = winner?.id ?? normalized[0]?.id
+  const primary = winner?.id ?? compatiblePool[0]?.id
   if (!primary) return undefined
 
-  const byId = new Map(normalized.map((candidate) => [candidate.id, candidate]))
+  const paidCallsUsed = options.paidCallsUsed ?? 0
+  const costOrder = costPreferenceOrder(budget, options.preferredCosts)
+
+  const byId = new Map(compatiblePool.map((candidate) => [candidate.id, candidate]))
   const primaryCandidate = byId.get(primary)
   const primaryEntry = primaryCandidate ? toEntry(primaryCandidate, capability) : undefined
-  const alternatives = normalized
+  const alternatives = compatiblePool
     .filter((candidate) => candidate.id !== primary)
-    .filter((candidate) => !isCapabilityIncompatible(candidate, capability))
+    .filter((candidate) => isBudgetEligible(candidate, allowPaid, paidCallsUsed, options.maxPaidCalls))
     .sort((a, b) => {
       const compat = compatibilityTier(b, capability) - compatibilityTier(a, capability)
       if (compat !== 0) return compat
       if (a.priority !== b.priority) return b.priority - a.priority
       const tier = TIER_RANK[b.tier] - TIER_RANK[a.tier]
       if (tier !== 0) return tier
-      const cost = COST_RANK[b.cost] - COST_RANK[a.cost]
+      const cost = costPreferenceRank(a.cost, costOrder) - costPreferenceRank(b.cost, costOrder)
       if (cost !== 0) return cost
       return compareCodepoints(a.id, b.id)
     })
