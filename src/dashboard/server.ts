@@ -622,14 +622,16 @@ function handleLiveStream(request: IncomingMessage, response: ServerResponse, di
 
   let lastSeq = -1
   let lastUpdatedAt = -1
+  let lastActiveCount = -1
 
   const tick = async () => {
     if (closed) return
     const snapshot = await readLiveSnapshot(directory, configDirectory)
     if (closed) return
-    if (snapshot.seq !== lastSeq || snapshot.updatedAt !== lastUpdatedAt) {
+    if (snapshot.seq !== lastSeq || snapshot.updatedAt !== lastUpdatedAt || snapshot.active.length !== lastActiveCount) {
       lastSeq = snapshot.seq
       lastUpdatedAt = snapshot.updatedAt
+      lastActiveCount = snapshot.active.length
       sseSend(response, "snapshot", snapshot)
     } else {
       response.write(": ping\n\n") // keep the connection alive

@@ -46,6 +46,20 @@ test("lead can invoke Orchestra workers but workers cannot delegate", () => {
   assert.equal(agents["orch-lead"]?.permission["supermemory_*"], undefined)
 })
 
+test("lead can discover and invoke Superpowers skills when compatibility is enabled", () => {
+  const compatible = createAgentSet(orchestraConfigSchema.parse({}), prompts)["orch-lead"]
+  const disabled = createAgentSet(
+    orchestraConfigSchema.parse({ superpowers: { compatibility: false } }),
+    prompts,
+  )["orch-lead"]
+
+  assert.equal(compatible?.permission.skill, "allow")
+  assert.match(compatible?.prompt ?? "", /invoke the matching skill before any response or action/i)
+  assert.match(compatible?.prompt ?? "", /brainstorming.*systematic-debugging.*test-driven-development.*verification-before-completion/s)
+  assert.equal(disabled?.permission.skill, undefined)
+  assert.doesNotMatch(disabled?.prompt ?? "", /invoke the matching skill before any response or action/i)
+})
+
 test("assigns configured models through pools", () => {
   const config = orchestraConfigSchema.parse({
     models: {

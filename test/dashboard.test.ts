@@ -212,6 +212,68 @@ test("dashboard /api/live clears an active set left stale by a dead plugin", asy
   }
 })
 
+test("dashboard /api/live pushes the stale-agent cleanup to existing clients", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-stale-sse-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  const liveFile = path.join(project, ".orchestra", "live.ndjson")
+  const now = Date.now()
+  const snapshot = (updatedAt: number, active: unknown[]) => JSON.stringify({
+    version: 1,
+    updatedAt,
+    seq: 5,
+    active,
+    recent: [],
+  }) + "\n"
+  const activeAgent = { key: "old", sessionID: "s1", agent: "orch-repo", model: "gpt-test", provider: "openai", startedAt: now, text: "still here", cost: 0.0002, tokens: { input: 10, output: 5, reasoning: 0 } }
+  await writeFile(liveFile, snapshot(now, [activeAgent]))
+
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  const controller = new AbortController()
+  const realNow = Date.now
+  try {
+    Date.now = () => now
+    const url = new URL(dashboard.url)
+    const token = url.searchParams.get("token") ?? ""
+    const response = await fetch(new URL("/api/live?token=" + encodeURIComponent(token), url), { signal: controller.signal })
+    assert.equal(response.status, 200)
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let data = ""
+    const readSnapshot = async () => {
+      for (;;) {
+        const match = /event: snapshot\ndata: (\{.*?\})\n\n/s.exec(data)
+        if (match) {
+          data = data.slice(match.index + match[0].length)
+          return JSON.parse(match[1]!) as { active: unknown[] }
+        }
+        const { value, done } = await reader.read()
+        if (done) throw new Error("live stream closed before snapshot")
+        data += decoder.decode(value, { stream: true })
+      }
+    }
+
+    const initial = await readSnapshot()
+    assert.equal(initial.active.length, 1)
+    Date.now = () => now + 16 * 60_000
+    await writeFile(liveFile, snapshot(now, [activeAgent]))
+    const cleaned = await Promise.race([
+      readSnapshot(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("stale cleanup was not pushed")), 3_000)),
+    ])
+    assert.deepEqual(cleaned.active, [])
+  } finally {
+    Date.now = realNow
+    controller.abort()
+    await dashboard.close()
+  }
+})
+
 test("dashboard /api/live serves the literal empty snapshot when no stream file exists", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-missing-"))
   const project = path.join(root, "project")
