@@ -16,6 +16,7 @@ import { workerCapability, workerPoolKey } from "./agents/workers.js"
 import type { Ledger } from "./telemetry/ledger.js"
 import { formatPluginStatus, type PluginStatus } from "./plugin-status.js"
 import { buildFallbackChain } from "./routing/fallback.js"
+import { resolveModel, type RoutingReason } from "./routing/model-resolver.js"
 
 interface ToolContextLike {
   sessionID?: string
@@ -28,6 +29,71 @@ export interface PricingContext {
   snapshot: PriceSnapshot
   aliases?: ModelAliasEntry[]
   openRouter?: OpenRouterSource
+}
+
+interface LeadRouting {
+  model?: string
+  reason?: RoutingReason
+  source: "exact_override" | "manual_pool" | "auto_discovered" | "budget_exclusion" | "no_candidate"
+  budget: OrchestraConfig["budget"]
+}
+
+/**
+ * Resolve the orch-lead model and its structured routing reason. The
+ * resolution mirrors `createLeadAgent` so the reported lead matches what the
+ * primary agent actually runs. Provenance distinguishes an explicit override
+ * from pool-based discovery and exposes empty/blocked pools without secrets.
+ */
+function buildLeadRouting(config: OrchestraConfig): LeadRouting {
+  const budget = config.budget
+  const exactOverride = config.models.agents["orch-lead"]
+  if (exactOverride) {
+    return {
+      model: exactOverride,
+      reason: {
+        code: "exact_override",
+        text: `id=${exactOverride} cost=override score=0`,
+        matchedCapabilities: [],
+        score: 0,
+        budget,
+      },
+      source: "exact_override",
+      budget,
+    }
+  }
+
+  const leadPool = config.models.lead
+  if (leadPool.length === 0) {
+    return { source: "no_candidate", budget }
+  }
+
+  const resolved = resolveModel({
+    pool: leadPool,
+    capability: "reasoning",
+    budget,
+    allowPaid: budget === "quality" || budget === "ebobo",
+    preferredCosts: budget === "balanced"
+      ? ["subscription"]
+      : budget === "eco"
+        ? ["free"]
+        : [],
+    preferredTiers: budget === "balanced"
+      ? ["lead"]
+      : budget === "quality" || budget === "ebobo"
+        ? ["frontier", "lead"]
+        : [],
+  })
+
+  if (!resolved) {
+    return { source: "budget_exclusion", budget }
+  }
+
+  return {
+    model: resolved.id,
+    ...(resolved.routingReason ? { reason: resolved.routingReason } : {}),
+    source: config.models.strategy === "manual" ? "manual_pool" : "auto_discovered",
+    budget,
+  }
 }
 
 export function createOrchestraTools(
@@ -178,6 +244,8 @@ export function createOrchestraTools(
           ? " EBOBO MODE: run all level-0 branches concurrently and always consult orch-judge for frontier arbitration."
           : ""
 
+        const routing = buildLeadRouting(config)
+
         return JSON.stringify(
           {
             profile,
@@ -190,6 +258,14 @@ export function createOrchestraTools(
             workers,
             parallelWorkers: Math.min(config.orchestration.parallelWorkers, workers.length),
             plan,
+            routing: {
+              lead: {
+                ...(routing.model ? { model: routing.model } : {}),
+                ...(routing.reason ? { reason: routing.reason } : {}),
+              },
+              source: routing.source,
+              budget: routing.budget,
+            },
             paidBudget: {
               maxPaidCalls: paidBudget.maxPaidCalls,
               remaining: guard.remaining(),

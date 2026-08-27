@@ -7,6 +7,29 @@ import type {
 } from "../config/schema.js"
 import { costAdjustment, getBudgetPolicy } from "./budget.js"
 
+/**
+ * Stable machine-readable routing decision identifier. The resolver only emits
+ * the scoring codes; `exact_override` is reserved for an explicit orch-lead
+ * agent override and is produced by the tool layer, not the resolver.
+ */
+export type RoutingReasonCode =
+  | "frontier"
+  | "preferred_tier"
+  | "preferred_cost"
+  | "capability_match"
+  | "price"
+  | "priority"
+  | "exact_override"
+
+export interface RoutingReason {
+  code: RoutingReasonCode
+  /** Bounded diagnostic copy; never contains secrets, prompts, or credentials. */
+  text: string
+  matchedCapabilities: CapabilityName[]
+  score: number
+  budget: BudgetMode
+}
+
 export interface ModelCandidate {
   id: string
   cost: ModelCost
@@ -45,6 +68,8 @@ export interface ResolvedModel {
    * with a retryable error, step down this list instead of re-hitting it.
    */
   fallback: string[]
+  /** Structured, machine-readable routing decision for the winning model. */
+  routingReason?: RoutingReason
 }
 
 export function normalizeCandidate(input: ModelCandidateInput): ModelCandidate {
@@ -119,7 +144,17 @@ export function resolveModel(request: ResolveModelRequest): ResolvedModel | unde
         ...(preferredTierBonus ? ["preferred-tier=" + preferredTierBonus] : []),
         ...(priceAdj !== 0 ? ["price=" + priceAdj] : []),
       ]
-      return { candidate, score, reason }
+      return {
+        candidate,
+        score,
+        reason,
+        explicit,
+        declared,
+        frontierBonus,
+        preferredCostBonus,
+        preferredTierBonus,
+        priceAdj,
+      }
     })
     .sort((a, b) => b.score - a.score || compareCodepoints(a.candidate.id, b.candidate.id))
 
@@ -131,6 +166,40 @@ export function resolveModel(request: ResolveModelRequest): ResolvedModel | unde
     .sort((a, b) => COST_ORDER[a.candidate.cost] - COST_ORDER[b.candidate.cost] || a.score - b.score || compareCodepoints(a.candidate.id, b.candidate.id))
     .map((item) => item.candidate.id)
 
+  const matchedCapabilities: CapabilityName[] =
+    winner.explicit || winner.declared ? [request.capability] : []
+
+  // Deterministic reason code by dominant scoring signal, strongest first.
+  let code: RoutingReasonCode
+  let component: string
+  if (winner.frontierBonus > 0) {
+    code = "frontier"
+    component = "frontier=" + winner.frontierBonus
+  } else if (winner.preferredTierBonus > 0) {
+    code = "preferred_tier"
+    component = "tier=" + winner.candidate.tier
+  } else if (winner.preferredCostBonus > 0) {
+    code = "preferred_cost"
+    component = "cost=" + winner.candidate.cost
+  } else if (winner.explicit || winner.declared) {
+    code = "capability_match"
+    component = "capability=" + (winner.explicit ? "explicit" : "declared")
+  } else if (winner.priceAdj !== 0) {
+    code = "price"
+    component = "price=" + winner.priceAdj
+  } else {
+    code = "priority"
+    component = "priority=" + winner.candidate.priority
+  }
+
+  const routingReason: RoutingReason = {
+    code,
+    text: `id=${winner.candidate.id} cost=${winner.candidate.cost} ${component} score=${winner.score}`,
+    matchedCapabilities,
+    score: winner.score,
+    budget: request.budget,
+  }
+
   return {
     id: winner.candidate.id,
     score: winner.score,
@@ -139,5 +208,6 @@ export function resolveModel(request: ResolveModelRequest): ResolvedModel | unde
     ...(winner.candidate.priceOutput !== undefined ? { priceOutput: winner.candidate.priceOutput } : {}),
     reason: winner.reason,
     fallback,
+    routingReason,
   }
 }

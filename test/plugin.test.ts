@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import pluginModule, { OrchestraPlugin, server } from "../src/index.js"
-import { DEFAULT_CONFIG } from "../src/config/defaults.js"
+import { DEFAULT_CONFIG, withDefaults } from "../src/config/defaults.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
 import type { Ledger } from "../src/telemetry/ledger.js"
 import { createOrchestraTools } from "../src/tools.js"
@@ -171,6 +171,46 @@ test("orchestra route works without a session or ledger access", async () => {
   assert.ok(result.plan?.nodes?.length)
   assert.equal(result.paidBudget?.paidCallsUsed, 0)
   assert.equal(result.paidBudget?.sessionAccountingAvailable, false)
+})
+
+test("orchestra route surfaces the lead routing reason and preserves existing fields", async () => {
+  const config = withDefaults({
+    budget: "balanced",
+    models: {
+      strategy: "auto",
+      lead: [
+        { id: "vendor/free-lead", cost: "free", tier: "lead", priority: 70, capabilities: ["reasoning"], scores: { reasoning: 8 } },
+      ],
+    },
+  })
+  const ledger = {
+    getSession: async () => undefined,
+    setProfile: async () => undefined,
+  } as unknown as Ledger
+  const route = createOrchestraTools(config, ledger).orchestra_route as unknown as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+
+  const result = JSON.parse(await route.execute({ task: "design a module" }, {})) as {
+    routing: { lead: { model: string; reason: { code: string; text: string; matchedCapabilities: string[]; score: number; budget: string } }; source: string }
+    workers: string[]
+    fallback: { enabled: boolean; maxRetries: number; chains: Record<string, string[]> }
+    escalation: { reason: string }
+    paidBudget: Record<string, unknown>
+    plan: { nodes: unknown[] }
+    next: string
+  }
+
+  assert.equal(result.routing.lead.model, "vendor/free-lead")
+  assert.equal(result.routing.lead.reason.code, "preferred_tier")
+  assert.deepEqual(result.routing.lead.reason.matchedCapabilities, ["reasoning"])
+  assert.equal(result.routing.lead.reason.budget, "balanced")
+  assert.equal(result.routing.source, "auto_discovered")
+  assert.ok(result.workers.length)
+  assert.ok(result.plan.nodes.length)
+  assert.ok(result.fallback.enabled)
+  assert.ok(result.escalation.reason)
+  assert.ok(result.next.length)
 })
 
 test("orchestra route returns a readable error when session ledger lookup fails", async () => {
