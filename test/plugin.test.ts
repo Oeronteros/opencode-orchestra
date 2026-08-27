@@ -193,6 +193,27 @@ test("orchestra route returns a readable error when session ledger lookup fails"
   assert.doesNotMatch(result.error ?? "", /credentials|database/i)
 })
 
+test("orchestra route returns the stable error when session profile update fails", async () => {
+  const ledger = {
+    getSession: async () => undefined,
+    setProfile: async () => { throw new Error("profile storage credentials leaked") },
+  } as unknown as Ledger
+  const route = createOrchestraTools(DEFAULT_CONFIG, ledger).orchestra_route as unknown as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+
+  const result = JSON.parse(await route.execute(
+    { task: "implement a module" },
+    { sessionID: "write-failure-session" },
+  )) as { ok?: boolean; error?: string }
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Unable to route task because session ledger access failed.",
+  })
+  assert.doesNotMatch(result.error ?? "", /credentials|storage|profile/i)
+})
+
 test("event hook feeds the live stream from message.part.delta without double counting", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-hook-"))
   const project = path.join(root, "project")
