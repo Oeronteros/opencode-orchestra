@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
-import { chmod, mkdtemp, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 import {
   checkForUpdates,
   formatUpdateResult,
@@ -107,4 +108,15 @@ test("preserves the update result interface when lookup fails", async () => {
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test("update lookup routes npm/bun through the cmd-fallback spawn helper", async () => {
+  // `latestPublishedVersion` has no injection seam (its public contract is a
+  // zero-arg Promise), so we assert the runtime wiring: the module must use the
+  // repo's spawnWithCmdFallback (which retries .cmd/.bat shims through cmd.exe
+  // on Windows) and must not call node:child_process spawnSync directly, since
+  // raw spawnSync cannot execute .cmd/.bat shims on patched Windows.
+  const source = await readFile(fileURLToPath(new URL("../../src/diagnostics/update.ts", import.meta.url)), "utf8")
+  assert.match(source, /import \{ spawnWithCmdFallback \} from "\.\.\/spawn\.js"/)
+  assert.doesNotMatch(source, /import \{ spawnSync \} from "node:child_process"/)
 })

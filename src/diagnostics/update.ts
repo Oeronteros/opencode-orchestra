@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process"
+import { spawnWithCmdFallback } from "../spawn.js"
 
 export const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 const REGISTRY_URL = "https://registry.npmjs.org/@oeronteros-1%2Fopencode-orchestra/latest"
@@ -22,13 +22,14 @@ export function compareVersions(a: string, b: string): number {
  * a direct `fetch` of the registry /latest document.
  */
 export async function latestPublishedVersion(): Promise<string | undefined> {
-  for (const [command, args] of [
-    ["npm", ["view", PACKAGE_NAME, "version"]] as const,
-    ["bun", ["pm", "view", PACKAGE_NAME, "version"]] as const,
-  ]) {
+  const steps: [string, string[]][] = [
+    ["npm", ["view", PACKAGE_NAME, "version"]],
+    ["bun", ["pm", "view", PACKAGE_NAME, "version"]],
+  ]
+  for (const [command, args] of steps) {
     try {
-      const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], shell: false })
-      const first = result.stdout?.trim().split(/\r?\n/)[0]
+      const result = spawnWithCmdFallback(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      const first = String(result.stdout ?? "").trim().split(/\r?\n/)[0]
       if (result.status === 0 && first && isStableSemver(first)) return first
     } catch {
       // Try the next fallback.
