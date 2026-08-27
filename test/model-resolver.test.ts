@@ -1,7 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import type { BudgetMode, CapabilityName, ModelCandidateInput } from "../src/config/schema.js"
-import { resolveModel } from "../src/routing/model-resolver.js"
+import {
+  hasDeclaredCapability,
+  hasExplicitScore,
+  isCapabilityCompatible,
+  isCapabilityIncompatible,
+  normalizeCandidate,
+  resolveModel,
+} from "../src/routing/model-resolver.js"
 
 const pool: ModelCandidateInput[] = [
   {
@@ -143,4 +150,26 @@ test("a non-empty paid-only pool is undefined under a budget exclusion", () => {
   const result = resolveModel({ pool: paidPool, capability: "reasoning", budget: "quality", allowPaid: false })
 
   assert.equal(result, undefined)
+})
+
+test("capability helpers classify declared, explicit, unknown, and incompatible candidates", () => {
+  const declared = normalizeCandidate({ id: "vendor/declared", cost: "free", tier: "worker", priority: 50, capabilities: ["vision"], scores: {} })
+  const explicit = normalizeCandidate({ id: "vendor/explicit", cost: "free", tier: "worker", priority: 50, capabilities: [], scores: { vision: 7 } })
+  const unknown = normalizeCandidate({ id: "vendor/unknown", cost: "free", tier: "worker", priority: 50, capabilities: [], scores: {} })
+  const incompatible = normalizeCandidate({ id: "vendor/incompatible", cost: "free", tier: "worker", priority: 50, capabilities: ["code"], scores: {} })
+
+  assert.equal(hasDeclaredCapability(declared, "vision"), true)
+  assert.equal(hasDeclaredCapability(explicit, "vision"), false)
+  assert.equal(hasExplicitScore(explicit, "vision"), true)
+  assert.equal(hasExplicitScore(declared, "vision"), false)
+
+  assert.equal(isCapabilityCompatible(declared, "vision"), true)
+  assert.equal(isCapabilityCompatible(explicit, "vision"), true)
+  assert.equal(isCapabilityCompatible(unknown, "vision"), false)
+  assert.equal(isCapabilityCompatible(incompatible, "vision"), false)
+
+  assert.equal(isCapabilityIncompatible(incompatible, "vision"), true)
+  assert.equal(isCapabilityIncompatible(unknown, "vision"), false)
+  assert.equal(isCapabilityIncompatible(declared, "vision"), false)
+  assert.equal(isCapabilityIncompatible(explicit, "vision"), false)
 })

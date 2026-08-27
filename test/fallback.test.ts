@@ -25,6 +25,29 @@ test("classifyError detects rate-limit, timeout, and server errors", () => {
   assert.ok(!isRetryable("other"))
 });
 
+test("classifyError detects auth and invalid-request as terminal", () => {
+  assert.equal(classifyError({ status: 401 }).kind, "auth")
+  assert.equal(classifyError({ status: 403, message: "forbidden" }).kind, "auth")
+  assert.equal(classifyError(new Error("unauthorized")).kind, "auth")
+  assert.equal(classifyError(new Error("invalid api key")).kind, "auth")
+  assert.equal(classifyError(new Error("authentication failed")).kind, "auth")
+  assert.equal(classifyError({ status: 400 }).kind, "invalid-request")
+  assert.equal(classifyError({ status: 404, message: "not found" }).kind, "invalid-request")
+  assert.equal(classifyError(new Error("bad request")).kind, "invalid-request")
+  assert.equal(classifyError(new Error("invalid request")).kind, "invalid-request")
+  assert.equal(classifyError({ status: 503 }).kind, "server")
+  assert.equal(classifyError(new Error("service unavailable")).kind, "server")
+});
+
+test("isRetryable retries rate-limit, server, and timeout only", () => {
+  assert.ok(isRetryable("rate-limit"))
+  assert.ok(isRetryable("server"))
+  assert.ok(isRetryable("timeout"))
+  assert.ok(!isRetryable("auth"))
+  assert.ok(!isRetryable("invalid-request"))
+  assert.ok(!isRetryable("other"))
+});
+
 test("resolveModel returns a cheaper-first fallback chain", () => {
   const resolved = resolveModel({ pool, capability: "code", budget: "quality", allowPaid: true })
   assert.ok(resolved)
@@ -55,4 +78,53 @@ test("nextAfterFailure returns undefined when chain exhausted", () => {
   const chain = buildFallbackChain(pool, "code", "quality", true)!
   const last = chain.all[chain.all.length - 1]!.id
   assert.equal(nextAfterFailure(chain, last), undefined)
+});
+
+test("explicitly incompatible candidates are excluded from alternatives", () => {
+  const visionPool: ModelCandidateInput[] = [
+    { id: "vendor/vision", cost: "free", tier: "worker", priority: 50, capabilities: ["vision"], scores: { vision: 5 } },
+    { id: "vendor/code-only", cost: "free", tier: "worker", priority: 90, capabilities: ["code"], scores: {} },
+  ]
+  const chain = buildFallbackChain(visionPool, "vision", "quality", true)!
+  assert.equal(chain.primary, "vendor/vision")
+  assert.deepEqual(chain.alternatives.map((entry) => entry.id), [])
+});
+
+test("unknown-capability candidates stay eligible but rank below compatible candidates", () => {
+  const visionPool: ModelCandidateInput[] = [
+    { id: "vendor/primary", cost: "paid", tier: "frontier", priority: 90, capabilities: ["vision"], scores: { vision: 10 } },
+    { id: "vendor/compatible", cost: "paid", tier: "worker", priority: 50, capabilities: ["vision"], scores: {} },
+    { id: "vendor/unknown", cost: "free", tier: "worker", priority: 50, capabilities: [], scores: {} },
+  ]
+  const chain = buildFallbackChain(visionPool, "vision", "quality", true)!
+  const ids = chain.alternatives.map((entry) => entry.id)
+  assert.ok(ids.includes("vendor/unknown"), "unknown candidate should stay eligible")
+  assert.deepEqual(ids, ["vendor/compatible", "vendor/unknown"])
+});
+
+test("a compatible candidate outranks a cheaper, higher-priority unknown candidate", () => {
+  const visionPool: ModelCandidateInput[] = [
+    { id: "vendor/primary", cost: "paid", tier: "frontier", priority: 90, capabilities: ["vision"], scores: { vision: 10 } },
+    { id: "vendor/compatible", cost: "paid", tier: "worker", priority: 40, capabilities: ["vision"], scores: {} },
+    { id: "vendor/unknown", cost: "free", tier: "worker", priority: 60, capabilities: [], scores: {} },
+  ]
+  const chain = buildFallbackChain(visionPool, "vision", "quality", true)!
+  assert.equal(chain.alternatives[0]!.id, "vendor/compatible")
+});
+
+test("FallbackEntry exposes compatible, priority, and tier metadata", () => {
+  const visionPool: ModelCandidateInput[] = [
+    { id: "vendor/primary", cost: "paid", tier: "frontier", priority: 90, capabilities: ["vision"], scores: { vision: 10 } },
+    { id: "vendor/unknown", cost: "free", tier: "worker", priority: 55, capabilities: [], scores: {} },
+  ]
+  const chain = buildFallbackChain(visionPool, "vision", "quality", true)!
+  const unknown = chain.all.find((entry) => entry.id === "vendor/unknown")!
+  assert.equal(unknown.compatible, false)
+  assert.equal(unknown.priority, 55)
+  assert.equal(unknown.tier, "worker")
+  assert.equal(unknown.cost, "free")
+  assert.equal(unknown.costRank, 0)
+  const primary = chain.all.find((entry) => entry.id === "vendor/primary")!
+  assert.equal(primary.compatible, true)
+  assert.equal(primary.tier, "frontier")
 });

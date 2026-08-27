@@ -120,6 +120,39 @@ export function normalizeCandidate(input: ModelCandidateInput): ModelCandidate {
   }
 }
 
+/**
+ * Shared capability scoring helpers. `resolveModel` uses these for scoring and
+ * `buildFallbackChain` uses them to filter and rank fallback alternatives.
+ */
+
+export function hasDeclaredCapability(candidate: ModelCandidate, capability: CapabilityName): boolean {
+  return candidate.capabilities.includes(capability)
+}
+
+export function hasExplicitScore(candidate: ModelCandidate, capability: CapabilityName): boolean {
+  return (candidate.scores[capability] ?? 0) > 0
+}
+
+/**
+ * A candidate is compatible when it either declares the capability or carries
+ * an explicit positive score for it.
+ */
+export function isCapabilityCompatible(candidate: ModelCandidate, capability: CapabilityName): boolean {
+  return hasDeclaredCapability(candidate, capability) || hasExplicitScore(candidate, capability)
+}
+
+/**
+ * A candidate is explicitly incompatible when it declares *some* capabilities,
+ * does not declare the required one, and has no explicit score for it. Unknown
+ * candidates (empty capabilities) are NOT incompatible: they stay eligible but
+ * rank at lower confidence.
+ */
+export function isCapabilityIncompatible(candidate: ModelCandidate, capability: CapabilityName): boolean {
+  return candidate.capabilities.length > 0
+    && !hasDeclaredCapability(candidate, capability)
+    && !hasExplicitScore(candidate, capability)
+}
+
 const COST_ORDER: Record<ModelCost, number> = { paid: 2, subscription: 1, free: 0 }
 
 function compareCodepoints(a: string, b: string): number {
@@ -142,7 +175,7 @@ export function resolveModel(request: ResolveModelRequest): ResolvedModel | unde
     .filter((candidate) => candidate.cost !== "paid" || request.maxPaidCalls === undefined || (request.paidCallsUsed ?? 0) < request.maxPaidCalls)
     .map((candidate) => {
       const explicit = candidate.scores[request.capability] ?? 0
-      const declared = candidate.capabilities.includes(request.capability) ? 18 : 0
+      const declared = hasDeclaredCapability(candidate, request.capability) ? 18 : 0
       const contextBonus = candidate.context === "xlarge" ? 8 : candidate.context === "large" ? 4 : 0
       const frontierBonus = request.budget === "ebobo"
         ? candidate.tier === "frontier"
