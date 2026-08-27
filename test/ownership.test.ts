@@ -89,3 +89,14 @@ test("buildConflictReport marks disjoint clean partitions as clean", () => {
   assert.deepEqual(report.ownershipViolations, [])
   assert.deepEqual(report.editors.flatMap((editor) => editor.violations), [])
 })
+
+test("buildConflictReport merges changed paths across multiple commits of one editor", () => {
+  const partitions = [{ id: "a", paths: ["src/a"] }, { id: "b", paths: ["src/b"] }]
+  const report = buildConflictReport(partitions, [
+    { id: "a", commit: "a1", changed: ["src/shared.ts"] },
+    { id: "a", commit: "a2", changed: ["src/a/own.ts"] },
+    { id: "b", commit: "b1", changed: ["src/shared.ts"] },
+  ])
+  assert.deepEqual(report.conflictingPaths, ["src/shared.ts"])
+  assert.equal(report.clean, false)
+})

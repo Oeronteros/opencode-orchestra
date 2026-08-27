@@ -28,7 +28,9 @@ export function buildConflictReport(partitions: OwnershipPartition[], commits: E
   for (const commit of commits) {
     const normalized: string[] = []
     for (const raw of commit.changed) { try { normalized.push(normalizeOwnedPath(raw)) } catch { /* normalization errors are collected by validateChangedFiles below */ } }
-    normalizedByEditor[commit.id] = [...new Set(normalized)].sort()
+    // Merge (union) rather than overwrite so multiple commits from one editor
+    // contribute all of their changed paths to the conflict map.
+    normalizedByEditor[commit.id] = [...new Set([...(normalizedByEditor[commit.id] ?? []), ...normalized])].sort()
   }
   const editors: ConflictReportEditor[] = commits
     .map((commit) => ({ id: commit.id, commit: commit.commit, changed: normalizedByEditor[commit.id] ?? [], violations: validateChangedFiles(partitions, { [commit.id]: commit.changed }) }))
