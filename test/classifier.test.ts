@@ -68,6 +68,9 @@ const confusionCases: ConfusionCase[] = [
   { name: "security vs generic review", task: "Security review of the pull request diff", profile: "security", notProfile: "review" },
   { name: "ui vs research", task: "Compare dashboard UI layouts and find examples for the interface", profile: "ui", notProfile: "research" },
   { name: "migration vs ops", task: "Migrate the docker deployment to the new version", profile: "migration", notProfile: "ops" },
+  { name: "rewrite vs ui", task: "Rewrite the dashboard component", profile: "ui", notProfile: "migration" },
+  { name: "dependency injection vs security", task: "Add dependency injection to the service module", profile: "architecture", notProfile: "security" },
+  { name: "export vs migration", task: "Export to CSV", profile: "architecture", notProfile: "migration" },
 ]
 
 for (const confusion of confusionCases) {

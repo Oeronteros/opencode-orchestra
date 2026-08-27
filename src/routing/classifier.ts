@@ -108,7 +108,6 @@ const SIGNALS: Record<ProfileName, string[]> = {
     "migration",
     "migrate",
     "upgrade",
-    "port to",
     "rewrite",
     "миграц",
     "перенести",
@@ -150,10 +149,15 @@ const INTERMITTENT_SIGNALS = ["intermittent", "occasionally", "sometimes", "rand
  * generic activity or environment profile. For example, "security review of
  * the pull request" must route to security (not the generic review profile),
  * and "migrate the docker deployment" must route to migration (not ops).
+ *
+ * Only signals proven by a failing test belong here: ambiguous words such as
+ * "injection", "upgrade", "port to", or "rewrite" would cause false positives
+ * (e.g. "Export to CSV" matches the "port to" substring, "dependency
+ * injection" is not a security task, and "rewrite the component" is UI work).
  */
 const PRIMARY_INTENT_SIGNALS: Partial<Record<ProfileName, string[]>> = {
-  security: ["security", "vulnerability", "xss", "injection"],
-  migration: ["migrate", "migration", "upgrade", "port to", "rewrite"],
+  security: ["security", "vulnerability"],
+  migration: ["migrate", "migration"],
 }
 
 const PRIMARY_INTENT_BONUS = 3
