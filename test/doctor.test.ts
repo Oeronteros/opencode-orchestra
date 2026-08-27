@@ -5,7 +5,7 @@ import path from "node:path"
 import test from "node:test"
 import { completionFor, bashCompletion } from "../src/diagnostics/completion.js"
 import { compareVersions, formatUpdateResult } from "../src/diagnostics/update.js"
-import { findMainConfig, formatDoctorReport, readConfigFile, runDoctor, type Check } from "../src/diagnostics/doctor.js"
+import { findMainConfig, formatDoctorReport, readConfigFile, runDoctor, type Check, type DoctorReport } from "../src/diagnostics/doctor.js"
 
 test("compareVersions orders dotted versions", () => {
   assert.ok(compareVersions("0.5.3", "0.5.4") < 0)
@@ -254,4 +254,101 @@ test("runDoctor probes duplicate tool candidates once and honors HOME for ~/.loc
     if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA
     else process.env.LOCALAPPDATA = originalLocalAppData
   }
+})
+
+/** Run the doctor against a temp config directory seeded with the given orchestra config. */
+async function doctorWithOrchestra(orchestraConfig: unknown): Promise<DoctorReport> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-routing-"))
+  await writeFile(
+    path.join(directory, "opencode.json"),
+    JSON.stringify({ plugin: ["@oeronteros-1/opencode-orchestra@latest"] }),
+    "utf8",
+  )
+  if (orchestraConfig !== undefined) {
+    await writeFile(path.join(directory, "orchestra.jsonc"), JSON.stringify(orchestraConfig), "utf8")
+  }
+  return runDoctor({ configDirectory: directory })
+}
+
+test("runDoctor reports empty routing pools as info without erroring", async () => {
+  const report = await doctorWithOrchestra({ budget: "balanced" })
+  const byId = new Map(report.checks.map((c: Check) => [c.id, c]))
+  const roles = [
+    "routing-lead",
+    "routing-judge",
+    "routing-worker-code",
+    "routing-worker-reasoning",
+    "routing-worker-research",
+    "routing-worker-vision",
+    "routing-worker-image",
+  ]
+  for (const id of roles) {
+    assert.equal(byId.get(id)?.status, "info", `${id} should be info`)
+    assert.equal(byId.get(id)?.detail, "no candidates; current OpenCode model used")
+  }
+  assert.equal(report.checks.some((c: Check) => c.status === "error"), false)
+})
+
+test("runDoctor warns on syntactically invalid exact overrides", async () => {
+  const report = await doctorWithOrchestra({ models: { agents: { "orch-lead": "gpt5" } } })
+  const override = report.checks.find((c: Check) => c.id === "routing-override-orch-lead")
+  assert.equal(override?.status, "warning")
+  assert.equal(override?.detail, "gpt5")
+  // A config whose only defect is the invalid override still parses as invalid,
+  // so the routing pool checks collapse to a single skip warning.
+  assert.equal(report.checks.find((c: Check) => c.id === "routing-skipped")?.status, "warning")
+})
+
+test("runDoctor warns when a pool has no capability-compatible candidate", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "balanced",
+    models: {
+      worker: {
+        code: [{ id: "openai/gpt-5", cost: "free", tier: "worker", priority: 50, capabilities: ["vision"], scores: {} }],
+      },
+    },
+  })
+  const check = report.checks.find((c: Check) => c.id === "routing-worker-code")
+  assert.equal(check?.status, "warning")
+  assert.match(check?.detail ?? "", /compatible/i)
+})
+
+test("runDoctor warns when paid-only pools are blocked under eco budget", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "eco",
+    models: {
+      lead: [{ id: "openai/gpt-5", cost: "paid", tier: "lead", priority: 80, capabilities: ["reasoning"], scores: { reasoning: 8 } }],
+    },
+  })
+  const check = report.checks.find((c: Check) => c.id === "routing-lead")
+  assert.equal(check?.status, "warning")
+  assert.equal(check?.detail, "no eligible candidate under budget eco")
+})
+
+test("runDoctor warns when a resolved model has unknown pricing", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "quality",
+    models: {
+      worker: {
+        code: [{ id: "acme/mystery-model", cost: "paid", tier: "lead", priority: 80, capabilities: ["code"], scores: { code: 8 } }],
+      },
+    },
+  })
+  const check = report.checks.find((c: Check) => c.id === "routing-price-worker-code")
+  assert.equal(check?.status, "warning")
+  assert.equal(check?.detail, "price unknown (never treated as free)")
+})
+
+test("runDoctor does not error on valid partial routing configs", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "balanced",
+    models: {
+      lead: [{ id: "openai/gpt-5", cost: "subscription", tier: "lead", priority: 80, capabilities: ["reasoning"], scores: { reasoning: 8 } }],
+      worker: { code: [] },
+    },
+  })
+  const byId = new Map(report.checks.map((c: Check) => [c.id, c]))
+  assert.equal(byId.get("routing-lead")?.status, "ok")
+  assert.equal(byId.get("routing-worker-code")?.status, "info")
+  assert.equal(report.checks.some((c: Check) => c.status === "error"), false)
 })

@@ -3,6 +3,10 @@ import os from "node:os"
 import path from "node:path"
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser"
 import { openCodeConfigDirectory } from "../config/paths.js"
+import { orchestraConfigSchema, type BudgetMode, type CapabilityName, type ModelCandidateInput, type ModelCost, type ModelTier, type OrchestraConfig } from "../config/schema.js"
+import { resolvePricingSync } from "../pricing/resolver.js"
+import { isCapabilityIncompatible, leadResolveRequest, normalizeCandidate, resolveModel, type ResolveModelRequest } from "../routing/model-resolver.js"
+import { emptyPriceSnapshot, type PriceSnapshot } from "../routing/pricing/prices.js"
 import { resolvePluginVersion } from "../plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "../spawn.js"
 
@@ -260,6 +264,155 @@ export interface DoctorReport {
   checks: Check[]
 }
 
+/** Built-in price snapshot used for non-mutating routing price checks. */
+const BUILTIN_SNAPSHOT: PriceSnapshot = emptyPriceSnapshot()
+
+interface RouteCheckSpec {
+  role: string
+  label: string
+  capability: CapabilityName
+  pool: ModelCandidateInput[]
+  request: Omit<ResolveModelRequest, "pool" | "capability">
+}
+
+const WORKER_POOLS: { key: keyof OrchestraConfig["models"]["worker"]; capability: CapabilityName }[] = [
+  { key: "code", capability: "code" },
+  { key: "reasoning", capability: "reasoning" },
+  { key: "research", capability: "research" },
+  { key: "vision", capability: "vision" },
+  { key: "image", capability: "image" },
+]
+
+/** The exact worker-pool resolution preferences used by createWorkerAgents. */
+function workerResolveRequest(budget: BudgetMode): Omit<ResolveModelRequest, "pool" | "capability"> {
+  const preferredCosts: ModelCost[] = budget === "eco" || budget === "balanced" ? ["free"] : []
+  const preferredTiers: ModelTier[] = budget === "ebobo"
+    ? ["frontier", "lead"]
+    : budget === "quality"
+      ? ["lead", "frontier"]
+      : ["worker"]
+  return {
+    budget,
+    allowPaid: budget === "quality" || budget === "ebobo",
+    preferredCosts,
+    preferredTiers,
+  }
+}
+
+/** Report one role's routing resolution plus an optional unknown-price warning. */
+function routeChecks(spec: RouteCheckSpec): Check[] {
+  const { role, label, capability, pool, request } = spec
+  const id = `routing-${role}`
+  const checks: Check[] = []
+
+  if (pool.length === 0) {
+    checks.push({ id, label, status: "info", detail: "no candidates; current OpenCode model used" })
+    return checks
+  }
+
+  // A pool whose candidates all explicitly lack the required capability has no
+  // compatible alternative, even though resolveModel would still rank a winner.
+  const incompatible = pool
+    .map(normalizeCandidate)
+    .every((candidate) => isCapabilityIncompatible(candidate, capability))
+  if (incompatible) {
+    checks.push({ id, label, status: "warning", detail: `no compatible candidate for ${capability}` })
+    return checks
+  }
+
+  const resolved = resolveModel({ pool, capability, ...request })
+  if (!resolved) {
+    checks.push({ id, label, status: "warning", detail: `no eligible candidate under budget ${request.budget}` })
+    return checks
+  }
+
+  checks.push({ id, label, status: "ok", detail: `${resolved.id} (${capability})` })
+
+  const pricing = resolvePricingSync({ id: resolved.id, declaredCost: resolved.cost }, { snapshot: BUILTIN_SNAPSHOT })
+  if (pricing.status === "unknown") {
+    checks.push({
+      id: `routing-price-${role}`,
+      label: `${label} price`,
+      status: "warning",
+      detail: "price unknown (never treated as free)",
+    })
+  }
+
+  return checks
+}
+
+/** Read raw `models.agents` overrides, tolerating a missing or malformed object. */
+function extractRawAgents(parsed: Record<string, unknown>): Record<string, string> {
+  const models = parsed.models
+  if (typeof models !== "object" || models === null || Array.isArray(models)) return {}
+  const agents = (models as Record<string, unknown>).agents
+  if (typeof agents !== "object" || agents === null || Array.isArray(agents)) return {}
+  const result: Record<string, string> = {}
+  for (const [name, value] of Object.entries(agents as Record<string, unknown>)) {
+    if (typeof value === "string") result[name] = value
+  }
+  return result
+}
+
+/** Non-mutating routing preflight: pools, overrides, and unknown pricing. */
+function routingChecks(parsed: Record<string, unknown>): Check[] {
+  const checks: Check[] = []
+  const push = (check: Check) => checks.push(check)
+
+  // Exact overrides are reported from the raw config so a syntactically
+  // invalid model id still surfaces here even though it fails schema parsing.
+  for (const [name, modelId] of Object.entries(extractRawAgents(parsed))) {
+    const valid = modelId.includes("/")
+    push({
+      id: `routing-override-${name}`,
+      label: `Agent model override ${name}`,
+      status: valid ? "info" : "warning",
+      detail: modelId,
+      ...(valid ? {} : { hint: "Model ID must use provider/model format" }),
+    })
+  }
+
+  let config: OrchestraConfig
+  try {
+    config = orchestraConfigSchema.parse(parsed)
+  } catch {
+    push({
+      id: "routing-skipped",
+      label: "Routing checks",
+      status: "warning",
+      detail: "routing checks skipped: invalid orchestra config",
+    })
+    return checks
+  }
+
+  const specs: RouteCheckSpec[] = [
+    {
+      role: "lead",
+      label: "Lead model",
+      capability: "reasoning",
+      pool: config.models.lead,
+      request: leadResolveRequest(config.budget),
+    },
+    {
+      role: "judge",
+      label: "Judge model",
+      capability: "review",
+      pool: config.models.judge,
+      request: { budget: config.budget, allowPaid: config.orchestration.premiumEscalation, preferredTiers: ["frontier"] },
+    },
+    ...WORKER_POOLS.map(({ key, capability }) => ({
+      role: `worker-${key}`,
+      label: `Worker ${key} model`,
+      capability,
+      pool: config.models.worker[key] ?? [],
+      request: workerResolveRequest(config.budget),
+    })),
+  ]
+
+  for (const spec of specs) checks.push(...routeChecks(spec))
+  return checks
+}
+
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const configDirectory = path.resolve(options.configDirectory ?? openCodeConfigDirectory())
   const mainConfigPath = await findMainConfig(configDirectory)
@@ -401,6 +554,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     detail: codebaseMemory.executable ? `${codebaseMemory.executable} — ${codebaseMemory.version ?? "unknown"}` : "not installed",
     ...(codebaseMemory.executable ? {} : { hint: "Run `opencode-orchestra install` to provision it." }),
   })
+
+  // --- Routing preflight (non-mutating) ---
+  for (const check of routingChecks(orchestraConfig.parsed)) push(check)
 
   return {
     environment: {
