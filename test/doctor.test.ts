@@ -352,3 +352,86 @@ test("runDoctor does not error on valid partial routing configs", async () => {
   assert.equal(byId.get("routing-worker-code")?.status, "info")
   assert.equal(report.checks.some((c: Check) => c.status === "error"), false)
 })
+
+test("runDoctor downgrades a mixed pool whose winning candidate is incompatible", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "balanced",
+    models: {
+      worker: {
+        code: [
+          { id: "openai/gpt-5", cost: "free", tier: "worker", priority: 1, capabilities: ["code"], scores: {} },
+          { id: "openai/gpt-4.1", cost: "free", tier: "worker", priority: 100, capabilities: ["vision"], scores: {} },
+        ],
+      },
+    },
+  })
+  const check = report.checks.find((c: Check) => c.id === "routing-worker-code")
+  assert.equal(check?.status, "warning")
+  assert.match(check?.detail ?? "", /compatible/i)
+})
+
+test("runDoctor uses explicit candidate prices instead of flagging unknown", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "quality",
+    models: {
+      worker: {
+        code: [{ id: "acme/mystery-model", cost: "paid", tier: "lead", priority: 80, capabilities: ["code"], scores: { code: 8 }, priceInput: 5, priceOutput: 20 }],
+      },
+    },
+  })
+  assert.equal(report.checks.find((c: Check) => c.id === "routing-worker-code")?.status, "ok")
+  assert.equal(report.checks.find((c: Check) => c.id === "routing-price-worker-code"), undefined)
+})
+
+test("runDoctor accepts a reasoning-pool candidate compatible with review or security", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "balanced",
+    models: {
+      worker: {
+        reasoning: [{ id: "openai/gpt-5", cost: "free", tier: "worker", priority: 50, capabilities: ["security"], scores: {} }],
+      },
+    },
+  })
+  const check = report.checks.find((c: Check) => c.id === "routing-worker-reasoning")
+  assert.equal(check?.status, "ok")
+  assert.match(check?.detail ?? "", /security/)
+})
+
+test("runDoctor flags a reasoning-pool candidate compatible with neither review nor security", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "balanced",
+    models: {
+      worker: {
+        reasoning: [{ id: "openai/gpt-5", cost: "free", tier: "worker", priority: 50, capabilities: ["vision"], scores: {} }],
+      },
+    },
+  })
+  const check = report.checks.find((c: Check) => c.id === "routing-worker-reasoning")
+  assert.equal(check?.status, "warning")
+  assert.match(check?.detail ?? "", /compatible/i)
+})
+
+test("runDoctor warns on duplicate candidate ids in a pool", async () => {
+  const report = await doctorWithOrchestra({
+    budget: "balanced",
+    models: {
+      worker: {
+        code: [
+          { id: "openai/gpt-5", cost: "free", tier: "worker", priority: 50, capabilities: ["code"], scores: {} },
+          { id: "openai/gpt-5", cost: "free", tier: "worker", priority: 40, capabilities: ["code"], scores: {} },
+        ],
+      },
+    },
+  })
+  const check = report.checks.find((c: Check) => c.id === "routing-duplicate-worker-code")
+  assert.equal(check?.status, "warning")
+  assert.equal(check?.detail, "duplicate candidate openai/gpt-5")
+})
+
+test("runDoctor includes the first schema issue in the routing-skip warning", async () => {
+  const report = await doctorWithOrchestra({ budget: "invalid" })
+  const check = report.checks.find((c: Check) => c.id === "routing-skipped")
+  assert.equal(check?.status, "warning")
+  assert.match(check?.detail ?? "", /invalid orchestra config/)
+  assert.match(check?.detail ?? "", /budget/)
+})

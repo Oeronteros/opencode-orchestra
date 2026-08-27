@@ -2,10 +2,11 @@ import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser"
+import { z } from "zod"
 import { openCodeConfigDirectory } from "../config/paths.js"
 import { orchestraConfigSchema, type BudgetMode, type CapabilityName, type ModelCandidateInput, type ModelCost, type ModelTier, type OrchestraConfig } from "../config/schema.js"
 import { resolvePricingSync } from "../pricing/resolver.js"
-import { isCapabilityIncompatible, leadResolveRequest, normalizeCandidate, resolveModel, type ResolveModelRequest } from "../routing/model-resolver.js"
+import { isCapabilityIncompatible, leadResolveRequest, normalizeCandidate, resolveModel, type ModelCandidate, type ResolveModelRequest } from "../routing/model-resolver.js"
 import { emptyPriceSnapshot, type PriceSnapshot } from "../routing/pricing/prices.js"
 import { resolvePluginVersion } from "../plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "../spawn.js"
@@ -270,18 +271,51 @@ const BUILTIN_SNAPSHOT: PriceSnapshot = emptyPriceSnapshot()
 interface RouteCheckSpec {
   role: string
   label: string
+  /** Single capability passed to resolveModel for scoring. */
   capability: CapabilityName
+  /** Capabilities the role actually requires for the compatibility check. */
+  capabilities: CapabilityName[]
   pool: ModelCandidateInput[]
   request: Omit<ResolveModelRequest, "pool" | "capability">
 }
 
-const WORKER_POOLS: { key: keyof OrchestraConfig["models"]["worker"]; capability: CapabilityName }[] = [
-  { key: "code", capability: "code" },
-  { key: "reasoning", capability: "reasoning" },
-  { key: "research", capability: "research" },
-  { key: "vision", capability: "vision" },
-  { key: "image", capability: "image" },
+// The reasoning pool is consumed by orch-critic (review) and orch-security
+// (security), never by a "reasoning" worker, so it is scored against review
+// but checked for compatibility against both.
+const WORKER_POOLS: { key: keyof OrchestraConfig["models"]["worker"]; capability: CapabilityName; capabilities: CapabilityName[] }[] = [
+  { key: "code", capability: "code", capabilities: ["code"] },
+  { key: "reasoning", capability: "review", capabilities: ["review", "security"] },
+  { key: "research", capability: "research", capabilities: ["research"] },
+  { key: "vision", capability: "vision", capabilities: ["vision"] },
+  { key: "image", capability: "image", capabilities: ["image"] },
 ]
+
+/** True when a candidate is explicitly incompatible with every required capability. */
+function isIncompatibleWithAll(candidate: ModelCandidate, capabilities: CapabilityName[]): boolean {
+  return capabilities.every((capability) => isCapabilityIncompatible(candidate, capability))
+}
+
+/** Repeated model ids in a pool, in first-seen order. */
+function duplicateCandidateIds(candidates: ModelCandidate[]): string[] {
+  const seen = new Set<string>()
+  const duplicates = new Set<string>()
+  for (const candidate of candidates) {
+    if (seen.has(candidate.id)) duplicates.add(candidate.id)
+    seen.add(candidate.id)
+  }
+  return [...duplicates]
+}
+
+/** Sanitize the first schema issue into a bounded, single-line reason. */
+function schemaErrorReason(error: unknown): string | undefined {
+  if (!(error instanceof z.ZodError)) return undefined
+  const issue = error.issues[0]
+  if (!issue) return undefined
+  const path = issue.path.map(String).join(".") || "(root)"
+  const raw = `${path}: ${issue.message}`
+  const reason = raw.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200)
+  return reason || undefined
+}
 
 /** The exact worker-pool resolution preferences used by createWorkerAgents. */
 function workerResolveRequest(budget: BudgetMode): Omit<ResolveModelRequest, "pool" | "capability"> {
@@ -299,10 +333,11 @@ function workerResolveRequest(budget: BudgetMode): Omit<ResolveModelRequest, "po
   }
 }
 
-/** Report one role's routing resolution plus an optional unknown-price warning. */
+/** Report one role's routing resolution plus optional duplicate/price warnings. */
 function routeChecks(spec: RouteCheckSpec): Check[] {
-  const { role, label, capability, pool, request } = spec
+  const { role, label, capability, capabilities, pool, request } = spec
   const id = `routing-${role}`
+  const capabilityLabel = capabilities.join("|")
   const checks: Check[] = []
 
   if (pool.length === 0) {
@@ -310,13 +345,21 @@ function routeChecks(spec: RouteCheckSpec): Check[] {
     return checks
   }
 
-  // A pool whose candidates all explicitly lack the required capability has no
-  // compatible alternative, even though resolveModel would still rank a winner.
-  const incompatible = pool
-    .map(normalizeCandidate)
-    .every((candidate) => isCapabilityIncompatible(candidate, capability))
-  if (incompatible) {
-    checks.push({ id, label, status: "warning", detail: `no compatible candidate for ${capability}` })
+  const candidates = pool.map(normalizeCandidate)
+
+  for (const duplicate of duplicateCandidateIds(candidates)) {
+    checks.push({
+      id: `routing-duplicate-${role}`,
+      label: `${label} duplicate`,
+      status: "warning",
+      detail: `duplicate candidate ${duplicate}`,
+    })
+  }
+
+  // A pool whose candidates all explicitly lack every required capability has
+  // no compatible alternative, even though resolveModel would still rank one.
+  if (candidates.every((candidate) => isIncompatibleWithAll(candidate, capabilities))) {
+    checks.push({ id, label, status: "warning", detail: `no compatible candidate for ${capabilityLabel}` })
     return checks
   }
 
@@ -326,9 +369,23 @@ function routeChecks(spec: RouteCheckSpec): Check[] {
     return checks
   }
 
-  checks.push({ id, label, status: "ok", detail: `${resolved.id} (${capability})` })
+  // resolveModel ranks without excluding incompatible candidates, so a mixed
+  // pool can still produce a winner that lacks every required capability.
+  const winner = candidates.find((candidate) => candidate.id === resolved.id)
+  if (winner && isIncompatibleWithAll(winner, capabilities)) {
+    checks.push({ id, label, status: "warning", detail: `no compatible candidate for ${capabilityLabel}` })
+    return checks
+  }
 
-  const pricing = resolvePricingSync({ id: resolved.id, declaredCost: resolved.cost }, { snapshot: BUILTIN_SNAPSHOT })
+  checks.push({ id, label, status: "ok", detail: `${resolved.id} (${capabilityLabel})` })
+
+  const pricing = resolvePricingSync({
+    id: resolved.id,
+    declaredCost: resolved.cost,
+    ...(resolved.priceInput !== undefined && resolved.priceOutput !== undefined
+      ? { explicitPrice: { input: resolved.priceInput, output: resolved.priceOutput } }
+      : {}),
+  }, { snapshot: BUILTIN_SNAPSHOT })
   if (pricing.status === "unknown") {
     checks.push({
       id: `routing-price-${role}`,
@@ -375,12 +432,15 @@ function routingChecks(parsed: Record<string, unknown>): Check[] {
   let config: OrchestraConfig
   try {
     config = orchestraConfigSchema.parse(parsed)
-  } catch {
+  } catch (error) {
+    const reason = schemaErrorReason(error)
     push({
       id: "routing-skipped",
       label: "Routing checks",
       status: "warning",
-      detail: "routing checks skipped: invalid orchestra config",
+      detail: reason
+        ? `routing checks skipped: invalid orchestra config (${reason})`
+        : "routing checks skipped: invalid orchestra config",
     })
     return checks
   }
@@ -390,6 +450,7 @@ function routingChecks(parsed: Record<string, unknown>): Check[] {
       role: "lead",
       label: "Lead model",
       capability: "reasoning",
+      capabilities: ["reasoning"],
       pool: config.models.lead,
       request: leadResolveRequest(config.budget),
     },
@@ -397,13 +458,15 @@ function routingChecks(parsed: Record<string, unknown>): Check[] {
       role: "judge",
       label: "Judge model",
       capability: "review",
+      capabilities: ["review"],
       pool: config.models.judge,
       request: { budget: config.budget, allowPaid: config.orchestration.premiumEscalation, preferredTiers: ["frontier"] },
     },
-    ...WORKER_POOLS.map(({ key, capability }) => ({
+    ...WORKER_POOLS.map(({ key, capability, capabilities }) => ({
       role: `worker-${key}`,
       label: `Worker ${key} model`,
       capability,
+      capabilities,
       pool: config.models.worker[key] ?? [],
       request: workerResolveRequest(config.budget),
     })),
