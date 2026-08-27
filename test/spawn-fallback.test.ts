@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { spawnSync as nodeSpawnSync } from "node:child_process"
 import os from "node:os"
 import test from "node:test"
 import { homeDirectory, quoteLineForCmd, safeForCmdRetry, spawnWithCmdFallback } from "../src/spawn.js"
@@ -49,6 +50,56 @@ test("spawnWithCmdFallback runs natively off-Windows and never shells out", () =
     assert.ok(missing.error)
     assert.equal(missing.status, null)
   }
+})
+
+test("spawnWithCmdFallback retries a failed Windows spawn through cmd", () => {
+  const calls: Array<{ command: string; args: string[]; options: object }> = []
+  const directFailure = { error: Object.assign(new Error("invalid executable"), { code: "EINVAL" }) } as unknown as ReturnType<typeof nodeSpawnSync>
+  const retrySuccess = { status: 0, signal: null, output: [], stdout: "ok", stderr: "" } as unknown as ReturnType<typeof nodeSpawnSync>
+  const fakeSpawnSync = (command: string, args: string[], options: object) => {
+    calls.push({ command, args, options })
+    return calls.length === 1 ? directFailure : retrySuccess
+  }
+
+  const result = spawnWithCmdFallback(
+    "C:\\Program Files\\tool\\tool.cmd",
+    ["--version", "a&b"],
+    { encoding: "utf8" },
+    { platform: "win32", spawnSync: fakeSpawnSync },
+  )
+
+  assert.equal(result, retrySuccess)
+  assert.deepEqual(calls, [
+    {
+      command: "C:\\Program Files\\tool\\tool.cmd",
+      args: ["--version", "a&b"],
+      options: { encoding: "utf8" },
+    },
+    {
+      command: '"C:\\Program Files\\tool\\tool.cmd" --version "a&b"',
+      args: [],
+      options: { encoding: "utf8", shell: true },
+    },
+  ])
+})
+
+test("spawnWithCmdFallback fails closed for percent expansion on Windows", () => {
+  const calls: Array<{ command: string; args: string[]; options: object }> = []
+  const directFailure = { error: Object.assign(new Error("invalid executable"), { code: "EINVAL" }) } as unknown as ReturnType<typeof nodeSpawnSync>
+  const fakeSpawnSync = (command: string, args: string[], options: object) => {
+    calls.push({ command, args, options })
+    return directFailure
+  }
+
+  const result = spawnWithCmdFallback(
+    "tool.cmd",
+    ["%PATH%"],
+    {},
+    { platform: "win32", spawnSync: fakeSpawnSync },
+  )
+
+  assert.equal(result, directFailure)
+  assert.equal(calls.length, 1)
 })
 
 test("homeDirectory prefers HOME over os.homedir()", () => {

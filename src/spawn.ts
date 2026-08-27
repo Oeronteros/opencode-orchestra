@@ -3,6 +3,13 @@ import os from "node:os"
 
 export type SpawnSyncOptions = NonNullable<Parameters<typeof spawnSync>[2]>
 
+type SpawnSyncDependency = (command: string, args: string[], options: SpawnSyncOptions) => ReturnType<typeof spawnSync>
+
+export interface SpawnFallbackDependencies {
+  platform?: NodeJS.Platform
+  spawnSync?: SpawnSyncDependency
+}
+
 /**
  * Quote a command line for cmd.exe: parts containing spaces or cmd
  * metacharacters are wrapped in double quotes so paths with spaces and
@@ -39,10 +46,17 @@ export function safeForCmdRetry(parts: string[]): boolean {
  * inputs cmd.exe could reinterpret — see {@link safeForCmdRetry} — and
  * off-Windows the native result is always returned untouched.
  */
-export function spawnWithCmdFallback(command: string, args: string[], options: SpawnSyncOptions = {}): ReturnType<typeof spawnSync> {
-  const direct = spawnSync(command, args, options)
-  if (process.platform === "win32" && direct.error !== undefined && safeForCmdRetry([command, ...args])) {
-    const retry = spawnSync(quoteLineForCmd([command, ...args]), [], { ...options, shell: true })
+export function spawnWithCmdFallback(
+  command: string,
+  args: string[],
+  options: SpawnSyncOptions = {},
+  deps: SpawnFallbackDependencies = {},
+): ReturnType<typeof spawnSync> {
+  const runSpawn = deps.spawnSync || spawnSync
+  const platform = deps.platform || process.platform
+  const direct = runSpawn(command, args, options)
+  if (platform === "win32" && direct.error !== undefined && safeForCmdRetry([command, ...args])) {
+    const retry = runSpawn(quoteLineForCmd([command, ...args]), [], { ...options, shell: true })
     if (retry.error === undefined) return retry
   }
   return direct
