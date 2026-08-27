@@ -1,10 +1,10 @@
 import type { Config, Plugin } from "@opencode-ai/plugin"
 import { createAgentSet } from "./agents/build.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
-import { loadConfig } from "./config/load.js"
+import { InvalidConfigError, loadConfig, type LoadedConfig } from "./config/load.js"
 import { openCodeConfigDirectory } from "./config/paths.js"
 import { registerProject } from "./dashboard/registry.js"
-import { applyBudgetPreset } from "./config/defaults.js"
+import { applyBudgetPreset, DEFAULT_CONFIG } from "./config/defaults.js"
 import type { ModelCandidateInput } from "./config/schema.js"
 import { loadPrompts } from "./prompts/load.js"
 import { applyDiscoveredModels, discoverConnectedModels } from "./routing/model-discovery.js"
@@ -208,7 +208,23 @@ function logStreamFlag(sessionID: string, partID: string, observation: { confide
 
 export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_workspace }, rawOptions = {}) => {
   // Experimental OpenCode workspace integration: editors can be assigned isolated git worktrees.
-  const loaded = await loadConfig(directory, rawOptions)
+  let loaded: LoadedConfig
+  try {
+    loaded = await loadConfig(directory, rawOptions)
+  } catch (error) {
+    if (!(error instanceof InvalidConfigError)) throw error
+    const reason = error.reason.replace(/\s+/g, " ").trim().slice(0, 200)
+    const configPath = error.configPath.replace(/\s+/g, " ").trim().slice(0, 500)
+    await client.app.log({
+      body: {
+        service: "opencode-orchestra",
+        level: "warn",
+        message: "OpenCode Orchestra ignored invalid config; using defaults",
+        extra: { configPath, reason },
+      },
+    }).catch(() => undefined)
+    loaded = { config: DEFAULT_CONFIG }
+  }
   experimental_workspace?.register("git", createGitWorktreeAdapter(directory, loaded.config.orchestration.worktreeRoot))
   await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -48,6 +48,68 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   assert.ok(tools.orchestra_plugin_status)
   assert.ok(tools.orchestration_report)
   assert.equal("experimental.chat.system.transform" in hooks, false)
+})
+
+test("plugin falls back to defaults for invalid config JSONC", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-invalid-config-"))
+  const configDirectory = path.join(project, ".opencode")
+  const configPath = path.join(configDirectory, "orchestra.jsonc")
+  await mkdir(configDirectory)
+  await writeFile(configPath, '{ "budget": "free"', "utf8")
+  const logs: Array<{ body?: { level?: string; message?: string; extra?: unknown } }> = []
+  const initialize = OrchestraPlugin as unknown as (
+    input: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+
+  const hooks = await initialize(
+    {
+      directory: project,
+      client: { app: { log: async (entry: { body?: { level?: string; message?: string; extra?: unknown } }) => { logs.push(entry) } } },
+    },
+    { telemetry: { enabled: false } },
+  )
+  const runtime: Record<string, unknown> = {}
+  await (hooks.config as (input: Record<string, unknown>) => Promise<void>)(runtime)
+
+  assert.ok((hooks.tool as Record<string, unknown>).orchestra_route)
+  assert.ok((runtime.agent as Record<string, unknown>)["orch-lead"])
+  const warnings = logs.filter((entry) => entry.body?.level === "warn" && entry.body.message?.includes("invalid config"))
+  assert.equal(warnings.length, 1)
+  const warning = warnings[0]
+  assert.match(JSON.stringify(warning), new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  assert.equal(await readFile(configPath, "utf8"), '{ "budget": "free"')
+  await (hooks.dispose as () => Promise<void>)()
+})
+
+test("plugin falls back to defaults for a schema-invalid config", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-schema-invalid-"))
+  const configDirectory = path.join(project, ".opencode")
+  const configPath = path.join(configDirectory, "orchestra.jsonc")
+  await mkdir(configDirectory)
+  await writeFile(configPath, '{ "budget": "not-a-budget" }', "utf8")
+  const logs: Array<{ body?: { level?: string; message?: string; extra?: unknown } }> = []
+  const initialize = OrchestraPlugin as unknown as (
+    input: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+
+  const hooks = await initialize(
+    {
+      directory: project,
+      client: { app: { log: async (entry: { body?: { level?: string; message?: string; extra?: unknown } }) => { logs.push(entry) } } },
+    },
+    { telemetry: { enabled: false } },
+  )
+
+  assert.ok((hooks.tool as Record<string, unknown>).orchestra_route)
+  const warnings = logs.filter((entry) => entry.body?.level === "warn" && entry.body.message?.includes("invalid config"))
+  assert.equal(warnings.length, 1)
+  const warning = warnings[0]
+  assert.match(JSON.stringify(warning), new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  assert.doesNotMatch(JSON.stringify(warning), /not-a-budget/)
+  assert.equal(await readFile(configPath, "utf8"), '{ "budget": "not-a-budget" }')
+  await (hooks.dispose as () => Promise<void>)()
 })
 
 test("consensus report requires and updates the current session", async () => {

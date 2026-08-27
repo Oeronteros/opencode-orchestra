@@ -18,6 +18,13 @@ function mergeConfig(base: unknown, override: unknown): unknown {
   return result
 }
 
+export class InvalidConfigError extends Error {
+  constructor(readonly configPath: string, readonly reason: string) {
+    super(`Invalid Orchestra config ${configPath}: ${reason}`)
+    this.name = "InvalidConfigError"
+  }
+}
+
 async function exists(file: string): Promise<boolean> {
   try {
     await access(file)
@@ -34,7 +41,7 @@ async function readJsonc(file: string): Promise<unknown> {
   const value = parseJsonc(text, errors, { allowTrailingComma: true, disallowComments: false })
   if (errors.length > 0) {
     const details = errors.map((error) => `${printParseErrorCode(error.error)} at offset ${error.offset}`).join(", ")
-    throw new Error(`Invalid Orchestra config ${file}: ${details}`)
+    throw new InvalidConfigError(file, details)
   }
   return value
 }
@@ -67,9 +74,13 @@ export async function loadConfig(
   for (const source of sources) fromFile = mergeConfig(fromFile, await readJsonc(source))
   const merged = mergeConfig(fromFile, options)
 
-  return {
-    config: orchestraConfigSchema.parse(merged),
-    ...(sources.length > 0 ? { source: sources.join(" -> ") } : {}),
+  try {
+    return {
+      config: orchestraConfigSchema.parse(merged),
+      ...(sources.length > 0 ? { source: sources.join(" -> ") } : {}),
+    }
+  } catch {
+    throw new InvalidConfigError(sources.join(" -> ") || "plugin options", "schema validation failed")
   }
 }
 
