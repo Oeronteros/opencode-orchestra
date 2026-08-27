@@ -84,6 +84,61 @@ test("dashboard serves local telemetry and saves validated config", async () => 
   }
 })
 
+test("dashboard rejects missing and incorrect tokens on protected routes without mutating config", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-auth-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  const configPath = path.join(config, "orchestra.jsonc")
+  await writeFile(configPath, '\ufeff{\n  // unauthorized requests must preserve these bytes\n  "budget": "balanced"\n}\n')
+  const configBefore = await readFile(configPath)
+
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const requests = [
+      { name: "/api/snapshot", pathname: "/api/snapshot", init: undefined },
+      { name: "/api/export", pathname: "/api/export?scope=summary&format=json", init: undefined },
+      {
+        name: "/api/config",
+        pathname: "/api/config",
+        init: { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ budget: "quality" }) },
+      },
+      {
+        name: "/api/config/validate",
+        pathname: "/api/config/validate",
+        init: { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ budget: "quality" }) },
+      },
+    ] as const
+
+    for (const request of requests) {
+      for (const auth of [
+        { name: "missing", headers: {} },
+        { name: "incorrect", headers: { "X-Orchestra-Token": "not-the-dashboard-token" } },
+      ] as const) {
+        const response = await fetch(new URL(request.pathname, url), {
+          ...request.init,
+          headers: { ...request.init?.headers, ...auth.headers },
+        })
+        assert.equal(response.status, 401, `${request.name} should reject a ${auth.name} token`)
+        assert.deepEqual(
+          await response.json(),
+          { error: "Invalid dashboard token" },
+          `${request.name} should not return a protected payload for a ${auth.name} token`,
+        )
+      }
+    }
+
+    assert.deepEqual(await readFile(configPath), configBefore, "unauthorized requests must not change config bytes")
+  } finally {
+    await dashboard.close()
+  }
+})
+
 test("dashboard validates the full schema on the fly and rejects invalid patches", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-validate-"))
   const project = path.join(root, "project")
