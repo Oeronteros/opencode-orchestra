@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { OrchestraPlugin } from "../src/index.js"
+import { integrateValidatedCommits, systemGit } from "../src/orchestration/worktrees.js"
 
 /**
  * End-to-end integration test that drives the full plugin pipeline with a
@@ -178,4 +181,50 @@ test("route tool runs the full routing pipeline against discovered models", asyn
   // A non-critical, high-confidence task should not escalate under balanced.
   assert.equal(result.escalation.escalate, false)
   assert.ok(result.plan.nodes.length > 0)
+})
+
+test("simulated git conflict rejects without destructive worktree cleanup", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "orch-conflict-"))
+  t.after(async () => { await rm(root, { recursive: true, force: true }) })
+  const repo = path.join(root, "repo")
+  await mkdir(repo, { recursive: true })
+
+  await systemGit.run(["init", "-b", "main"], repo)
+  await systemGit.run(["config", "user.email", "test@example.com"], repo)
+  await systemGit.run(["config", "user.name", "Orchestra Test"], repo)
+  await systemGit.run(["config", "commit.gpgsign", "false"], repo)
+
+  const shared = path.join(repo, "shared.txt")
+  await writeFile(shared, "base\n")
+  await systemGit.run(["add", "shared.txt"], repo)
+  await systemGit.run(["commit", "-m", "base"], repo)
+
+  // A feature branch edits the same line the main branch will later change.
+  await systemGit.run(["checkout", "-b", "feature"], repo)
+  await writeFile(shared, "feature\n")
+  await systemGit.run(["add", "shared.txt"], repo)
+  await systemGit.run(["commit", "-m", "feature change"], repo)
+  const feature = (await systemGit.run(["rev-parse", "HEAD"], repo)).stdout.trim()
+
+  // Main diverges with a conflicting edit to the same line.
+  await systemGit.run(["checkout", "main"], repo)
+  await writeFile(shared, "main\n")
+  await systemGit.run(["add", "shared.txt"], repo)
+  await systemGit.run(["commit", "-m", "main change"], repo)
+
+  // A worktree artifact that must survive a failed integration attempt.
+  const worktreeMarker = path.join(root, ".orchestra", "worktrees", "task-a", "marker.txt")
+  await mkdir(path.dirname(worktreeMarker), { recursive: true })
+  await writeFile(worktreeMarker, "keep\n")
+
+  await assert.rejects(
+    () => integrateValidatedCommits(systemGit, repo, [feature]),
+    /cherry-pick conflict/,
+  )
+
+  // No destructive cleanup: the repo is intact, the aborted cherry-pick restored
+  // the pre-integration state, and the retained worktree artifact is untouched.
+  await access(repo)
+  assert.equal(await readFile(shared, "utf8"), "main\n")
+  assert.equal(await readFile(worktreeMarker, "utf8"), "keep\n")
 })
