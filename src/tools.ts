@@ -16,7 +16,7 @@ import { workerCapability, workerPoolKey } from "./agents/workers.js"
 import type { Ledger } from "./telemetry/ledger.js"
 import { formatPluginStatus, type PluginStatus } from "./plugin-status.js"
 import { buildFallbackChain } from "./routing/fallback.js"
-import { resolveModel, type RoutingReason } from "./routing/model-resolver.js"
+import { resolveModel, leadResolveRequest, type RoutingReason } from "./routing/model-resolver.js"
 
 interface ToolContextLike {
   sessionID?: string
@@ -70,18 +70,7 @@ function buildLeadRouting(config: OrchestraConfig): LeadRouting {
   const resolved = resolveModel({
     pool: leadPool,
     capability: "reasoning",
-    budget,
-    allowPaid: budget === "quality" || budget === "ebobo",
-    preferredCosts: budget === "balanced"
-      ? ["subscription"]
-      : budget === "eco"
-        ? ["free"]
-        : [],
-    preferredTiers: budget === "balanced"
-      ? ["lead"]
-      : budget === "quality" || budget === "ebobo"
-        ? ["frontier", "lead"]
-        : [],
+    ...leadResolveRequest(budget),
   })
 
   if (!resolved) {

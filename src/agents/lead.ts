@@ -1,6 +1,6 @@
 import type { OrchestraConfig } from "../config/schema.js"
 import { PROFILE_CATALOG } from "../profiles/catalog.js"
-import { resolveModel } from "../routing/model-resolver.js"
+import { leadResolveRequest, resolveModel } from "../routing/model-resolver.js"
 import type { RuntimeAgentConfig } from "./types.js"
 
 export function createLeadAgent(config: OrchestraConfig, basePrompt: string): RuntimeAgentConfig {
@@ -16,18 +16,7 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
   const resolved = resolveModel({
     pool: config.models.lead,
     capability: "reasoning",
-    budget: config.budget,
-    allowPaid: config.budget === "quality" || config.budget === "ebobo",
-    preferredCosts: config.budget === "balanced"
-      ? ["subscription"]
-      : config.budget === "eco"
-        ? ["free"]
-        : [],
-    preferredTiers: config.budget === "balanced"
-      ? ["lead"]
-      : config.budget === "quality" || config.budget === "ebobo"
-        ? ["frontier", "lead"]
-        : [],
+    ...leadResolveRequest(config.budget),
   })
   const superpowersGuide = config.superpowers.compatibility
     ? "\n\nSuperpowers workflow: invoke the matching skill before any response or action, using the native skill tool. For new functionality use brainstorming before implementation; for bugs use systematic-debugging; for features and bug fixes use test-driven-development; before claiming completion use verification-before-completion. Follow the loaded skill exactly and do not replace it with this orchestration protocol."

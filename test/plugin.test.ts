@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG, withDefaults } from "../src/config/defaults.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
 import type { Ledger } from "../src/telemetry/ledger.js"
 import { createOrchestraTools } from "../src/tools.js"
+import { createAgentSet, type PromptBundle } from "../src/agents/build.js"
 
 test("entrypoint exposes a stable id and server", () => {
   assert.equal(pluginModule.id, "opencode-orchestra")
@@ -211,6 +212,113 @@ test("orchestra route surfaces the lead routing reason and preserves existing fi
   assert.ok(result.fallback.enabled)
   assert.ok(result.escalation.reason)
   assert.ok(result.next.length)
+})
+
+test("orchestra route reports exact_override when orch-lead is pinned", async () => {
+  const config = withDefaults({
+    budget: "balanced",
+    models: {
+      strategy: "auto",
+      agents: { "orch-lead": "vendor/exact-lead" },
+    },
+  })
+  const ledger = {
+    getSession: async () => undefined,
+    setProfile: async () => undefined,
+  } as unknown as Ledger
+  const route = createOrchestraTools(config, ledger).orchestra_route as unknown as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+
+  const result = JSON.parse(await route.execute({ task: "design a module" }, {})) as {
+    routing: { lead: { model: string; reason: { code: string; matchedCapabilities: string[] } }; source: string }
+  }
+
+  assert.equal(result.routing.source, "exact_override")
+  assert.equal(result.routing.lead.model, "vendor/exact-lead")
+  assert.equal(result.routing.lead.reason.code, "exact_override")
+  assert.deepEqual(result.routing.lead.reason.matchedCapabilities, [])
+})
+
+test("orchestra route reports manual_pool for a manual strategy with a lead pool", async () => {
+  const config = withDefaults({
+    budget: "balanced",
+    models: {
+      strategy: "manual",
+      lead: [
+        { id: "vendor/free-lead", cost: "free", tier: "lead", priority: 70, capabilities: ["reasoning"], scores: { reasoning: 8 } },
+      ],
+    },
+  })
+  const ledger = {
+    getSession: async () => undefined,
+    setProfile: async () => undefined,
+  } as unknown as Ledger
+  const route = createOrchestraTools(config, ledger).orchestra_route as unknown as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+
+  const result = JSON.parse(await route.execute({ task: "design a module" }, {})) as {
+    routing: { lead: { model: string; reason: { code: string } }; source: string }
+  }
+
+  assert.equal(result.routing.source, "manual_pool")
+  assert.equal(result.routing.lead.model, "vendor/free-lead")
+  assert.equal(result.routing.lead.reason.code, "preferred_tier")
+})
+
+test("orchestra route reports no_candidate when the lead pool is empty", async () => {
+  const config = withDefaults({ budget: "balanced" })
+  const ledger = {
+    getSession: async () => undefined,
+    setProfile: async () => undefined,
+  } as unknown as Ledger
+  const route = createOrchestraTools(config, ledger).orchestra_route as unknown as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+
+  const result = JSON.parse(await route.execute({ task: "design a module" }, {})) as {
+    routing: { lead: { model?: string; reason?: { code: string } }; source: string }
+  }
+
+  assert.equal(result.routing.source, "no_candidate")
+  assert.equal(result.routing.lead.model, undefined)
+  assert.equal(result.routing.lead.reason, undefined)
+})
+
+test("reported lead model matches the actual orch-lead agent across budgets and pool states", async () => {
+  const modes = ["eco", "balanced", "quality", "ebobo"] as const
+  const scenarios = [
+    { name: "override", models: { agents: { "orch-lead": "vendor/exact-lead" }, lead: [] } },
+    { name: "empty", models: { lead: [] } },
+    { name: "paid-only", models: { lead: [{ id: "vendor/paid-frontier", cost: "paid", tier: "frontier", priority: 90, capabilities: ["reasoning"], scores: { reasoning: 8 } }] } },
+    { name: "mixed", models: { lead: [
+      { id: "vendor/free-lead", cost: "free", tier: "lead", priority: 70, capabilities: ["reasoning"], scores: { reasoning: 8 } },
+      { id: "vendor/paid-frontier", cost: "paid", tier: "frontier", priority: 90, capabilities: ["reasoning"], scores: { reasoning: 8 } },
+    ] } },
+  ] as const
+  // Overrides are applied by createAgentSet, so the actually-assigned lead model
+  // (and therefore the parity target) comes from the full agent set, not from
+  // createLeadAgent alone. createLeadAgent still resolves the pool identically.
+  const prompts = { lead: "", judge: "" } as PromptBundle
+
+  for (const mode of modes) {
+    for (const scenario of scenarios) {
+      const config = withDefaults({ budget: mode, models: { strategy: "auto", ...scenario.models } })
+      const assigned = createAgentSet(config, prompts)["orch-lead"]!.model
+      const route = createOrchestraTools(config, {
+        getSession: async () => undefined,
+        setProfile: async () => undefined,
+      } as unknown as Ledger).orchestra_route as unknown as {
+        execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+      }
+      const result = JSON.parse(await route.execute({ task: "design a module" }, {})) as {
+        routing: { lead: { model?: string }; source: string }
+      }
+
+      assert.equal(result.routing.lead.model ?? undefined, assigned, `${mode}/${scenario.name} lead model parity`)
+    }
+  }
 })
 
 test("orchestra route returns a readable error when session ledger lookup fails", async () => {

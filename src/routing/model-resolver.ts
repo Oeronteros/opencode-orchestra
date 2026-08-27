@@ -56,6 +56,29 @@ export interface ResolveModelRequest {
   maxPaidCalls?: number
 }
 
+/**
+ * The shared resolution parameters for the orch-lead agent. Both the tool
+ * layer (routing metadata) and `createLeadAgent` (the actually assigned model)
+ * resolve the lead pool through this exact request so the reported lead always
+ * matches the assigned one.
+ */
+export function leadResolveRequest(budget: BudgetMode): Omit<ResolveModelRequest, "pool" | "capability"> {
+  return {
+    budget,
+    allowPaid: budget === "quality" || budget === "ebobo",
+    preferredCosts: budget === "balanced"
+      ? ["subscription"]
+      : budget === "eco"
+        ? ["free"]
+        : [],
+    preferredTiers: budget === "balanced"
+      ? ["lead"]
+      : budget === "quality" || budget === "ebobo"
+        ? ["frontier", "lead"]
+        : [],
+  }
+}
+
 export interface ResolvedModel {
   id: string
   score: number
