@@ -131,23 +131,38 @@ function boundedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed.slice(0, RELIABILITY_FIELD_CAP) : undefined
 }
 
+function isReliabilityOutcome(value: unknown): value is ReliabilityEvent["outcome"] {
+  return RELIABILITY_OUTCOMES.has(value as ReliabilityEvent["outcome"])
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+}
+
 /**
- * Reduce an event to the exact persisted shape: numeric attempt/timestamp, a
- * bounded model/nextModel, an error kind drawn only from the closed enum, and a
- * known outcome. Raw error text and any unknown fields are discarded.
+ * Normalize a reliability event into its exact persisted shape, or return
+ * undefined when the record is unrecognizable (missing/invalid outcome,
+ * attempt, or timestamp). Unrecognizable records are dropped rather than
+ * coerced into plausible events, so corrupted persisted state never fabricates
+ * a "failed" attempt. Unknown error kinds and non-string model/nextModel are
+ * omitted; strings are bounded; raw error text is never stored.
  */
-function sanitizeReliabilityEvent(event: ReliabilityEvent): ReliabilityEvent {
+function normalizeReliabilityEvent(value: unknown): ReliabilityEvent | undefined {
+  if (typeof value !== "object" || value === null) return undefined
+  const event = value as Partial<ReliabilityEvent>
+  if (!isReliabilityOutcome(event.outcome)) return undefined
+  if (!isPositiveFiniteNumber(event.attempt)) return undefined
+  if (typeof event.at !== "number" || !Number.isFinite(event.at)) return undefined
   const model = boundedString(event.model)
   const nextModel = boundedString(event.nextModel)
   const errorKind = event.errorKind !== undefined && ERROR_KINDS.has(event.errorKind) ? event.errorKind : undefined
-  const outcome = RELIABILITY_OUTCOMES.has(event.outcome) ? event.outcome : "failed"
   return {
-    attempt: Number.isFinite(event.attempt) && event.attempt > 0 ? Math.floor(event.attempt) : 1,
+    attempt: Math.floor(event.attempt),
     ...(model !== undefined ? { model } : {}),
     ...(errorKind !== undefined ? { errorKind } : {}),
-    outcome,
+    outcome: event.outcome,
     ...(nextModel !== undefined ? { nextModel } : {}),
-    at: Number.isFinite(event.at) ? event.at : Date.now(),
+    at: event.at,
   }
 }
 
@@ -155,8 +170,8 @@ function normalizeReliability(value: unknown): ReliabilityEvent[] {
   if (!Array.isArray(value)) return []
   const events: ReliabilityEvent[] = []
   for (const item of value) {
-    if (typeof item !== "object" || item === null) continue
-    events.push(sanitizeReliabilityEvent(item as ReliabilityEvent))
+    const normalized = normalizeReliabilityEvent(item)
+    if (normalized !== undefined) events.push(normalized)
   }
   return events.slice(-RELIABILITY_EVENT_CAP)
 }
@@ -167,7 +182,7 @@ function normalizeReliability(value: unknown): ReliabilityEvent[] {
  * to the "other" (terminal) class because no retryable signal is known.
  */
 function classifyFailure(info: AssistantInfo): ErrorKind | undefined {
-  if (info.error !== undefined) return classifyError(toFlatError(info.error)).kind
+  if (info.error != null) return classifyError(toFlatError(info.error)).kind
   if (info.finish === "error") return classifyError({ message: info.finish }).kind
   return undefined
 }
@@ -364,12 +379,14 @@ export class Ledger {
   }
 
   /**
-   * Append a sanitized reliability event to a session, keeping only the most
-   * recent `RELIABILITY_EVENT_CAP` entries.
+   * Append a normalized reliability event to a session, keeping only the most
+   * recent `RELIABILITY_EVENT_CAP` entries. Unrecognizable events are dropped.
    */
   private appendReliabilityEvent(session: SessionLedger, event: ReliabilityEvent): void {
+    const normalized = normalizeReliabilityEvent(event)
+    if (normalized === undefined) return
     const events = (session.reliability ??= [])
-    events.push(sanitizeReliabilityEvent(event))
+    events.push(normalized)
     if (events.length > RELIABILITY_EVENT_CAP) {
       session.reliability = events.slice(-RELIABILITY_EVENT_CAP)
     }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -392,6 +392,78 @@ test("SDK-shaped nested error data is flattened and never persisted verbatim", a
 
     const raw = await readFile(path.join(root, ".orchestra", "state.json"), "utf8")
     assert.equal(raw.includes("secret-response-body"), false, "raw provider error text must not be persisted")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("recordAssistant with a null error does not throw and keeps later writes working", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const ledger = new Ledger(root, ".orchestra", true, [])
+
+  try {
+    // A runtime literal-null error (not representable in AssistantInfo's type)
+    // must not throw inside the queued mutation or poison subsequent writes.
+    await ledger.recordAssistant({
+      id: "msg-1",
+      sessionID: "s",
+      role: "assistant",
+      mode: "build",
+      providerID: "openai",
+      modelID: "gpt-5",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      error: null,
+    } as unknown as Parameters<Ledger["recordAssistant"]>[0])
+
+    await ledger.recordAssistant({
+      id: "msg-2",
+      sessionID: "s",
+      role: "assistant",
+      mode: "build",
+      providerID: "openai",
+      modelID: "gpt-4o",
+      cost: 0.01,
+      finish: "stop",
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    })
+
+    const session = await ledger.getSession("s")
+    assert.equal(session.messages["msg-2"]?.cost, 0.01)
+    assert.deepEqual(session.reliability ?? [], [], "null error must not fabricate a failed event")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("corrupted reliability entries in state are dropped instead of fabricated", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const dir = path.join(root, ".orchestra")
+  await mkdir(dir, { recursive: true })
+  await writeFile(path.join(dir, "state.json"), JSON.stringify({
+    version: 2,
+    updatedAt: new Date(0).toISOString(),
+    sessions: {
+      s: {
+        agents: {},
+        premiumEscalations: 0,
+        estimatedPaidUsage: 0,
+        freeWorkerCalls: 0,
+        unknownPriceCalls: 0,
+        paidCallsUsed: 0,
+        messages: {},
+        reliability: [
+          { attempt: 1, outcome: "bogus", at: 123 },
+          { outcome: "failed" },
+        ],
+      },
+    },
+  }), "utf8")
+
+  try {
+    const ledger = new Ledger(root, ".orchestra", true, [])
+    const session = await ledger.getSession("s")
+    assert.deepEqual(session.reliability, [], "unrecognizable records must be dropped, not coerced into failed events")
   } finally {
     await rm(root, { recursive: true, force: true })
   }
