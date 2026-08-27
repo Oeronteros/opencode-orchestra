@@ -22,6 +22,7 @@ interface ToolContextLike {
 }
 
 const classificationCache = createClassifierCache()
+const SESSION_LEDGER_ERROR = JSON.stringify({ ok: false, error: "Unable to route task because session ledger access failed." })
 
 export interface PricingContext {
   snapshot: PriceSnapshot
@@ -110,7 +111,14 @@ export function createOrchestraTools(
           : definition.workers
         const workers = workerPool.slice(0, config.orchestration.maxWorkers)
         const sessionID = (context as ToolContextLike).sessionID
-        const session = sessionID ? await ledger.getSession(sessionID) : undefined
+        let session: Awaited<ReturnType<Ledger["getSession"]>> | undefined
+        if (sessionID) {
+          try {
+            session = await ledger.getSession(sessionID)
+          } catch {
+            return SESSION_LEDGER_ERROR
+          }
+        }
         const paidBudget = paidBudgetFor(config.budget, {
           maxPaidCalls: config.orchestration.maxPremiumCallsPerTask,
         })
@@ -140,7 +148,13 @@ export function createOrchestraTools(
           ...(session?.consensus !== undefined ? { consensus: session.consensus } : {}),
           premiumCallsUsed: paidCallsUsed,
         })
-        if (sessionID) await ledger.setProfile(sessionID, profile)
+        if (sessionID) {
+          try {
+            await ledger.setProfile(sessionID, profile)
+          } catch {
+            return SESSION_LEDGER_ERROR
+          }
+        }
 
         // Pre-run cost estimate (informational; does not block execution).
         let estimate: Awaited<ReturnType<typeof estimateCost>> | undefined
@@ -181,6 +195,7 @@ export function createOrchestraTools(
               remaining: guard.remaining(),
               enabled: paidBudget.enabled,
               paidCallsUsed,
+              sessionAccountingAvailable: sessionID !== undefined,
               warning: paidCallsUsed > 0 && paidCallsUsed >= Math.max(1, Math.ceil(paidBudget.maxPaidCalls * paidBudget.warnAt))
                 ? "Premium budget is nearly exhausted. Paid models will be excluded at the cap."
                 : null,

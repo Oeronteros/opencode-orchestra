@@ -4,7 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import pluginModule, { OrchestraPlugin, server } from "../src/index.js"
+import { DEFAULT_CONFIG } from "../src/config/defaults.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
+import type { Ledger } from "../src/telemetry/ledger.js"
+import { createOrchestraTools } from "../src/tools.js"
 
 test("entrypoint exposes a stable id and server", () => {
   assert.equal(pluginModule.id, "opencode-orchestra")
@@ -148,6 +151,46 @@ test("ebobo routes the full worker roster with frontier arbitration", async () =
   assert.equal(result.workers.length, 9)
   assert.equal(result.parallelWorkers, 8)
   assert.equal(result.escalation.escalate, true)
+})
+
+test("orchestra route works without a session or ledger access", async () => {
+  const ledger = new Proxy({}, {
+    get(_target, property) {
+      throw new Error(`unexpected ledger access: ${String(property)}`)
+    },
+  }) as Ledger
+  const route = createOrchestraTools(DEFAULT_CONFIG, ledger).orchestra_route as unknown as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+
+  const result = JSON.parse(await route.execute({ task: "implement a module" }, {})) as {
+    plan?: { nodes?: unknown[] }
+    paidBudget?: { paidCallsUsed?: number; sessionAccountingAvailable?: boolean }
+  }
+
+  assert.ok(result.plan?.nodes?.length)
+  assert.equal(result.paidBudget?.paidCallsUsed, 0)
+  assert.equal(result.paidBudget?.sessionAccountingAvailable, false)
+})
+
+test("orchestra route returns a readable error when session ledger lookup fails", async () => {
+  const ledger = {
+    getSession: async () => { throw new Error("database credentials leaked") },
+  } as unknown as Ledger
+  const route = createOrchestraTools(DEFAULT_CONFIG, ledger).orchestra_route as unknown as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+
+  const result = JSON.parse(await route.execute(
+    { task: "implement a module" },
+    { sessionID: "broken-session" },
+  )) as { ok?: boolean; error?: string }
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Unable to route task because session ledger access failed.",
+  })
+  assert.doesNotMatch(result.error ?? "", /credentials|database/i)
 })
 
 test("event hook feeds the live stream from message.part.delta without double counting", async () => {
