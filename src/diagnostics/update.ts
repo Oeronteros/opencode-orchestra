@@ -29,7 +29,7 @@ export async function latestPublishedVersion(): Promise<string | undefined> {
     try {
       const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], shell: false })
       const first = result.stdout?.trim().split(/\r?\n/)[0]
-      if (result.status === 0 && first && /^\d+\.\d+\.\d+/.test(first)) return first
+      if (result.status === 0 && first && isStableSemver(first)) return first
     } catch {
       // Try the next fallback.
     }
@@ -41,7 +41,7 @@ export async function latestPublishedVersion(): Promise<string | undefined> {
     })
     if (response.ok) {
       const body = (await response.json()) as { version?: string }
-      if (body.version && /^\d+\.\d+\.\d+/.test(body.version)) return body.version
+      if (body.version && isStableSemver(body.version)) return body.version
     }
   } catch {
     // No network available.
