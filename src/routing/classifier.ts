@@ -143,6 +143,21 @@ const CRITICAL_SIGNALS = [
 
 const INTERMITTENT_SIGNALS = ["intermittent", "occasionally", "sometimes", "randomly", "иногда", "периодически", "случайно"]
 
+/**
+ * High-precision signals that state a task's primary domain or intent. When
+ * one of these matches, the profile receives PRIMARY_INTENT_BONUS so that an
+ * explicit domain mention is not overridden by incidental wording from a
+ * generic activity or environment profile. For example, "security review of
+ * the pull request" must route to security (not the generic review profile),
+ * and "migrate the docker deployment" must route to migration (not ops).
+ */
+const PRIMARY_INTENT_SIGNALS: Partial<Record<ProfileName, string[]>> = {
+  security: ["security", "vulnerability", "xss", "injection"],
+  migration: ["migrate", "migration", "upgrade", "port to", "rewrite"],
+}
+
+const PRIMARY_INTENT_BONUS = 3
+
 export function classifyTask(
   task: string,
   enabledProfiles?: Partial<Record<ProfileName, boolean>>,
@@ -156,7 +171,9 @@ export function classifyTask(
         profile === "debug" && matched.length > 0 && INTERMITTENT_SIGNALS.some((signal) => normalized.includes(signal))
           ? 2
           : 0
-      return { profile, matched, score: matched.length + intermittentDebugBonus }
+      const primaryIntentBonus =
+        PRIMARY_INTENT_SIGNALS[profile]?.some((signal) => matched.includes(signal)) ? PRIMARY_INTENT_BONUS : 0
+      return { profile, matched, score: matched.length + intermittentDebugBonus + primaryIntentBonus }
     })
     .sort((a, b) => b.score - a.score)
 
