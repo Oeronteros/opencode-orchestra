@@ -10,10 +10,14 @@ import {
   latestPublishedVersion,
 } from "../src/diagnostics/update.js"
 
-async function fakeCommand(directory: string, name: string, body: string): Promise<void> {
-  const file = path.join(directory, name)
-  await writeFile(file, `#!/bin/sh\n${body}\n`, "utf8")
-  await chmod(file, 0o755)
+async function fakeCommand(directory: string, name: string, unixBody: string, windowsBody: string): Promise<void> {
+  if (process.platform === "win32") {
+    await writeFile(path.join(directory, `${name}.cmd`), `@echo off\r\n${windowsBody}\r\n`, "utf8")
+  } else {
+    const file = path.join(directory, name)
+    await writeFile(file, `#!/bin/sh\n${unixBody}\n`, "utf8")
+    await chmod(file, 0o755)
+  }
 }
 
 async function withToolchain(
@@ -35,8 +39,8 @@ async function withToolchain(
 test("uses the npm registry CLI when npm succeeds", { concurrency: false }, async () => {
   await withToolchain(
     async (directory) => {
-      await fakeCommand(directory, "npm", 'printf "2.3.4\\n"')
-      await fakeCommand(directory, "bun", "exit 1")
+      await fakeCommand(directory, "npm", 'printf "2.3.4\\n"', "@echo 2.3.4")
+      await fakeCommand(directory, "bun", "exit 1", "@exit /b 1")
     },
     async () => assert.equal(await latestPublishedVersion(), "2.3.4"),
   )
@@ -45,8 +49,8 @@ test("uses the npm registry CLI when npm succeeds", { concurrency: false }, asyn
 test("falls back to Bun when npm fails", { concurrency: false }, async () => {
   await withToolchain(
     async (directory) => {
-      await fakeCommand(directory, "npm", "exit 1")
-      await fakeCommand(directory, "bun", 'printf "2.3.5\\n"')
+      await fakeCommand(directory, "npm", "exit 1", "@exit /b 1")
+      await fakeCommand(directory, "bun", 'printf "2.3.5\\n"', "@echo 2.3.5")
     },
     async () => assert.equal(await latestPublishedVersion(), "2.3.5"),
   )
@@ -58,8 +62,8 @@ test("falls back to the registry fetch after npm and Bun fail", { concurrency: f
     globalThis.fetch = async () => new Response("offline", { status: 500 })
     await withToolchain(
       async (directory) => {
-        await fakeCommand(directory, "npm", "exit 1")
-        await fakeCommand(directory, "bun", "exit 1")
+        await fakeCommand(directory, "npm", "exit 1", "@exit /b 1")
+        await fakeCommand(directory, "bun", "exit 1", "@exit /b 1")
       },
       async () => assert.equal(await latestPublishedVersion(), undefined),
     )
@@ -74,8 +78,8 @@ test("rejects invalid semver registry data", { concurrency: false }, async () =>
     globalThis.fetch = async () => new Response(JSON.stringify({ version: "1.2.3-not-semver" }), { status: 200 })
     await withToolchain(
       async (directory) => {
-        await fakeCommand(directory, "npm", "exit 1")
-        await fakeCommand(directory, "bun", "exit 1")
+        await fakeCommand(directory, "npm", "exit 1", "@exit /b 1")
+        await fakeCommand(directory, "bun", "exit 1", "@exit /b 1")
       },
       async () => assert.equal(await latestPublishedVersion(), undefined),
     )
@@ -95,8 +99,8 @@ test("preserves the update result interface when lookup fails", async () => {
     globalThis.fetch = async () => new Response("offline", { status: 500 })
     await withToolchain(
       async (directory) => {
-        await fakeCommand(directory, "npm", "exit 1")
-        await fakeCommand(directory, "bun", "exit 1")
+        await fakeCommand(directory, "npm", "exit 1", "@exit /b 1")
+        await fakeCommand(directory, "bun", "exit 1", "@exit /b 1")
       },
       async () => assert.deepEqual(await checkForUpdates("1.0.0"), { current: "1.0.0" }),
     )

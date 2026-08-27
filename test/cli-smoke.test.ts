@@ -38,6 +38,26 @@ test("built CLI runs offline doctor JSON against a temporary config directory", 
     env: { ...process.env, PATH: "", HOME: configDirectory },
   })
   assert.equal(result.status, 0)
-  const report = JSON.parse(result.stdout) as { checks?: unknown[] }
+  const report = JSON.parse(result.stdout) as {
+    environment?: { platform?: string; nodeVersion?: string }
+    configDirectory?: string
+    mainConfig?: { path?: string; exists?: boolean; errors?: unknown[] }
+    orchestraConfig?: { path?: string; exists?: boolean; errors?: unknown[] }
+    checks?: Array<{ id?: string; label?: string; status?: string; detail?: string }>
+  }
+  assert.equal(report.configDirectory, path.resolve(configDirectory))
+  assert.match(report.environment?.platform ?? "", /\w+/)
+  assert.match(report.environment?.nodeVersion ?? "", /^v\d+/)
+  assert.equal(report.mainConfig?.exists, false)
+  assert.deepEqual(report.mainConfig?.errors, [])
+  assert.equal(report.orchestraConfig?.exists, false)
+  assert.deepEqual(report.orchestraConfig?.errors, [])
   assert.ok(Array.isArray(report.checks))
+  assert.ok(report.checks.length > 0)
+  for (const check of report.checks) {
+    assert.match(check.id ?? "", /^\w[\w.-]+$/)
+    assert.match(check.label ?? "", /\w+/)
+    assert.ok(["error", "warning", "ok", "info"].includes(check.status ?? ""))
+    assert.match(check.detail ?? "", /\w+/)
+  }
 })
