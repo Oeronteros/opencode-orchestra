@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { ModelCandidateInput, ModelCost, ProfileName } from "../config/schema.js"
 import { normalizeCandidate } from "../routing/model-resolver.js"
+import { classifyError, isRetryable, type ErrorKind } from "../routing/fallback.js"
 import type { PricingStatus } from "../pricing/cost.js"
 
 export interface TokenUsage {
@@ -30,6 +31,21 @@ export interface MessageUsage {
   reply?: string
 }
 
+/**
+ * A sanitized, bounded record of an observed attempt: the model that ran, the
+ * policy error class (never the raw error text), the next model when a retry
+ * was observed, and the outcome. Events are capped and never store credentials,
+ * prompts, or provider response bodies.
+ */
+export interface ReliabilityEvent {
+  attempt: number
+  model?: string
+  errorKind?: ErrorKind
+  outcome: "failed" | "retried" | "succeeded"
+  nextModel?: string
+  at: number
+}
+
 export interface SessionLedger {
   profile?: ProfileName
   agents: Record<string, number>
@@ -43,6 +59,7 @@ export interface SessionLedger {
   consensusUncertainty?: number
   consensusNotes?: string
   messages: Record<string, MessageUsage>
+  reliability?: ReliabilityEvent[]
 }
 
 export interface LedgerState {
@@ -65,6 +82,13 @@ interface AssistantInfo {
   }
   tokens?: TokenUsage
   finish?: string
+  error?: {
+    message?: string
+    status?: number
+    statusCode?: number
+    /** OpenCode SDK nests provider error details under `data` (name + data). */
+    data?: unknown
+  }
 }
 
 function emptySession(): SessionLedger {
@@ -95,6 +119,81 @@ function normalizeTokens(tokens?: Partial<TokenUsage>): TokenUsage {
   }
 }
 
+const RELIABILITY_EVENT_CAP = 100
+const RELIABILITY_FIELD_CAP = 200
+
+const ERROR_KINDS = new Set<ErrorKind>(["rate-limit", "server", "timeout", "auth", "invalid-request", "other"])
+const RELIABILITY_OUTCOMES = new Set<ReliabilityEvent["outcome"]>(["failed", "retried", "succeeded"])
+
+function boundedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed.slice(0, RELIABILITY_FIELD_CAP) : undefined
+}
+
+/**
+ * Reduce an event to the exact persisted shape: numeric attempt/timestamp, a
+ * bounded model/nextModel, an error kind drawn only from the closed enum, and a
+ * known outcome. Raw error text and any unknown fields are discarded.
+ */
+function sanitizeReliabilityEvent(event: ReliabilityEvent): ReliabilityEvent {
+  const model = boundedString(event.model)
+  const nextModel = boundedString(event.nextModel)
+  const errorKind = event.errorKind !== undefined && ERROR_KINDS.has(event.errorKind) ? event.errorKind : undefined
+  const outcome = RELIABILITY_OUTCOMES.has(event.outcome) ? event.outcome : "failed"
+  return {
+    attempt: Number.isFinite(event.attempt) && event.attempt > 0 ? Math.floor(event.attempt) : 1,
+    ...(model !== undefined ? { model } : {}),
+    ...(errorKind !== undefined ? { errorKind } : {}),
+    outcome,
+    ...(nextModel !== undefined ? { nextModel } : {}),
+    at: Number.isFinite(event.at) ? event.at : Date.now(),
+  }
+}
+
+function normalizeReliability(value: unknown): ReliabilityEvent[] {
+  if (!Array.isArray(value)) return []
+  const events: ReliabilityEvent[] = []
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) continue
+    events.push(sanitizeReliabilityEvent(item as ReliabilityEvent))
+  }
+  return events.slice(-RELIABILITY_EVENT_CAP)
+}
+
+/**
+ * Derive a policy error class from an assistant message. A provider error is
+ * classified directly; a bare `finish: "error"` with no error detail falls back
+ * to the "other" (terminal) class because no retryable signal is known.
+ */
+function classifyFailure(info: AssistantInfo): ErrorKind | undefined {
+  if (info.error !== undefined) return classifyError(toFlatError(info.error)).kind
+  if (info.finish === "error") return classifyError({ message: info.finish }).kind
+  return undefined
+}
+
+/**
+ * Normalize an assistant error into the flat `{ message, status, statusCode }`
+ * shape that `classifyError` consumes. The OpenCode SDK wraps provider errors
+ * as `{ name, data: { message, statusCode } }`, so top-level fields win and any
+ * nested `data` fields are promoted when the top level is absent.
+ */
+function toFlatError(error: NonNullable<AssistantInfo["error"]>): { message?: string; status?: number; statusCode?: number } {
+  const nested = (typeof error.data === "object" && error.data !== null ? error.data : {}) as {
+    message?: unknown
+    status?: unknown
+    statusCode?: unknown
+  }
+  const message = error.message ?? (typeof nested.message === "string" ? nested.message : undefined)
+  const status = error.status ?? (typeof nested.status === "number" ? nested.status : undefined)
+  const statusCode = error.statusCode ?? (typeof nested.statusCode === "number" ? nested.statusCode : undefined)
+  return {
+    ...(message !== undefined ? { message } : {}),
+    ...(status !== undefined ? { status } : {}),
+    ...(statusCode !== undefined ? { statusCode } : {}),
+  }
+}
+
 function upgradeState(input: unknown): LedgerState {
   if (typeof input !== "object" || input === null) return emptyLedgerState()
   const candidate = input as { version?: number; updatedAt?: string; sessions?: Record<string, SessionLedger> }
@@ -108,6 +207,9 @@ function upgradeState(input: unknown): LedgerState {
     session.freeWorkerCalls ??= 0
     session.unknownPriceCalls ??= 0
     session.paidCallsUsed ??= 0
+    if (session.reliability !== undefined) {
+      session.reliability = normalizeReliability(session.reliability)
+    }
     for (const [id, message] of Object.entries(session.messages)) {
       session.messages[id] = {
         ...message,
@@ -139,6 +241,13 @@ export class Ledger {
   private readonly pricingStatusOf: ((providerID: string | undefined, modelID: string | undefined) => PricingStatus | undefined) | undefined
   private state?: LedgerState
   private queue = Promise.resolve()
+  /**
+   * In-memory per-session pending retryable failure: session id -> attempt
+   * number that failed. Cleared when the next assistant attempt in that session
+   * is observed. Terminal kinds (auth/invalid-request/other) never populate it,
+   * so no retry transition is fabricated for them.
+   */
+  private readonly pendingFailure = new Map<string, number>()
 
   constructor(
     directory: string,
@@ -235,6 +344,7 @@ export class Ledger {
           && (declared === "free" || (declared === undefined && pricingStatus === "free"))) {
           session.freeWorkerCalls += 1
         }
+        this.observeReliabilityAttempt(session, info.sessionID, model, info)
       }
 
       session.messages[info.id] = {
@@ -250,6 +360,72 @@ export class Ledger {
         ...(previous?.prompt !== undefined ? { prompt: previous.prompt } : {}),
         ...(previous?.reply !== undefined ? { reply: previous.reply } : {}),
       }
+    })
+  }
+
+  /**
+   * Append a sanitized reliability event to a session, keeping only the most
+   * recent `RELIABILITY_EVENT_CAP` entries.
+   */
+  private appendReliabilityEvent(session: SessionLedger, event: ReliabilityEvent): void {
+    const events = (session.reliability ??= [])
+    events.push(sanitizeReliabilityEvent(event))
+    if (events.length > RELIABILITY_EVENT_CAP) {
+      session.reliability = events.slice(-RELIABILITY_EVENT_CAP)
+    }
+  }
+
+  /**
+   * Observe a genuinely new assistant attempt. A retryable failure that was
+   * pending from the previous attempt produces a "retried" transition; then the
+   * attempt's own failure (if any) produces a "failed" event and, when
+   * retryable, arms the next transition. Successful attempts with no pending
+   * failure produce no event.
+   */
+  private observeReliabilityAttempt(
+    session: SessionLedger,
+    sessionID: string,
+    model: string | undefined,
+    info: AssistantInfo,
+  ): void {
+    const pendingAttempt = this.pendingFailure.get(sessionID)
+    const attempt = pendingAttempt !== undefined ? pendingAttempt + 1 : 1
+
+    if (pendingAttempt !== undefined) {
+      this.appendReliabilityEvent(session, {
+        attempt,
+        ...(model !== undefined ? { model } : {}),
+        outcome: "retried",
+        ...(model !== undefined ? { nextModel: model } : {}),
+        at: Date.now(),
+      })
+      this.pendingFailure.delete(sessionID)
+    }
+
+    const kind = classifyFailure(info)
+    if (kind === undefined) return
+
+    this.appendReliabilityEvent(session, {
+      attempt,
+      ...(model !== undefined ? { model } : {}),
+      errorKind: kind,
+      outcome: "failed",
+      at: Date.now(),
+    })
+    if (isRetryable(kind)) {
+      this.pendingFailure.set(sessionID, attempt)
+    }
+  }
+
+  /**
+   * Additive reliability event recording. No-op when the ledger is disabled.
+   * The event is sanitized (bounded fields, closed error-kind enum, no raw
+   * error text) and the session's event list is capped.
+   */
+  async recordReliabilityEvent(sessionID: string, event: ReliabilityEvent): Promise<void> {
+    await this.mutate((state) => {
+      const session = (state.sessions[sessionID] ??= emptySession())
+      this.appendReliabilityEvent(session, event)
     })
   }
 
