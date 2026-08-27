@@ -363,6 +363,13 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
       ...(openRouter ? { openRouter } : {}),
     }),
+    ...(orchestra.permissions.autoAcceptAll
+      ? {
+          "permission.ask": async (_input, output) => {
+            if (output.status !== "deny") output.status = "allow"
+          },
+        }
+      : {}),
     dispose: async () => {
       priceRefresher.stop()
       await live.dispose()
@@ -430,7 +437,10 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         // (step-start begins every LLM step; reasoning/tool parts never appear
         // in user messages). LiveStream.start() is idempotent per key, so this
         // fills `active` even when text deltas don't arrive (tool/non-streaming).
-        if (part.type === "step-start" || part.type === "reasoning" || part.type === "tool") {
+        if (
+          !finishedLiveMessages.has(part.messageID)
+          && (part.type === "step-start" || part.type === "reasoning" || part.type === "tool")
+        ) {
           const m = sessionModel.get(part.sessionID)
           live.start({
             key: part.messageID, // === assistant info.id (see SDK Part.messageID)
@@ -470,6 +480,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       const finished =
         info.time.completed !== undefined || info.finish !== undefined || info.error !== undefined
       if (!finished) {
+        if (finishedLiveMessages.has(info.id)) return
         const m = sessionModel.get(info.sessionID)
         live.start({
           key: info.id,

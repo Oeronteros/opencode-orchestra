@@ -70,6 +70,14 @@
         }
       }
     },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "autoAcceptAll": { "type": "boolean", "default": false }
+      },
+      "default": { "autoAcceptAll": false }
+    },
     "superpowers": {
       "type": "object",
       "additionalProperties": false,

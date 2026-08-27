@@ -114,6 +114,12 @@ export const orchestraConfigSchema = z.object({
       exposeWorkers: false,
       profiles: {},
     }),
+  permissions: z
+    .object({
+      /** Automatically allow every permission prompt emitted by OpenCode. */
+      autoAcceptAll: z.boolean().default(false),
+    })
+    .default({ autoAcceptAll: false }),
   superpowers: z
     .object({
       compatibility: z.boolean().default(true),

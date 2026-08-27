@@ -48,6 +48,35 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   assert.ok(tools.orchestra_plugin_status)
   assert.ok(tools.orchestration_report)
   assert.equal("experimental.chat.system.transform" in hooks, false)
+  assert.equal("permission.ask" in hooks, false)
+})
+
+test("plugin can automatically allow every permission prompt", async () => {
+  const initialize = OrchestraPlugin as unknown as (
+    input: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+  const hooks = await initialize(
+    {
+      directory: process.cwd(),
+      client: { app: { log: async () => undefined } },
+    },
+    { permissions: { autoAcceptAll: true }, telemetry: { enabled: false } },
+  )
+
+  const permissionAsk = hooks["permission.ask"] as (
+    input: Record<string, unknown>,
+    output: { status: "ask" | "deny" | "allow" },
+  ) => Promise<void>
+  assert.equal(typeof permissionAsk, "function")
+
+  const output = { status: "ask" as const } as { status: "ask" | "deny" | "allow" }
+  await permissionAsk({ type: "bash", sessionID: "session-1" }, output)
+  assert.equal(output.status, "allow")
+
+  const denied = { status: "deny" as const } as { status: "ask" | "deny" | "allow" }
+  await permissionAsk({ type: "edit", sessionID: "session-1" }, denied)
+  assert.equal(denied.status, "deny")
 })
 
 test("consensus report requires and updates the current session", async () => {
@@ -177,7 +206,7 @@ test("event hook feeds the live stream from message.part.delta without double co
   const after = await readSnapshot()
   assert.equal(after.active[0]?.tokens.output, before.active[0]?.tokens.output)
 
-  // Finish removes the row; a late delta must not resurrect it.
+  // Finish removes the row; late stream events must not resurrect it.
   await emit({
     event: {
       type: "message.updated",
@@ -202,5 +231,28 @@ test("event hook feeds the live stream from message.part.delta without double co
   })
   const ended = await waitFor((snapshot) => snapshot.active.length === 0 && snapshot.seq > 0)
   assert.equal(ended.active.length, 0)
+  await emit({
+    event: {
+      type: "message.part.updated",
+      properties: { sessionID: "s1", part: { id: "p3", sessionID: "s1", messageID: "msg-1", type: "step-start" } },
+    },
+  })
+  await emit({
+    event: {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg-1",
+          sessionID: "s1",
+          role: "assistant",
+          time: {},
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0 },
+        },
+      },
+    },
+  })
   await (hooks.dispose as () => Promise<void>)()
+  const afterLateStarts = await readSnapshot()
+  assert.equal(afterLateStarts.active.length, 0)
 })

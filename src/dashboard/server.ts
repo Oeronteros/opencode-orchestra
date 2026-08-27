@@ -159,6 +159,7 @@ interface SnapshotData {
     budget: string
     models: { strategy: "auto" | "manual"; agents: Record<string, string> }
     orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; worktreeRoot?: string }
+    permissions: { autoAcceptAll: boolean }
     superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
     telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
     pricing: { endpoint?: string; refreshIntervalHours: number; estimate: boolean; warnThresholdUSD: number; openrouter: { enabled: boolean; ttlHours: number }; aliases: Array<{ canonical: string; aliases: string[] }> }
@@ -254,6 +255,7 @@ async function snapshot(directory: string, configDirectory: string, includeModel
       budget: config.budget,
        models: { strategy: config.models.strategy, agents: config.models.agents },
        orchestration: dashboardOrchestration,
+       permissions: config.permissions,
        superpowers: config.superpowers,
        telemetry: { enabled: config.telemetry.enabled, storeTexts: config.telemetry.storeTexts, anomalySigma: config.telemetry.anomalySigma },
        pricing: dashboardPricing,
@@ -475,7 +477,7 @@ function isObjectLike(value: unknown): value is Record<string, unknown> {
  * Keys the dashboard may edit. Everything else inside the parsed config is
  * preserved verbatim, so unknown/commented JSONC survives an update.
  */
-const EDITABLE_SECTIONS = ["budget", "models", "orchestration", "superpowers", "telemetry", "pricing"] as const
+const EDITABLE_SECTIONS = ["budget", "models", "orchestration", "permissions", "superpowers", "telemetry", "pricing"] as const
 
 function normalizeConfigInput(input: unknown): unknown {
   if (!isObjectLike(input) || !isObjectLike(input.models) || !isObjectLike(input.models.agents)) return input

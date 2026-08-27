@@ -61,6 +61,8 @@ export interface LiveActiveAgent {
   provider?: string | undefined
   /** Epoch ms the agent started responding. */
   startedAt: number
+  /** Accumulated time spent receiving output deltas, excluding pauses. */
+  generationMs?: number | undefined
   /** Last-seen snippet of the in-progress output. */
   text: string
   /** Estimated USD accrued while still generating. */
@@ -83,14 +85,17 @@ export interface LiveSnapshot {
 }
 
 interface ActiveState extends LiveActiveAgent {
+  generationMs: number
   lastSeq: number
   chars: number
   /** Accumulated reasoning length, estimated separately from output `chars`. */
   reasoningChars: number
+  lastOutputAt: number | undefined
 }
 
 const MAX_RECENT = 200
 const THROTTLE_MS = 450
+const GENERATION_PAUSE_MS = 2_000
 
 function emptySnapshot(): LiveSnapshot {
   return { version: 1, updatedAt: 0, seq: 0, active: [], recent: [] }
@@ -155,6 +160,7 @@ export class LiveStream {
   private lastWrite = 0
   private dirty = false
   private enabled: boolean
+  private readonly now: () => number
 
   constructor(
     directory: string,
@@ -164,6 +170,7 @@ export class LiveStream {
     maxRecent = MAX_RECENT,
     throttleMs = THROTTLE_MS,
     storeTexts = false,
+    now: () => number = Date.now,
   ) {
     this.liveFile = path.resolve(directory, telemetryDirectory, "live.ndjson")
     this.enabled = enabled
@@ -171,10 +178,11 @@ export class LiveStream {
     this.maxRecent = maxRecent
     this.throttleMs = throttleMs
     this.estimatePrice = estimatePrice
+    this.now = now
   }
 
   private makeEvent(input: Omit<LiveEvent, "seq" | "ts">): LiveEvent {
-    const event: LiveEvent = { seq: ++this.seq, ts: Date.now(), ...input }
+    const event: LiveEvent = { seq: ++this.seq, ts: this.now(), ...input }
     this.recent.push(event)
     if (this.recent.length > this.maxRecent) this.recent.splice(0, this.recent.length - this.maxRecent)
     return event
@@ -202,13 +210,15 @@ export class LiveStream {
       agent: input.agent,
       model: input.model,
       provider: input.provider,
-      startedAt: input.startedAt ?? Date.now(),
+      startedAt: input.startedAt ?? this.now(),
+      generationMs: 0,
       text: "",
       cost: est.cost,
       tokens: { input: est.input, output: 0, reasoning: 0 },
       lastSeq: this.seq,
       chars: 0,
       reasoningChars: 0,
+      lastOutputAt: undefined,
     })
     this.makeEvent({
       e: "start",
@@ -264,7 +274,17 @@ export class LiveStream {
     if (input.provider) existing.provider = input.provider
     const snippet = input.text.length > 240 ? `${input.text.slice(-240)}…` : input.text
     existing.text = this.storeTexts ? snippet : ""
-    existing.chars = Math.max(existing.chars, input.chars ?? input.text.length)
+    const nextChars = input.chars ?? input.text.length
+    const outputProgressed = nextChars > existing.chars
+    if (outputProgressed) {
+      const timestamp = this.now()
+      if (existing.lastOutputAt !== undefined) {
+        const interval = timestamp - existing.lastOutputAt
+        if (interval >= 0 && interval <= GENERATION_PAUSE_MS) existing.generationMs += interval
+      }
+      existing.lastOutputAt = timestamp
+    }
+    existing.chars = Math.max(existing.chars, nextChars)
     existing.reasoningChars = Math.max(existing.reasoningChars, input.reasoningChars ?? 0)
     existing.confidence = input.confidence
     existing.flags = input.flags
@@ -327,11 +347,11 @@ export class LiveStream {
 
   private serialize(): LiveSnapshot {
     const active = [...this.active.values()]
-      .map(({ lastSeq: _lastSeq, chars: _chars, reasoningChars: _reasoningChars, ...rest }) => rest)
+      .map(({ lastSeq: _lastSeq, chars: _chars, reasoningChars: _reasoningChars, lastOutputAt: _lastOutputAt, ...rest }) => rest)
       .sort((a, b) => a.startedAt - b.startedAt)
     return {
       version: 1,
-      updatedAt: this.lastWrite || Date.now(),
+      updatedAt: this.lastWrite || this.now(),
       seq: this.seq,
       active,
       recent: [...this.recent],
@@ -350,7 +370,7 @@ export class LiveStream {
       return
     }
     if (this.timer) return
-    const remaining = this.throttleMs - (Date.now() - this.lastWrite)
+    const remaining = this.throttleMs - (this.now() - this.lastWrite)
     this.timer = setTimeout(() => {
       this.timer = undefined
       void this.flush()
@@ -359,7 +379,7 @@ export class LiveStream {
 
   private flush(): Promise<void> {
     this.dirty = false
-    this.lastWrite = Date.now()
+    this.lastWrite = this.now()
     const snapshot = this.serialize()
     this.queue = this.queue.then(async () => {
       try {
