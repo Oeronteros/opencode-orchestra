@@ -16,7 +16,7 @@ import { workerCapability, workerPoolKey } from "./agents/workers.js"
 import type { Ledger } from "./telemetry/ledger.js"
 import { formatPluginStatus, type PluginStatus } from "./plugin-status.js"
 import { buildFallbackChain } from "./routing/fallback.js"
-import { resolveModel, leadResolveRequest, type RoutingReason } from "./routing/model-resolver.js"
+import { resolveModel, leadResolveRequest, boundReasonText, type RoutingReason } from "./routing/model-resolver.js"
 
 interface ToolContextLike {
   sessionID?: string
@@ -52,7 +52,7 @@ function buildLeadRouting(config: OrchestraConfig): LeadRouting {
       model: exactOverride,
       reason: {
         code: "exact_override",
-        text: `id=${exactOverride} cost=override score=0`,
+        text: boundReasonText(`id=${exactOverride} cost=override score=0`),
         matchedCapabilities: [],
         score: 0,
         budget,

@@ -149,6 +149,15 @@ test("paid candidates are excluded from alternatives once the paid cap is reache
   assert.deepEqual(chain.alternatives.map((entry) => entry.id), [])
 });
 
+test("an all-paid pool under an eco budget yields no fallback chain", () => {
+  const codePool: ModelCandidateInput[] = [
+    { id: "vendor/paid-frontier", cost: "paid", tier: "frontier", priority: 90, capabilities: ["code"], scores: { code: 10 } },
+    { id: "vendor/paid-worker", cost: "paid", tier: "worker", priority: 50, capabilities: ["code"], scores: { code: 7 } },
+  ]
+  const chain = buildFallbackChain(codePool, "code", "eco", false)
+  assert.equal(chain, undefined)
+});
+
 test("eco cost tie-break prefers free over paid at equal priority/tier/compatibility", () => {
   const codePool: ModelCandidateInput[] = [
     { id: "vendor/primary", cost: "free", tier: "frontier", priority: 95, capabilities: ["code"], scores: { code: 10 } },

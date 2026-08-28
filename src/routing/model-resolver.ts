@@ -30,6 +30,19 @@ export interface RoutingReason {
   budget: BudgetMode
 }
 
+/** Maximum length of the `RoutingReason.text` diagnostic string. */
+const REASON_TEXT_LIMIT = 200
+
+/**
+ * Bound a routing reason's diagnostic text to a fixed length. The text only
+ * carries model id, cost class, tier, and score — never secrets, prompts, or
+ * credentials — so a plain truncation is safe.
+ */
+export function boundReasonText(text: string, limit: number = REASON_TEXT_LIMIT): string {
+  if (text.length <= limit) return text
+  return text.slice(0, limit - 1) + "…"
+}
+
 export interface ModelCandidate {
   id: string
   cost: ModelCost
@@ -250,7 +263,7 @@ export function resolveModel(request: ResolveModelRequest): ResolvedModel | unde
 
   const routingReason: RoutingReason = {
     code,
-    text: `id=${winner.candidate.id} cost=${winner.candidate.cost} ${component} score=${winner.score}`,
+    text: boundReasonText(`id=${winner.candidate.id} cost=${winner.candidate.cost} ${component} score=${winner.score}`),
     matchedCapabilities,
     score: winner.score,
     budget: request.budget,

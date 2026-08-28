@@ -152,8 +152,13 @@ export function buildFallbackChain(
     ...(options.paidCallsUsed !== undefined ? { paidCallsUsed: options.paidCallsUsed } : {}),
     ...(options.maxPaidCalls !== undefined ? { maxPaidCalls: options.maxPaidCalls } : {}),
   })
-  const primary = winner?.id ?? compatiblePool[0]?.id
-  if (!primary) return undefined
+  // If every compatible candidate was budget-excluded (e.g. an all-paid pool
+  // under an eco budget or a fully exhausted paid cap), `resolveModel` has no
+  // winner and there is no valid primary — never fail open to the first raw
+  // pool entry, which could surface a paid model as primary.
+  if (!winner) return undefined
+
+  const primary = winner.id
 
   const paidCallsUsed = options.paidCallsUsed ?? 0
   const costOrder = costPreferenceOrder(budget, options.preferredCosts)

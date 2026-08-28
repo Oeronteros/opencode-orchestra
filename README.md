@@ -14,13 +14,13 @@
 - диагностика `doctor`, проверка обновлений и shell completion;
 - идемпотентная установка без удаления пользовательской OpenCode/MCP-конфигурации.
 
-Версия плагина — **1.0.25**. Полный контракт конфигурации описан в [schema/opencode-orchestra.schema.json](schema/opencode-orchestra.schema.json), рабочий пример — в [examples/.opencode/orchestra.jsonc](examples/.opencode/orchestra.jsonc).
+Версия плагина — **1.0.27**. Полный контракт конфигурации описан в [schema/opencode-orchestra.schema.json](schema/opencode-orchestra.schema.json), рабочий пример — в [examples/.opencode/orchestra.jsonc](examples/.opencode/orchestra.jsonc).
 
 ## Что нового в 1.0.9–1.0.25
 
 Полноценные разделы с примерами для пользователей.
 
-### 1.0.28 — надёжность и прозрачная маршрутизация
+### 1.0.29 — надёжность и прозрачная маршрутизация (next/unreleased)
 
 - **Graceful degradation при невалидном `orchestra.jsonc`**: если глобальный или проектный конфиг не парсится либо не проходит валидацию схемы, плагин продолжает запуск на безопасных default-значениях, пишет один warning с путём к конфигу и sanitized-причиной и **не перезаписывает** файл. Обнаружение моделей, регистрация проектов, телеметрия и создание агентов/инструментов продолжаются как обычно.
 - **Структурированная причина маршрутизации**: `orchestra_route` возвращает `routing.lead.model` вместе с машиночитаемым `routing.lead.reason` (`code`, `text`, `matchedCapabilities`, `score`, `budget`) и `routing.source` (`exact_override`, `manual_pool`, `auto_discovered`, `budget_exclusion`, `no_candidate`). `code` — стабильный идентификатор решения; `text` — диагностическая строка без секретов и промптов.
