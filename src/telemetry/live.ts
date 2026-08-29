@@ -96,6 +96,37 @@ interface ActiveState extends LiveActiveAgent {
 const MAX_RECENT = 200
 const THROTTLE_MS = 450
 const GENERATION_PAUSE_MS = 2_000
+const RENAME_ATTEMPTS = 10
+const RENAME_RETRY_MS = 30
+
+/**
+ * Atomically replace `destination` with `temporary`. On POSIX, `rename` always
+ * replaces an open destination; on Windows it can fail with EPERM/EBUSY/EACCES
+ * while a concurrent reader (the dashboard SSE poll or a test harness) has the
+ * destination open. The lock is held only for the duration of a small read, so
+ * a short retry reliably wins without resorting to a non-atomic write.
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  renameFn: (from: string, to: string) => Promise<void> = rename,
+  attempts = RENAME_ATTEMPTS,
+  delayMs = RENAME_RETRY_MS,
+): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await renameFn(from, to)
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+      }
+    }
+  }
+  throw lastError
+}
 
 function emptySnapshot(): LiveSnapshot {
   return { version: 1, updatedAt: 0, seq: 0, active: [], recent: [] }
@@ -395,7 +426,7 @@ export class LiveStream {
         }
         const temporary = `${this.liveFile}.tmp`
         await writeFile(temporary, JSON.stringify(snapshot) + "\n", "utf8")
-        await rename(temporary, this.liveFile)
+        await renameWithRetry(temporary, this.liveFile)
       } catch {
         // Live telemetry is best-effort; a failure must never break orchestration.
       }

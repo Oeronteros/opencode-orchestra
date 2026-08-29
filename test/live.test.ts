@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { estimateLiveCost, estimateOutputTokens, LiveStream, parseLiveSnapshot } from "../src/telemetry/live.js"
+import { estimateLiveCost, estimateOutputTokens, LiveStream, parseLiveSnapshot, renameWithRetry } from "../src/telemetry/live.js"
 
 const PRICE = { input: 1.25, output: 10 }
 
@@ -159,4 +159,30 @@ test("parseLiveSnapshot tolerates malformed input", () => {
   assert.deepEqual(empty.active, [])
   assert.deepEqual(empty.recent, [])
   assert.equal(empty.version, 1)
+})
+
+test("renameWithRetry retries a transient rename failure", async () => {
+  let calls = 0
+  const flaky = async (): Promise<void> => {
+    calls += 1
+    if (calls < 3) {
+      const error = new Error("EBUSY: resource busy or locked, rename") as NodeJS.ErrnoException
+      error.code = "EBUSY"
+      throw error
+    }
+  }
+  await renameWithRetry("a.tmp", "a", flaky, 5, 1)
+  assert.equal(calls, 3)
+})
+
+test("renameWithRetry gives up after exhausting attempts", async () => {
+  let calls = 0
+  const alwaysFails = async (): Promise<void> => {
+    calls += 1
+    const error = new Error("EPERM: operation not permitted, rename") as NodeJS.ErrnoException
+    error.code = "EPERM"
+    throw error
+  }
+  await assert.rejects(renameWithRetry("a.tmp", "a", alwaysFails, 4, 1), { code: "EPERM" })
+  assert.equal(calls, 4)
 })

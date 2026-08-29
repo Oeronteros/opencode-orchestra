@@ -464,7 +464,7 @@ function validationIssues(error: z.ZodError): ValidationIssue[] {
 
 /** Validate a dashboard config patch without touching disk. */
 export function validateConfigInput(input: unknown): ConfigValidationResult {
-  const result = CONFIG_INPUT_SCHEMA.safeParse(input)
+  const result = CONFIG_INPUT_SCHEMA.safeParse(normalizeConfigInput(input))
   if (result.success) return { valid: true, issues: [] }
   return { valid: false, issues: validationIssues(result.error) }
 }
@@ -480,14 +480,36 @@ function isObjectLike(value: unknown): value is Record<string, unknown> {
 const EDITABLE_SECTIONS = ["budget", "models", "orchestration", "permissions", "superpowers", "telemetry", "pricing"] as const
 
 function normalizeConfigInput(input: unknown): unknown {
-  if (!isObjectLike(input) || !isObjectLike(input.models) || !isObjectLike(input.models.agents)) return input
-  const agents = Object.fromEntries(
-    Object.entries(input.models.agents)
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-      .map(([name, model]) => [name, model.trim()] as const)
-      .filter(([, model]) => model.length > 0),
-  )
-  return { ...input, models: { ...input.models, agents } }
+  if (!isObjectLike(input)) return input
+  const normalized: Record<string, unknown> = { ...input }
+
+  const models = normalized.models
+  if (isObjectLike(models) && isObjectLike(models.agents)) {
+    const agents = Object.fromEntries(
+      Object.entries(models.agents)
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+        .map(([name, model]) => [name, model.trim()] as const)
+        .filter(([, model]) => model.length > 0),
+    )
+    normalized.models = { ...models, agents }
+  }
+
+  // Optional free-text fields arrive as empty strings from the settings form.
+  // Drop them so the schema's min(1) rule doesn't reject the save, and preserve
+  // any existing value instead of clobbering it with an empty string.
+  const orchestration = normalized.orchestration
+  if (isObjectLike(orchestration) && typeof orchestration.worktreeRoot === "string" && orchestration.worktreeRoot.trim() === "") {
+    const { worktreeRoot: _dropped, ...rest } = orchestration
+    normalized.orchestration = rest
+  }
+
+  const pricing = normalized.pricing
+  if (isObjectLike(pricing) && typeof pricing.endpoint === "string" && pricing.endpoint.trim() === "") {
+    const { endpoint: _dropped, ...rest } = pricing
+    normalized.pricing = rest
+  }
+
+  return normalized
 }
 
 async function updateConfig(configPath: string, input: unknown): Promise<ConfigValidationResult> {

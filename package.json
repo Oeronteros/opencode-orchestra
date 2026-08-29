@@ -57,7 +57,7 @@
     "prepublishOnly": "npm run check",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p dashboard/tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && tsc -p tsconfig.build.json && node --test dist-test/test/config.test.js dist-test/test/classifier.test.js dist-test/test/cache-refresh.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/cli-smoke.test.js dist-test/test/diagnostics-update.test.js dist-test/test/dashboard.test.js dist-test/test/live.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/ownership.test.js dist-test/test/worktrees.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js dist-test/test/spawn-fallback.test.js dist-test/test/model-match.test.js dist-test/test/cost.test.js dist-test/test/openrouter.test.js dist-test/test/pricing-resolver.test.js",
+    "test": "tsc -p tsconfig.test.json && tsc -p tsconfig.build.json && node --test dist-test/test/config.test.js dist-test/test/classifier.test.js dist-test/test/cache-refresh.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/cli-smoke.test.js dist-test/test/diagnostics-update.test.js dist-test/test/dashboard.test.js dist-test/test/live.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/ownership.test.js dist-test/test/worktrees.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js dist-test/test/spawn-fallback.test.js dist-test/test/model-match.test.js dist-test/test/cost.test.js dist-test/test/openrouter.test.js dist-test/test/pricing-resolver.test.js dist-test/test/snapshot-reset.test.js",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
@@ -91,7 +91,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "@vitejs/plugin-react": "^6.0.5",
+    "@vitejs/plugin-react": "^6.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "i18next": "^26.3.6",
@@ -104,7 +104,7 @@
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.0",
-    "vite": "^8.2.1",
+    "vite": "^8.2.2",
     "zustand": "^5.0.15"
   },
   "engines": {

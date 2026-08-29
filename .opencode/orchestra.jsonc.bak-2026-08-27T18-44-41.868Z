@@ -23,11 +23,7 @@
       "vision": [],
       "image": []
     },
-    "judge": [],
-    "fallback": {
-      "enabled": true,
-      "maxRetries": 2
-    }
+    "judge": []
   },
   "orchestration": {
     "parallelWorkers": 3,
@@ -35,7 +31,7 @@
     "premiumEscalation": true,
     "maxPremiumCallsPerTask": 1,
     "confidenceThreshold": 0.72,
-    "exposeWorkers": true,
+    "exposeWorkers": false,
     "profiles": {},
     "parallelEditors": 0
   },
@@ -46,8 +42,7 @@
   "telemetry": {
     "enabled": true,
     "directory": ".orchestra",
-    "storeTexts": false,
-    "anomalySigma": 2
+    "storeTexts": false
   },
   "pricing": {
     "refreshIntervalHours": 0,
@@ -58,8 +53,5 @@
       "ttlHours": 12
     },
     "aliases": []
-  },
-  "permissions": {
-    "autoAcceptAll": true
   }
 }

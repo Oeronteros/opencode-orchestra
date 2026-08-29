@@ -214,6 +214,65 @@ test("dashboard validates the full schema on the fly and rejects invalid patches
     await dashboard.close()
   }
 })
+
+test("dashboard save treats empty optional string fields as unset", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-empty-strings-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  await writeFile(path.join(config, "orchestra.jsonc"), '{ "budget": "balanced" }\n')
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const headers = { "Content-Type": "application/json", "X-Orchestra-Token": url.searchParams.get("token") ?? "" } as const
+    // The settings form submits empty strings for optional free-text fields
+    // (worktreeRoot, endpoint). Those must be treated as "unset" rather than
+    // rejected by the schema's min(1) rule.
+    const save = await fetch(new URL("/api/config", url), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ budget: "quality", orchestration: { worktreeRoot: "" }, pricing: { endpoint: "   " } }),
+    })
+    assert.equal(save.status, 200)
+    const text = await readFile(path.join(config, "orchestra.jsonc"), "utf8")
+    assert.ok(text.includes('"budget": "quality"'))
+    assert.ok(!text.includes("worktreeRoot"))
+    assert.ok(!text.includes("endpoint"))
+  } finally {
+    await dashboard.close()
+  }
+})
+
+test("dashboard validate treats empty optional string fields as valid", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-empty-validate-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(project, { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const headers = { "Content-Type": "application/json", "X-Orchestra-Token": url.searchParams.get("token") ?? "" } as const
+    const response = await fetch(new URL("/api/config/validate", url), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ orchestration: { worktreeRoot: "" }, pricing: { endpoint: "" } }),
+    })
+    assert.equal(response.status, 200)
+    const body = await response.json() as { valid: boolean; issues: Array<{ path: string }> }
+    assert.equal(body.valid, true)
+    assert.deepEqual(body.issues, [])
+  } finally {
+    await dashboard.close()
+  }
+})
 /**
  * Open the /api/live SSE stream and return the first `snapshot` frame, then
  * close the connection. Mirrors the reader loop used by the streaming test so
