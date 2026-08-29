@@ -47,13 +47,18 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     const save = await fetch(new URL("/api/config", url), {
       method: "PUT",
       headers: { "Content-Type": "application/json", "X-Orchestra-Token": token },
-      body: JSON.stringify({ budget: "ebobo", models: { strategy: "auto", agents: { "orch-repo": "" } }, telemetry: { enabled: true } }),
+      body: JSON.stringify({ budget: "ebobo", models: { strategy: "auto", agents: { "orch-repo": "" } }, telemetry: { enabled: true }, permissions: { autoAcceptAll: true } }),
     })
     assert.equal(save.status, 200)
     const text = await readFile(path.join(config, "orchestra.jsonc"), "utf8")
     assert.ok(text.includes("// preserve me"))
     assert.ok(text.includes('"budget": "ebobo"'))
     assert.ok(!text.includes('orch-repo'))
+    assert.ok(text.includes('"autoAcceptAll": true'))
+
+    const savedResponse = await fetch(new URL("/api/snapshot", url), { headers: { "X-Orchestra-Token": token } })
+    const savedSnapshot = await savedResponse.json() as { config: { permissions: { autoAcceptAll: boolean } } }
+    assert.equal(savedSnapshot.config.permissions.autoAcceptAll, true)
 
     const csv = await fetch(new URL("/api/export?scope=activity&format=csv", url), { headers: { "X-Orchestra-Token": token } })
     assert.equal(csv.status, 200)

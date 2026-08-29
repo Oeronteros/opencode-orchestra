@@ -130,6 +130,30 @@ test("LiveStream tracks reasoning separately from output tokens", async () => {
   await live.dispose()
 })
 
+test("LiveStream counts only active output intervals and ignores long pauses", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-generation-time-"))
+  let now = 0
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5, true, () => now)
+
+  live.start({ key: "generation", startedAt: 0 })
+  now = 3_000
+  live.delta({ key: "generation", text: "first", chars: 400 })
+  assert.equal(live.current().active[0]?.generationMs, 0)
+
+  now = 3_100
+  live.delta({ key: "generation", text: "second", chars: 800 })
+  assert.equal(live.current().active[0]?.generationMs, 100)
+
+  now = 8_000
+  live.delta({ key: "generation", text: "third", chars: 1_200 })
+  assert.equal(live.current().active[0]?.generationMs, 100)
+
+  now = 8_200
+  live.delta({ key: "generation", text: "fourth", chars: 1_600 })
+  assert.equal(live.current().active[0]?.generationMs, 300)
+  await live.dispose()
+})
+
 test("parseLiveSnapshot tolerates malformed input", () => {
   const empty = parseLiveSnapshot("not json")
   assert.deepEqual(empty.active, [])

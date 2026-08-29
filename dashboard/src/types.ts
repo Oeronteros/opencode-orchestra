@@ -39,6 +39,7 @@ export interface DashboardConfig {
   }
   telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
   orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; worktreeRoot?: string }
+  permissions: { autoAcceptAll: boolean }
   superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
   pricing: { endpoint?: string; refreshIntervalHours: number; estimate: boolean; warnThresholdUSD: number; openrouter: { enabled: boolean; ttlHours: number }; aliases: Array<{ canonical: string; aliases: string[] }> }
 }
@@ -98,6 +99,7 @@ export interface LiveActiveAgent {
   model?: string
   provider?: string
   startedAt: number
+  generationMs?: number
   text: string
   cost: number
   tokens: { input: number; output: number; reasoning: number }

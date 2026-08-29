@@ -44,3 +44,9 @@ test("parallel editor configuration is opt-in and bounded", () => {
   assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelEditors: 9 } }))
   assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelEditors: -1 } }))
 })
+
+test("automatic permission acceptance is explicit and disabled by default", () => {
+  assert.equal(orchestraConfigSchema.parse({}).permissions.autoAcceptAll, false)
+  assert.equal(orchestraConfigSchema.parse({ permissions: { autoAcceptAll: true } }).permissions.autoAcceptAll, true)
+  assert.throws(() => orchestraConfigSchema.parse({ permissions: { autoAcceptAll: "yes" } }))
+})
