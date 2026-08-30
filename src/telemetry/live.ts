@@ -164,7 +164,7 @@ export function estimateOutputTokens(chars: number): number {
 export function estimateLiveCost(
   chars: number,
   price: LiveTokenPrice | undefined,
-  assumedInput = 1500,
+  assumedInput = 4_000,
   reasoningChars = 0,
 ): { cost: number; input: number; output: number; reasoning: number } {
   const output = estimateOutputTokens(chars)

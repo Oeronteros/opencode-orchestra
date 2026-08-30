@@ -193,6 +193,10 @@ test("simulated git conflict rejects without destructive worktree cleanup", asyn
   await systemGit.run(["config", "user.email", "test@example.com"], repo)
   await systemGit.run(["config", "user.name", "Orchestra Test"], repo)
   await systemGit.run(["config", "commit.gpgsign", "false"], repo)
+  // Windows git defaults to core.autocrlf=true, which rewrites working-tree
+  // files as CRLF on checkout/abort and breaks the byte-exact content
+  // assertions below. Disable eol conversion for this fixture repo.
+  await systemGit.run(["config", "core.autocrlf", "false"], repo)
 
   const shared = path.join(repo, "shared.txt")
   await writeFile(shared, "base\n")

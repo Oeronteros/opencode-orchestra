@@ -158,12 +158,12 @@ interface SnapshotData {
   config: {
     budget: string
     models: { strategy: "auto" | "manual"; agents: Record<string, string> }
-    orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; worktreeRoot?: string }
-    permissions: { autoAcceptAll: boolean }
-    superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
-    telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
-    pricing: { endpoint?: string; refreshIntervalHours: number; estimate: boolean; warnThresholdUSD: number; openrouter: { enabled: boolean; ttlHours: number }; aliases: Array<{ canonical: string; aliases: string[] }> }
-  }
+    orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; profiles?: unknown; worktreeRoot?: string | undefined }
+  permissions: { autoAcceptAll: boolean }
+  superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
+  telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
+    pricing: { endpoint?: string | undefined; refreshIntervalHours: number; estimate: boolean; warnThresholdUSD: number; openrouter: { enabled: boolean; ttlHours: number }; aliases: Array<{ canonical: string; aliases: string[] }> }
+    }
   summary: {
     sessions: number
     calls: number
@@ -205,15 +205,27 @@ interface GlobalSnapshot {
   projects: ProjectInfo[]
 }
 
+/**
+ * `opencode models` is a blocking spawnSync with a 10s timeout. The dashboard
+ * polls every ~2.5s, so an uncached call would stall the whole event loop
+ * (including live SSE ticks) on every refresh. Cache per project directory.
+ */
+const CONNECTED_MODELS_TTL = 60_000
+const connectedModelsCache = new Map<string, { at: number; models: string[] }>()
+
 function connectedModels(directory: string): string[] {
+  const cached = connectedModelsCache.get(directory)
+  if (cached && Date.now() - cached.at < CONNECTED_MODELS_TTL) return cached.models
   const executable = process.platform === "win32" ? "opencode.cmd" : "opencode"
   const result = spawnSync(executable, ["models"], { cwd: directory, encoding: "utf8", windowsHide: true, timeout: 10_000 })
-  if (result.status !== 0 || !result.stdout) return []
-  return [...new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
+  const models = result.status === 0 && result.stdout
+    ? [...new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
+    : []
+  connectedModelsCache.set(directory, { at: Date.now(), models })
+  return models
 }
 
 async function snapshot(directory: string, configDirectory: string, includeModels = true, options: { activityLimit?: number; dailyLimit?: number } = {}): Promise<SnapshotData> {
-  const configPath = path.join(configDirectory, "orchestra.jsonc")
   const config = (await loadConfigForDirectory(directory, configDirectory)).config
   const ledger = await readLedgerState(path.resolve(directory, config.telemetry.directory, "state.json"))
   const activity: ActivityRow[] = []
@@ -243,22 +255,22 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   const analytics = analyzeDaily(daily, new Date(), config.telemetry.anomalySigma)
   const activityLimit = options.activityLimit ?? 5_000
   const dailyLimit = options.dailyLimit ?? 30
-  const { worktreeRoot: _worktreeRoot, ...dashboardOrchestration } = config.orchestration
-  const { endpoint: _pricingEndpoint, ...dashboardPricing } = config.pricing
   return {
     projectId: projectId(directory),
     updatedAt: ledger.updatedAt,
     project: path.basename(directory),
     directory,
-    configPath,
+    // The settings form edits the project-level file next to the ledger, so
+    // that path (not the global fallback) is what the dashboard displays.
+    configPath: path.join(directory, ".opencode", "orchestra.jsonc"),
     config: {
       budget: config.budget,
        models: { strategy: config.models.strategy, agents: config.models.agents },
-       orchestration: dashboardOrchestration,
+       orchestration: config.orchestration,
        permissions: config.permissions,
        superpowers: config.superpowers,
        telemetry: { enabled: config.telemetry.enabled, storeTexts: config.telemetry.storeTexts, anomalySigma: config.telemetry.anomalySigma },
-       pricing: dashboardPricing,
+       pricing: config.pricing,
     },
     summary: {
       sessions: Object.keys(ledger.sessions).length,
@@ -464,7 +476,7 @@ function validationIssues(error: z.ZodError): ValidationIssue[] {
 
 /** Validate a dashboard config patch without touching disk. */
 export function validateConfigInput(input: unknown): ConfigValidationResult {
-  const result = CONFIG_INPUT_SCHEMA.safeParse(normalizeConfigInput(input))
+  const result = CONFIG_INPUT_SCHEMA.safeParse(normalizeConfigInput(input).value)
   if (result.success) return { valid: true, issues: [] }
   return { valid: false, issues: validationIssues(result.error) }
 }
@@ -479,9 +491,22 @@ function isObjectLike(value: unknown): value is Record<string, unknown> {
  */
 const EDITABLE_SECTIONS = ["budget", "models", "orchestration", "permissions", "superpowers", "telemetry", "pricing"] as const
 
-function normalizeConfigInput(input: unknown): unknown {
-  if (!isObjectLike(input)) return input
+interface NormalizedConfigInput {
+  value: unknown
+  /**
+   * Optional free-text fields the user explicitly cleared in the settings
+   * form. The form submits an empty string for them; zod's min(1) would
+   * reject that, so the key is removed from the parsed value and recorded
+   * here so `updateConfig` deletes it on disk instead of silently keeping
+   * the old value forever.
+   */
+  removals: Array<{ section: "orchestration" | "pricing"; key: string }>
+}
+
+function normalizeConfigInput(input: unknown): NormalizedConfigInput {
+  if (!isObjectLike(input)) return { value: input, removals: [] }
   const normalized: Record<string, unknown> = { ...input }
+  const removals: NormalizedConfigInput["removals"] = []
 
   const models = normalized.models
   if (isObjectLike(models) && isObjectLike(models.agents)) {
@@ -494,26 +519,26 @@ function normalizeConfigInput(input: unknown): unknown {
     normalized.models = { ...models, agents }
   }
 
-  // Optional free-text fields arrive as empty strings from the settings form.
-  // Drop them so the schema's min(1) rule doesn't reject the save, and preserve
-  // any existing value instead of clobbering it with an empty string.
   const orchestration = normalized.orchestration
   if (isObjectLike(orchestration) && typeof orchestration.worktreeRoot === "string" && orchestration.worktreeRoot.trim() === "") {
     const { worktreeRoot: _dropped, ...rest } = orchestration
     normalized.orchestration = rest
+    removals.push({ section: "orchestration", key: "worktreeRoot" })
   }
 
   const pricing = normalized.pricing
   if (isObjectLike(pricing) && typeof pricing.endpoint === "string" && pricing.endpoint.trim() === "") {
     const { endpoint: _dropped, ...rest } = pricing
     normalized.pricing = rest
+    removals.push({ section: "pricing", key: "endpoint" })
   }
 
-  return normalized
+  return { value: normalized, removals }
 }
 
 async function updateConfig(configPath: string, input: unknown): Promise<ConfigValidationResult> {
-  const parsed = CONFIG_INPUT_SCHEMA.parse(normalizeConfigInput(input))
+  const normalizedInput = normalizeConfigInput(input)
+  const parsed = CONFIG_INPUT_SCHEMA.parse(normalizedInput.value)
   await mkdir(path.dirname(configPath), { recursive: true })
   const original = await readTextOr(configPath, "{}\n")
   const current = parseJsonc(original)
@@ -524,6 +549,13 @@ async function updateConfig(configPath: string, input: unknown): Promise<ConfigV
     const incoming = (parsed as Record<string, unknown>)[section]
     const existing = merged[section]
     merged[section] = isObjectLike(incoming) && isObjectLike(existing) ? { ...existing, ...incoming } : incoming
+  }
+  // Apply explicit clears from the form: merged[...] is a fresh copy at this
+  // point whenever its section was part of the request, so deleting is safe.
+  for (const removal of normalizedInput.removals) {
+    if (!(removal.section in parsed)) continue
+    const target = merged[removal.section]
+    if (isObjectLike(target)) delete target[removal.key]
   }
   // Re-parse through the full schema so defaults fill in and invalid values
   // are caught before anything is written to disk.
@@ -612,7 +644,7 @@ async function readLiveSnapshot(directory: string, configDirectory: string): Pro
       // displaying those rows forever. Healthy streams rewrite this snapshot
       // on deltas, so a 15-minute-old active set is considered abandoned.
       if (snapshot.active.length > 0 && Date.now() - snapshot.updatedAt > 15 * 60_000) {
-        return { ...snapshot, active: [] }
+        return { ...snapshot, active: [], recent: [] }
       }
       return snapshot
     }

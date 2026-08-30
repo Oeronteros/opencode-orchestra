@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -17,13 +17,17 @@ test("entrypoint exposes a stable id and server", () => {
 })
 
 test("plugin initializes and injects additive agents, tools, and commands", async () => {
+  // Isolate from any committed .opencode/orchestra.jsonc so ambient config
+  // (e.g. autoAcceptAll) cannot change the default-config behavior under test.
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-defaults-"))
+  try {
   const initialize = OrchestraPlugin as unknown as (
     input: Record<string, unknown>,
     options: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>
   const hooks = await initialize(
     {
-      directory: process.cwd(),
+      directory: project,
       client: {
         app: {
           log: async () => undefined,
@@ -53,16 +57,22 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   assert.ok(tools.orchestration_report)
   assert.equal("experimental.chat.system.transform" in hooks, false)
   assert.equal("permission.ask" in hooks, false)
+  } finally {
+    await rm(project, { recursive: true, force: true })
+  }
 })
 
 test("plugin can automatically allow every permission prompt", async () => {
+  // Isolate from any local .opencode/orchestra.jsonc so ambient config
+  // (e.g. autoAcceptAll) cannot change the default-config behavior under test.
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-permissions-"))
   const initialize = OrchestraPlugin as unknown as (
     input: Record<string, unknown>,
     options: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>
   const hooks = await initialize(
     {
-      directory: process.cwd(),
+      directory: project,
       client: { app: { log: async () => undefined } },
     },
     { permissions: { autoAcceptAll: true }, telemetry: { enabled: false } },
@@ -110,7 +120,11 @@ test("plugin falls back to defaults for invalid config JSONC", async () => {
   const warnings = logs.filter((entry) => entry.body?.level === "warn" && entry.body.message?.includes("invalid config"))
   assert.equal(warnings.length, 1)
   const warning = warnings[0]
-  assert.match(JSON.stringify(warning), new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  // The reported configPath may join every merged source ("global -> project")
+  // when a global config also exists, so assert it identifies the offending
+  // project config rather than equaling it.
+  const parsed = JSON.parse(JSON.stringify(warning)) as { body: { extra: { configPath: string } } }
+  assert.ok(parsed.body.extra.configPath.includes(configPath))
   assert.equal(await readFile(configPath, "utf8"), '{ "budget": "free"')
   await (hooks.dispose as () => Promise<void>)()
 })
@@ -139,15 +153,20 @@ test("plugin falls back to defaults for a schema-invalid config", async () => {
   const warnings = logs.filter((entry) => entry.body?.level === "warn" && entry.body.message?.includes("invalid config"))
   assert.equal(warnings.length, 1)
   const warning = warnings[0]
-  assert.match(JSON.stringify(warning), new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  // The reported configPath may join every merged source ("global -> project")
+  // when a global config also exists, so assert it identifies the offending
+  // project config rather than equaling it.
+  const parsed = JSON.parse(JSON.stringify(warning)) as { body: { extra: { configPath: string } } }
+  assert.ok(parsed.body.extra.configPath.includes(configPath))
   assert.doesNotMatch(JSON.stringify(warning), /not-a-budget/)
   assert.equal(await readFile(configPath, "utf8"), '{ "budget": "not-a-budget" }')
   await (hooks.dispose as () => Promise<void>)()
 })
 
 test("consensus report requires and updates the current session", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-consensus-"))
   const initialize = OrchestraPlugin as unknown as (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, unknown>>
-  const hooks = await initialize({ directory: process.cwd(), client: { app: { log: async () => undefined } } }, { telemetry: { enabled: true, directory: ".orchestra-test-report" } })
+  const hooks = await initialize({ directory: project, client: { app: { log: async () => undefined } } }, { telemetry: { enabled: true, directory: ".orchestra-test-report" } })
   const report = (hooks.tool as Record<string, { execute: (args: Record<string, unknown>, context: Record<string, unknown>) => Promise<string> }>).orchestration_report!
   assert.equal(JSON.parse(await report.execute({ consensus: 0.2 }, {})).ok, false)
   assert.equal(JSON.parse(await report.execute({ consensus: 0.2, uncertainty: 0.4 }, { sessionID: "report-session" })).ok, true)
@@ -158,13 +177,14 @@ test("consensus report requires and updates the current session", async () => {
 })
 
 test("ebobo routes the full worker roster with frontier arbitration", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-ebobo-"))
   const initialize = OrchestraPlugin as unknown as (
     input: Record<string, unknown>,
     options: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>
   const hooks = await initialize(
     {
-      directory: process.cwd(),
+      directory: project,
       client: { app: { log: async () => undefined } },
     },
     { budget: "ebobo", telemetry: { enabled: false } },

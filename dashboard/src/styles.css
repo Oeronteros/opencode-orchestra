@@ -1049,6 +1049,26 @@ h2 {
   font-size: 11px;
 }
 
+.form-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: 10px;
+  color: var(--accent-rose);
+  font-size: 11px;
+}
+
+.truncation-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 10px;
+  color: var(--accent-amber);
+  font-size: 11px;
+}
+
 /* ═══════════════════════════════════════════════════════
    LIVE ORCHESTRATION PANEL
    ═══════════════════════════════════════════════════════ */

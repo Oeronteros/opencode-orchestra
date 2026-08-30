@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdtemp } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 import { formatPluginStatus, type PluginStatus } from "../src/plugin-status.js"
 import { OrchestraPlugin } from "../src/index.js"
@@ -31,9 +34,12 @@ test("plugin exposes the /plugin-status command and orchestra_plugin_status tool
     input: Record<string, unknown>,
     options: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>
+  // Isolate from any local .opencode/orchestra.jsonc so ambient config
+  // (e.g. budget/model strategy) cannot change the reported status.
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-status-"))
   const hooks = await initialize(
     {
-      directory: process.cwd(),
+      directory: project,
       client: { app: { log: async () => undefined } },
     },
     { telemetry: { enabled: false } },

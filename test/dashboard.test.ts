@@ -247,6 +247,49 @@ test("dashboard save treats empty optional string fields as unset", async () => 
   }
 })
 
+test("dashboard save clears optional fields and snapshot exposes them", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-clear-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  await writeFile(path.join(config, "orchestra.jsonc"), '{ "budget": "balanced" }\n')
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const headers = { "Content-Type": "application/json", "X-Orchestra-Token": url.searchParams.get("token") ?? "" } as const
+
+    // Set the optional fields, then make sure the snapshot reports them so the
+    // settings form shows the real values instead of blank boxes.
+    const set = await fetch(new URL("/api/config", url), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ orchestration: { worktreeRoot: "/tmp/worktrees" }, pricing: { endpoint: "https://prices.example" } }),
+    })
+    assert.equal(set.status, 200)
+    const data = await (await fetch(new URL("/api/snapshot", url), { headers })).json() as { config: { orchestration: { worktreeRoot?: string }; pricing: { endpoint?: string } } }
+    assert.equal(data.config.orchestration.worktreeRoot, "/tmp/worktrees")
+    assert.equal(data.config.pricing.endpoint, "https://prices.example")
+
+    // Emptying the fields in the form must actually clear them, not keep the
+    // previous value forever.
+    const clear = await fetch(new URL("/api/config", url), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ orchestration: { worktreeRoot: "" }, pricing: { endpoint: "" } }),
+    })
+    assert.equal(clear.status, 200)
+    const text = await readFile(path.join(config, "orchestra.jsonc"), "utf8")
+    assert.ok(!text.includes("worktreeRoot"), text)
+    assert.ok(!text.includes("endpoint"), text)
+  } finally {
+    await dashboard.close()
+  }
+})
+
 test("dashboard validate treats empty optional string fields as valid", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-empty-validate-"))
   const project = path.join(root, "project")

@@ -121,7 +121,9 @@ function AppShell() {
   const selectedProject = useUiStore((state) => state.selectedProject)
   const setSelectedProject = useUiStore((state) => state.setSelectedProject)
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, refetchInterval: 5_000 })
-  const data = useDashboardData()
+  // Use the same default range as OverviewPage so the shell and the page share
+  // one React Query cache entry instead of polling the same snapshot twice.
+  const data = useDashboardData("30")
   useEffect(() => { document.documentElement.classList.toggle("light", theme === "light") }, [theme])
   useEffect(() => {
     if (projects.data && selectedProject !== "global" && !projects.data.some((project) => project.id === selectedProject)) setSelectedProject("global")
@@ -330,6 +332,7 @@ function ExportMenu() {
     setError(null)
     try {
       await downloadExport(scope, format, selectedProject)
+      setError(null)
       setOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : t("exportFailed"))
@@ -337,6 +340,14 @@ function ExportMenu() {
       setBusy(null)
     }
   }
+  useEffect(() => {
+    if (!open) return
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("keydown", handleEscape)
+    return () => document.removeEventListener("keydown", handleEscape)
+  }, [open])
   if (selectedProject === "global") return null
   return (
     <div className="export-menu">
@@ -684,19 +695,50 @@ function RecentRows({ rows }: { rows: ActivityRow[] }) {
 function useLiveSnapshot(projectId: string) {
   const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null)
   const [connected, setConnected] = useState(false)
+  const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     let mounted = true
     const handle = subscribeLive(projectId,
-      (next) => { if (mounted) { setSnapshot(next); setConnected(true) } },
-      () => { if (mounted) setConnected(false) },
+      (next) => {
+        if (mounted) {
+          setSnapshot(next)
+          setConnected(true)
+          if (disconnectTimer.current) {
+            clearTimeout(disconnectTimer.current)
+            disconnectTimer.current = null
+          }
+        }
+      },
+      () => {
+        if (mounted) {
+          if (disconnectTimer.current) clearTimeout(disconnectTimer.current)
+          disconnectTimer.current = setTimeout(() => {
+            if (mounted) setConnected(false)
+          }, 3_000)
+        }
+      },
     )
-    return () => { mounted = false; handle.close() }
+    return () => {
+      mounted = false
+      if (disconnectTimer.current) clearTimeout(disconnectTimer.current)
+      handle.close()
+    }
   }, [projectId])
   return { snapshot, connected }
 }
 
 function liveAgentName(agent?: string): string {
   return agent?.replace("orch-", "") ?? "unknown"
+}
+
+function pluralizeRu(count: number, one: string, few: string, many: string): string {
+  const abs = Math.abs(count)
+  const mod10 = abs % 10
+  const mod100 = abs % 100
+  if (mod100 >= 11 && mod100 <= 19) return many
+  if (mod10 === 1) return one
+  if (mod10 >= 2 && mod10 <= 4) return few
+  return many
 }
 
 function liveCostOfSet(rows: LiveActiveAgent[]): number {
@@ -728,7 +770,7 @@ function LivePanel({ projectId }: { projectId: string }) {
           </div>
           <span className={cn("live-state", running && "active", !connected && "off")}>
             <span className="status-dot" />
-            {running ? t("live") + " · " + active.length : connected ? "ожидание" : "нет соединения"}
+            {running ? t("liveActive") + " · " + active.length : connected ? "ожидание" : "нет соединения"}
           </span>
         </div>
         {active.length ? (
@@ -745,7 +787,7 @@ function LivePanel({ projectId }: { projectId: string }) {
             ))}
             <div className="live-total">
               <span>Идёт в эту секунду</span>
-              <strong>{active.length} {active.length === 1 ? "агент" : "агента"}</strong>
+              <strong>{active.length} {pluralizeRu(active.length, "агент", "агента", "агентов")}</strong>
               <span>оценочная стоимость</span>
               <strong>{formatCost(totalCost)}</strong>
             </div>
@@ -787,7 +829,7 @@ function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
           <strong>{liveAgentName(row.agent)}</strong>
           <span>{row.provider && row.model ? row.provider + "/" + row.model : "модель…"}</span>
         </div>
-        <p className="live-snippet">{row.text || (row.tokens.output + row.tokens.reasoning > 0 ? "генерирует…" : "начинает отвечать…")}</p>
+        <p className="live-snippet">{row.text ? (row.text.length > 240 ? `…${row.text.slice(-240)}` : row.text) : (row.tokens.output + row.tokens.reasoning > 0 ? "генерирует…" : "начинает отвечать…")}</p>
         <div className="live-stats">
           <span>{seconds + "s"}</span>
           <span>{formatNumber(row.tokens.output) + " output (" + formatNumber(row.tokens.reasoning) + " reasoning)"}</span>
@@ -828,6 +870,11 @@ function ActivityPage() {
       transition={{ duration: 0.4 }}
     >
       <PageIntro kicker="LOCAL EVENT STREAM" title="Журнал работы" text="Метаданные вызовов без содержимого промптов и ответов." />
+      {query.data.activityTruncated && (
+        <div className="truncation-note">
+          Показаны последние {formatNumber(query.data.activity.length)} из {formatNumber(query.data.activityTotal)} вызовов. Полный список — через экспорт.
+        </div>
+      )}
       <Card className="table-card">
         <VirtualActivityTable data={query.data.activity} />
       </Card>
@@ -884,6 +931,7 @@ function VirtualActivityTable({ data }: { data: ActivityRow[] }) {
 function RankingPage({ kind }: { kind: "models" | "agents" }) {
   const query = useDashboardData()
   const rows = query.data?.[kind] ?? EMPTY
+  const maxTokens = useMemo(() => rows.reduce((max, row) => Math.max(max, totalTokens(row)), 0), [rows])
   const title = kind === "models" ? "Экономика моделей" : "Нагрузка агентов"
   const text = kind === "models" ? "Фактические токены и стоимость по каждой использованной модели." : "Кто выполняет работу, сколько контекста потребляет и где происходит эскалация."
   return (
@@ -907,7 +955,7 @@ function RankingPage({ kind }: { kind: "models" | "agents" }) {
                 <div className="rank-main">
                   <strong>{row.id.replace("orch-", "")}</strong>
                   <div className="usage-bar">
-                    <span style={{ width: `${Math.max(3, totalTokens(row) / Math.max(...rows.map(totalTokens)) * 100)}%` }} />
+                    <span style={{ width: `${maxTokens > 0 ? Math.max(3, (totalTokens(row) / maxTokens) * 100) : 3}%` }} />
                   </div>
                 </div>
                 <span>{row.calls} calls</span>
@@ -955,6 +1003,22 @@ const settingsSchema = z.object({
   pricing: z.object({ endpoint: z.string().optional(), refreshIntervalHours: z.number().int().min(0).max(2160), estimate: z.boolean(), warnThresholdUSD: z.number().min(0), openrouter: z.object({ enabled: z.boolean(), ttlHours: z.number().int().min(1).max(720) }), aliases: z.array(z.object({ canonical: z.string(), aliases: z.array(z.string()) })) }),
 })
 
+/**
+ * Flatten react-hook-form's nested error object into "path: message" lines so
+ * a failed validation is visible instead of silently swallowing the submit.
+ */
+function flattenErrors(errors: Record<string, unknown>, prefix = ""): string[] {
+  const lines: string[] = []
+  for (const [key, value] of Object.entries(errors)) {
+    if (!value || typeof value !== "object") continue
+    const field = prefix ? `${prefix}.${key}` : key
+    const message = (value as { message?: unknown }).message
+    if (typeof message === "string") lines.push(`${field}: ${message}`)
+    else lines.push(...flattenErrors(value as Record<string, unknown>, field))
+  }
+  return lines
+}
+
 function SettingsPage() {
   const { t } = useTranslation()
   const query = useSnapshot()
@@ -971,7 +1035,15 @@ function SettingsPage() {
       form.reset(query.data.config)
     }
   }, [query.data, form])
-  const save = useMutation({ mutationFn: (config: DashboardConfig) => api.saveConfig(config, selected), onSuccess: async () => { saveEpoch.current += 1; await client.invalidateQueries({ queryKey: ["snapshot"] }) } })
+  const save = useMutation({
+    mutationFn: (config: DashboardConfig) => api.saveConfig(config, selected),
+    onSuccess: async () => {
+      saveEpoch.current += 1
+      await client.invalidateQueries({ queryKey: ["snapshot"] })
+    },
+  })
+  const isDirty = form.formState.isDirty
+  const fieldErrors = flattenErrors(form.formState.errors)
   if (selected === "global") return <ProjectRequired title="Настройка Orchestra" />
   if (!query.data) return query.isLoading ? <Loading /> : <ErrorState error={query.error} />
   return (
@@ -1253,9 +1325,14 @@ function SettingsPage() {
           transition={{ delay: 0.6 }}
         >
           <span>{save.isError ? (save.error as Error).message : save.isSuccess ? "Настройки сохранены" : query.data.configPath}</span>
-          <Button type="submit" disabled={save.isPending}>
+          <Button type="submit" disabled={save.isPending || !isDirty}>
             {save.isPending ? "Сохраняю…" : "Сохранить настройки"}
           </Button>
+          {fieldErrors.length > 0 && (
+            <div className="form-errors" role="alert">
+              {fieldErrors.map((line) => <span key={line}>{line}</span>)}
+            </div>
+          )}
         </motion.div>
       </form>
     </motion.div>

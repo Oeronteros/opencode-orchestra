@@ -19,6 +19,11 @@ dashboard-dist/
 logs/
 coverage/
 
+# local plugin config (developer machine)
+/.opencode/orchestra.jsonc
+/.opencode/orchestra.jsonc.bak-*
+/.opencode/orchestra.json
+
 # editors / OS
 .vscode/
 .idea/
