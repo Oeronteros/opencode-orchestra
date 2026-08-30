@@ -34,6 +34,8 @@ export interface ModelAliasEntry {
 
 export interface OpenRouterSource {
   getModels(force?: boolean): Promise<OpenRouterModel[]>
+  /** In-memory catalog for sync callers (live/ledger) after a fetch. */
+  readonly cachedModels?: OpenRouterModel[] | undefined
 }
 
 export interface ResolverConfig {
@@ -150,12 +152,28 @@ export function resolvePricingSync(input: ResolverInput, config: ResolverConfig)
     return resolveFromSnapshot(match.canonical, match.method, catalog, config.snapshot)
   }
 
+  const cached = resolveFromOpenRouterModels(raw, config.openRouter?.cachedModels)
+  if (cached) return cached
+
   return {
     status: "unknown",
     canonicalId: match.canonical,
     ...(match.familyAmbiguous ? { familyAmbiguous: true } : {}),
     needsFallback: true,
   }
+}
+
+function resolveFromOpenRouterModels(raw: string, models: OpenRouterModel[] | undefined): ResolvedPricing | undefined {
+  if (!models?.length) return undefined
+  const match = matchModel(raw, toModelEntries(models))
+  if (match.method === "none") return undefined
+  const modelByEntryId = new Map<string, OpenRouterModel>()
+  for (const model of models) {
+    modelByEntryId.set(normalizeModelName(splitProviderId(model.id).rest), model)
+  }
+  const model = modelByEntryId.get(match.canonical)
+  if (!model) return undefined
+  return classifyOpenRouter(model, { canonical: match.canonical, method: match.method })
 }
 
 function classifyOpenRouter(model: OpenRouterModel, match: { canonical: string; method: MatchMethod }): ResolvedPricing {
@@ -196,15 +214,5 @@ export async function resolvePricing(input: ResolverInput, config: ResolverConfi
   if (sync.status !== "unknown" || !sync.needsFallback || !config.openRouter) return sync
 
   const models = await config.openRouter.getModels(false)
-  const entries = toModelEntries(models)
-  const match = matchModel(rawIdOf(input), entries)
-  if (match.method === "none") return sync
-
-  const modelByEntryId = new Map<string, OpenRouterModel>()
-  for (const model of models) {
-    modelByEntryId.set(normalizeModelName(splitProviderId(model.id).rest), model)
-  }
-  const model = modelByEntryId.get(match.canonical)
-  if (!model) return sync
-  return classifyOpenRouter(model, { canonical: match.canonical, method: match.method })
+  return resolveFromOpenRouterModels(rawIdOf(input), models) ?? sync
 }

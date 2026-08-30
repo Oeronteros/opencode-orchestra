@@ -18,7 +18,8 @@ import { createOrchestraTools } from "./tools.js"
 import { createStreamObserver, type StreamObserver } from "./routing/observer.js"
 import { createPriceRefresher, type RefreshSource } from "./routing/pricing/refresh.js"
 import { createOpenRouterCache } from "./pricing/openrouter.js"
-import { resolvePricingSync } from "./pricing/resolver.js"
+import { calcCost } from "./pricing/cost.js"
+import { resolvePricingSync, type ResolverConfig } from "./pricing/resolver.js"
 import { detectMcpPresence, resolvePluginVersion, PACKAGE_NAME, type PluginStatus } from "./plugin-status.js"
 import { createGitWorktreeAdapter } from "./orchestration/worktree-adapter.js"
 
@@ -311,11 +312,6 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     ...Object.values(orchestra.models.worker),
     orchestra.models.judge,
   ]
-  const ledger = new Ledger(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, pools, orchestra.telemetry.storeTexts, (providerID, modelID) =>
-    resolvePricingSync({
-      ...(providerID ? { providerID } : {}),
-      ...(modelID ? { modelID } : {}),
-    }, pricingConfig()).status)
   storeTextsFlag = orchestra.telemetry.storeTexts
   const refreshSource: RefreshSource | undefined = orchestra.pricing.endpoint
     ? { endpoint: orchestra.pricing.endpoint, refreshIntervalHours: orchestra.pricing.refreshIntervalHours }
@@ -329,15 +325,25 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     ? createOpenRouterCache({ ttlMs: orchestra.pricing.openrouter.ttlHours * 3_600_000 })
     : undefined
   const pricingAliases = orchestra.pricing.aliases
-  const pricingConfig = (): { snapshot: typeof priceRefresher.snapshot; aliases?: typeof pricingAliases } => ({
+  const pricingConfig = (): ResolverConfig => ({
     snapshot: priceRefresher.snapshot,
     ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
+    ...(openRouter ? { openRouter } : {}),
   })
+  const resolveModelPricing = (providerID: string | undefined, modelID: string | undefined) =>
+    resolvePricingSync({
+      ...(providerID ? { providerID } : {}),
+      ...(modelID ? { modelID } : {}),
+    }, pricingConfig())
+  const ledger = new Ledger(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, pools, orchestra.telemetry.storeTexts, resolveModelPricing)
+  // Warm the OpenRouter catalog in the background so live/ledger can price
+  // gateway ids (anymodel/am/kimi-k3) from the in-memory cache without waiting.
+  void openRouter?.getModels().catch(() => undefined)
   // Live orchestration activity feed: records which agents are generating and
   // what they produce (plus an estimated cost-so-far) for the dashboard SSE.
   const live = new LiveStream(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, (provider, model) => {
     if (!model) return undefined
-    const resolution = resolvePricingSync({ ...(provider ? { providerID: provider } : {}), modelID: model }, pricingConfig())
+    const resolution = resolveModelPricing(provider, model)
     if (resolution.status !== "paid") return undefined
     return { input: resolution.input ?? 0, output: resolution.output ?? 0 }
   }, 200, 450, orchestra.telemetry.storeTexts)
@@ -587,11 +593,17 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       endStream(info.id)
       // Always finalize the live row so an active entry never goes stale, even
       // for sessions whose agent/model were not captured by chat.params yet.
+      const finishedModel = sessionModel.get(info.sessionID)
+      const priced = calcCost(
+        resolveModelPricing(finishedModel?.providerID, finishedModel?.modelID),
+        { input: info.tokens.input, output: info.tokens.output, reasoning: info.tokens.reasoning },
+      )
+      const providerCost = Math.max(0, info.cost ?? 0)
       live.finish({
         key: info.id,
         sessionID: info.sessionID,
         agent: sessionAgent.get(info.sessionID),
-        cost: info.cost,
+        cost: priced.cost != null && providerCost === 0 ? priced.cost : providerCost,
         tokens: { input: info.tokens.input, output: info.tokens.output, reasoning: info.tokens.reasoning },
         finish: info.finish,
       })

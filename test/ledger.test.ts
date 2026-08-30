@@ -91,6 +91,37 @@ test("recordText persists prompt and reply when storeTexts is enabled", async ()
   }
 })
 
+test("recordAssistant prices tokens when the provider reports no cost", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const ledger = new Ledger(root, ".orchestra", true, [], false, () => ({
+    status: "paid",
+    input: 3,
+    output: 15,
+  }))
+
+  try {
+    await ledger.recordAssistant({
+      id: "msg",
+      sessionID: "session-1",
+      role: "assistant",
+      mode: "build",
+      providerID: "anymodel",
+      modelID: "am/kimi-k3",
+      cost: 0,
+      tokens: { input: 100_000, output: 20_000, reasoning: 0, cache: { read: 0, write: 0 } },
+    })
+    const state = JSON.parse(await readFile(path.join(root, ".orchestra", "state.json"), "utf8")) as {
+      sessions: Record<string, { estimatedPaidUsage: number; messages: Record<string, { pricingStatus?: string; cost: number }> }>
+    }
+    const session = state.sessions["session-1"]
+    assert.equal(session?.messages["msg"]?.pricingStatus, "paid")
+    assert.equal(session?.messages["msg"]?.cost, 0.6)
+    assert.equal(session?.estimatedPaidUsage, 0.6)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("recordAssistant stores pricingStatus and counts unknown-price calls", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
   const ledger = new Ledger(root, ".orchestra", true, [], false, () => "unknown")

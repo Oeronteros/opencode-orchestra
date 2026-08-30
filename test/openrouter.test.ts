@@ -169,6 +169,25 @@ test("offline cache with no snapshot yields an empty list, not a crash", async (
   assert.ok(cache.lastError)
 })
 
+test("cache exposes already-fetched models without refetching", async () => {
+  let calls = 0
+  const cache = createOpenRouterCache({
+    ttlMs: 60_000,
+    fetchImpl: (async () => {
+      calls += 1
+      return { ok: true, status: 200, text: async () => MINI_PAYLOAD }
+    }) as unknown as typeof fetch,
+  })
+  const before = cache.cachedModels
+  assert.equal(before, undefined)
+  await cache.getModels()
+  assert.equal(calls, 1)
+  const cached = cache.cachedModels
+  assert.equal(cached?.length, 1)
+  assert.equal(cached?.[0]?.id, "openai/gpt-4o-mini")
+  assert.equal(calls, 1)
+})
+
 test("toModelEntries builds a catalog matchModel can resolve wrapped ids against", () => {
   const models: OpenRouterModel[] = parseOpenRouterModels(MINI_PAYLOAD)
   const entries = toModelEntries(models)

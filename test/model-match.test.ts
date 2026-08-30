@@ -50,6 +50,13 @@ test("wrapper namespaces are stripped down to the base model", () => {
   assert.equal(match.method, "exact")
 })
 
+test("gateway ids like anymodel/am/kimi-k3 resolve to the base model", () => {
+  const catalog = entries({ id: "kimi-k3", aliases: ["MoonshotAI: Kimi K3"] })
+  const match = matchModel("anymodel/am/kimi-k3", catalog)
+  assert.equal(match.canonical, "kimi-k3")
+  assert.equal(match.method, "exact")
+})
+
 test("aliases resolve when the alias normalizes differently from the canonical id", () => {
   const match = matchModel("GPT 5.6 Solar", entries(GPT_SOL))
   assert.equal(match.canonical, "gpt-5-6-sol")

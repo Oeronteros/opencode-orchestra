@@ -135,17 +135,25 @@ export function matchModel(rawId: string, entries: ModelEntry[], opts?: MatchOpt
   }
 
   const seen = new Set<string>()
+  const norms: string[] = []
   for (const attempt of tries) {
     const norm = normalizeModelName(attempt)
     if (seen.has(norm)) continue
     seen.add(norm)
+    norms.push(norm)
+  }
 
+  // Exact/alias across every stripped form first so a wrapper prefix cannot
+  // win a fuzzy match before the base model id is tried.
+  for (const norm of norms) {
     const exact = entries.find((entry) => entry.id === norm)
     if (exact) return { canonical: exact.id, method: "exact" }
 
     const alias = entries.find((entry) => (entry.aliases ?? []).some((a) => normalizeModelName(a) === norm))
     if (alias) return { canonical: alias.id, method: "alias" }
+  }
 
+  for (const norm of norms) {
     const candidateTokens = tokensOf(norm)
     if (candidateTokens.length === 0) continue
     const keywordHits = entries.filter((entry) => hasAllTokens(entryTokenSet(entry), candidateTokens))

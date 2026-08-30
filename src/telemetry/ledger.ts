@@ -3,7 +3,17 @@ import path from "node:path"
 import type { ModelCandidateInput, ModelCost, ProfileName } from "../config/schema.js"
 import { normalizeCandidate } from "../routing/model-resolver.js"
 import { classifyError, isRetryable, type ErrorKind } from "../routing/fallback.js"
-import type { PricingStatus } from "../pricing/cost.js"
+import { calcCost, type PricingResolution, type PricingStatus } from "../pricing/cost.js"
+
+export type PricingLookup = (
+  providerID: string | undefined,
+  modelID: string | undefined,
+) => PricingStatus | PricingResolution | undefined
+
+function resolutionOf(looked: PricingStatus | PricingResolution | undefined): PricingResolution | undefined {
+  if (looked === undefined) return undefined
+  return typeof looked === "string" ? { status: looked } : looked
+}
 
 export interface TokenUsage {
   input: number
@@ -253,7 +263,7 @@ export class Ledger {
   readonly stateFile: string
   private readonly storeTexts: boolean
   private readonly modelCosts: Map<string, ModelCost>
-  private readonly pricingStatusOf: ((providerID: string | undefined, modelID: string | undefined) => PricingStatus | undefined) | undefined
+  private readonly pricingOf: PricingLookup | undefined
   private state?: LedgerState
   private queue = Promise.resolve()
   /**
@@ -270,11 +280,11 @@ export class Ledger {
     enabled: boolean,
     pools: ModelCandidateInput[][],
     storeTexts = false,
-    pricingStatusOf?: (providerID: string | undefined, modelID: string | undefined) => PricingStatus | undefined,
+    pricingOf?: PricingLookup,
   ) {
     this.enabled = enabled
     this.storeTexts = storeTexts
-    this.pricingStatusOf = pricingStatusOf
+    this.pricingOf = pricingOf
     this.stateFile = path.resolve(directory, telemetryDirectory, "state.json")
     this.modelCosts = new Map(
       pools.flat().map((candidate) => {
@@ -339,11 +349,22 @@ export class Ledger {
   async recordAssistant(info: AssistantInfo): Promise<void> {
     const agent = info.mode ?? "default"
     const model = info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined
-    const pricingStatus = this.pricingStatusOf?.(info.providerID, info.modelID)
+    const resolution = resolutionOf(this.pricingOf?.(info.providerID, info.modelID))
+    const pricingStatus = resolution?.status
+    const tokens = normalizeTokens(info.tokens)
+    const priced = resolution
+      ? calcCost(resolution, {
+        input: tokens.input,
+        output: tokens.output,
+        reasoning: tokens.reasoning,
+        cacheRead: tokens.cache.read,
+      })
+      : undefined
+    const providerCost = Math.max(0, info.cost ?? 0)
+    const currentCost = priced?.cost != null && providerCost === 0 ? priced.cost : providerCost
     await this.mutate((state) => {
       const session = (state.sessions[info.sessionID] ??= emptySession())
       const previous = session.messages[info.id]
-      const currentCost = Math.max(0, info.cost ?? 0)
       const delta = Math.max(0, currentCost - (previous?.cost ?? 0))
       session.estimatedPaidUsage += delta
 
@@ -370,7 +391,7 @@ export class Ledger {
         ...(info.time?.created ? { createdAt: info.time.created } : {}),
         ...(info.time?.completed ? { completedAt: info.time.completed } : {}),
         ...(info.finish ? { finish: info.finish } : {}),
-        tokens: normalizeTokens(info.tokens),
+        tokens,
         ...(pricingStatus ? { pricingStatus } : {}),
         ...(previous?.prompt !== undefined ? { prompt: previous.prompt } : {}),
         ...(previous?.reply !== undefined ? { reply: previous.reply } : {}),

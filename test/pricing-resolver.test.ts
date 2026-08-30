@@ -164,3 +164,36 @@ test("a raw :free id never takes the canonical paid price", async () => {
   assert.equal(result.status, "free")
   assert.equal(result.input, undefined)
 })
+
+test("sync resolution prices wrapped gateway ids from a cached OpenRouter catalog", () => {
+  const snapshot: PriceSnapshot = { updatedAt: "2026-01", prices: {} }
+  const models = parseOpenRouterModels(JSON.stringify({
+    data: [
+      {
+        id: "moonshotai/kimi-k3",
+        name: "MoonshotAI: Kimi K3",
+        pricing: { prompt: "0.000003", completion: "0.000015" },
+      },
+    ],
+  }))
+  const result = resolvePricingSync(
+    { id: "anymodel/am/kimi-k3" },
+    { snapshot, openRouter: { getModels: async () => models, cachedModels: models } },
+  )
+  assert.equal(result.status, "paid")
+  assert.equal(result.canonicalId, "kimi-k3")
+  assert.equal(result.method, "exact")
+  assert.equal(result.source, "openrouter")
+  assert.equal(result.input, 3)
+  assert.equal(result.output, 15)
+})
+
+test("sync resolution stays unknown when the OpenRouter cache is still cold", () => {
+  const snapshot: PriceSnapshot = { updatedAt: "2026-01", prices: {} }
+  const result = resolvePricingSync(
+    { id: "anymodel/am/kimi-k3" },
+    { snapshot, openRouter: openRouterDep() },
+  )
+  assert.equal(result.status, "unknown")
+  assert.equal(result.needsFallback, true)
+})

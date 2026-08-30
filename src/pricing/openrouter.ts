@@ -140,6 +140,8 @@ export interface OpenRouterCacheOptions {
 export interface OpenRouterCache {
   /** Models from cache, refetching lazily when cold/stale or when forced. */
   getModels(force?: boolean): Promise<OpenRouterModel[]>
+  /** In-memory catalog from the last successful fetch; undefined while cold. */
+  readonly cachedModels: OpenRouterModel[] | undefined
   /** Epoch ms of the last successful fetch. */
   readonly fetchedAt: number | undefined
   /** Last fetch error message, when any. */
@@ -187,6 +189,9 @@ export function createOpenRouterCache(options: OpenRouterCacheOptions): OpenRout
 
   return {
     getModels,
+    get cachedModels() {
+      return models
+    },
     get fetchedAt() {
       return fetchedAt
     },
