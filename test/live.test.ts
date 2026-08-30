@@ -154,6 +154,51 @@ test("LiveStream counts only active output intervals and ignores long pauses", a
   await live.dispose()
 })
 
+test("LiveStream.start supersedes a stale row from the same session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-supersede-"))
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5, true)
+  // The runtime sometimes never emits a completing message.updated for an
+  // assistant message (abort / error before the first token). The session then
+  // continues with a new message; the orphaned row must not stay "active"
+  // forever or the dashboard counts a ghost agent.
+  live.start({ key: "msg-old", sessionID: "s1", agent: "orch-lead" })
+  live.start({ key: "msg-new", sessionID: "s1", agent: "orch-lead" })
+  const snapshot = live.current()
+  assert.equal(snapshot.active.length, 1)
+  assert.equal(snapshot.active[0]?.key, "msg-new")
+  const superseded = snapshot.recent.find((event) => event.e === "finish" && event.k === "msg-old")
+  assert.ok(superseded)
+  assert.equal(superseded.finish, "superseded")
+  await live.dispose()
+})
+
+test("LiveStream.start keeps rows from other sessions untouched", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-sessions-"))
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5, true)
+  live.start({ key: "a1", sessionID: "s1", agent: "orch-lead" })
+  live.start({ key: "b1", sessionID: "s2", agent: "orch-repo" })
+  live.start({ key: "a2", sessionID: "s1", agent: "orch-lead" })
+  const keys = live.current().active.map((row) => row.key).sort()
+  assert.deepEqual(keys, ["a2", "b1"])
+  await live.dispose()
+})
+
+test("LiveStream.dropSession removes every active row of a finished/failed session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-live-drop-"))
+  const live = new LiveStream(path.join(root, "project"), ".orchestra", true, () => PRICE, 100, 5, true)
+  live.start({ key: "a1", sessionID: "s1", agent: "orch-lead" })
+  live.start({ key: "b1", sessionID: "s2", agent: "orch-repo" })
+  live.dropSession("s1", "session-error")
+  const snapshot = live.current()
+  assert.deepEqual(snapshot.active.map((row) => row.key), ["b1"])
+  const dropped = snapshot.recent.find((event) => event.e === "finish" && event.k === "a1")
+  assert.equal(dropped?.finish, "session-error")
+  // Unknown sessions are a no-op.
+  live.dropSession("nope", "session-idle")
+  assert.equal(live.current().active.length, 1)
+  await live.dispose()
+})
+
 test("parseLiveSnapshot tolerates malformed input", () => {
   const empty = parseLiveSnapshot("not json")
   assert.deepEqual(empty.active, [])

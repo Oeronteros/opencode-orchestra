@@ -56,7 +56,17 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   assert.ok(tools.orchestra_plugin_status)
   assert.ok(tools.orchestration_report)
   assert.equal("experimental.chat.system.transform" in hooks, false)
-  assert.equal("permission.ask" in hooks, false)
+  // The hook is registered unconditionally; with the toggle off it must leave
+  // the status untouched.
+  const permissionAsk = hooks["permission.ask"] as (
+    input: Record<string, unknown>,
+    output: { status: "ask" | "deny" | "allow" },
+  ) => Promise<void>
+  assert.equal(typeof permissionAsk, "function")
+  const output = { status: "ask" as const } as { status: "ask" | "deny" | "allow" }
+  await permissionAsk({ type: "bash", sessionID: "session-1" }, output)
+  assert.equal(output.status, "ask")
+  await (hooks.dispose as () => Promise<void>)()
   } finally {
     await rm(project, { recursive: true, force: true })
   }
@@ -91,6 +101,51 @@ test("plugin can automatically allow every permission prompt", async () => {
   const denied = { status: "deny" as const } as { status: "ask" | "deny" | "allow" }
   await permissionAsk({ type: "edit", sessionID: "session-1" }, denied)
   assert.equal(denied.status, "deny")
+})
+
+test("auto-accept toggle written to config after startup takes effect without restart", async () => {
+  // Simulates the dashboard toggling autoAcceptAll mid-session: the file
+  // appears (or changes) after the plugin has already loaded its config.
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-live-toggle-"))
+  try {
+    const initialize = OrchestraPlugin as unknown as (
+      input: Record<string, unknown>,
+      options: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>
+    const hooks = await initialize(
+      { directory: project, client: { app: { log: async () => undefined } } },
+      { telemetry: { enabled: false } },
+    )
+    const permissionAsk = hooks["permission.ask"] as (
+      input: Record<string, unknown>,
+      output: { status: "ask" | "deny" | "allow" },
+    ) => Promise<void>
+
+    const pending = () => ({ status: "ask" as const } as { status: "ask" | "deny" | "allow" })
+    const before = pending()
+    await permissionAsk({ type: "bash", sessionID: "s-live" }, before)
+    assert.equal(before.status, "ask")
+
+    const configDirectory = path.join(project, ".opencode")
+    await mkdir(configDirectory, { recursive: true })
+    await writeFile(path.join(configDirectory, "orchestra.jsonc"), '{ "permissions": { "autoAcceptAll": true } }', "utf8")
+
+    const after = pending()
+    await permissionAsk({ type: "bash", sessionID: "s-live" }, after)
+    assert.equal(after.status, "allow")
+
+    // Force a new mtime so the live-reader cache does not see a stale stamp on
+    // filesystems with coarse mtime resolution.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(path.join(configDirectory, "orchestra.jsonc"), '{ "permissions": { "autoAcceptAll": false } }', "utf8")
+    const toggledOff = pending()
+    await permissionAsk({ type: "bash", sessionID: "s-live" }, toggledOff)
+    assert.equal(toggledOff.status, "ask")
+
+    await (hooks.dispose as () => Promise<void>)()
+  } finally {
+    await rm(project, { recursive: true, force: true })
+  }
 })
 
 test("plugin falls back to defaults for invalid config JSONC", async () => {

@@ -233,6 +233,24 @@ export class LiveStream {
       this.scheduleFlush(true)
       return
     }
+    // A session runs one assistant message at a time. If the runtime never
+    // delivered the completing event for an earlier message (abort, error
+    // before the first token), its row would linger as a phantom "agent"
+    // forever — the live panel then shows 2 agents while only 1 is working.
+    // Supersede any leftover rows of this session when a new message starts.
+    if (input.sessionID) {
+      for (const existing of [...this.active.values()]) {
+        if (existing.key === input.key || existing.sessionID !== input.sessionID) continue
+        this.finish({
+          key: existing.key,
+          sessionID: existing.sessionID,
+          agent: existing.agent,
+          cost: existing.cost,
+          tokens: existing.tokens,
+          finish: "superseded",
+        })
+      }
+    }
     const price = this.estimatePrice(input.provider, input.model)
     const est = estimateLiveCost(0, price)
     this.active.set(input.key, {
@@ -366,7 +384,26 @@ export class LiveStream {
     this.scheduleFlush(true)
   }
 
-  /** The current snapshot (before the next disk flush). */
+  /**
+   * Finalize and drop every active row belonging to a session. Called when the
+   * runtime reports session.error / session.idle: from that point no pending
+   * message in the session can complete normally, so keeping its rows would
+   * leave phantom agents on the panel.
+   */
+  dropSession(sessionID: string, reason: string): void {
+    if (!this.enabled) return
+    for (const existing of [...this.active.values()]) {
+      if (existing.sessionID !== sessionID) continue
+      this.finish({
+        key: existing.key,
+        sessionID: existing.sessionID,
+        agent: existing.agent,
+        cost: existing.cost,
+        tokens: existing.tokens,
+        finish: reason,
+      })
+    }
+  }
   current(): LiveSnapshot {
     return this.serialize()
   }

@@ -21,6 +21,7 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { motion, AnimatePresence } from "motion/react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Controller, useForm } from "react-hook-form"
+import type { TFunction } from "i18next"
 import { useTranslation } from "react-i18next"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { z } from "zod"
@@ -29,8 +30,9 @@ import { Button } from "./components/ui/button"
 import { Card } from "./components/ui/card"
 import { Switch } from "./components/ui/switch"
 import { downloadExport } from "./export"
-import i18n from "./i18n"
+import i18n, { nextLanguage, setLanguage } from "./i18n"
 import { cn } from "./lib/cn"
+import type { TranslationKey } from "./lib/locales"
 import { snapshotResetDecision, type SnapshotResetState } from "./lib/snapshot-reset"
 import { useUiStore } from "./store"
 import type { ActivityRow, AggregateRow, DashboardConfig, GlobalSnapshot, LiveActiveAgent, LiveSnapshot, Snapshot } from "./types"
@@ -188,32 +190,28 @@ function AppShell() {
                 className="project-select"
                 value={selectedProject}
                 onChange={(event) => setSelectedProject(event.target.value)}
-                aria-label="Выбор проекта"
+                aria-label={t("projectSelect")}
               >
-                <option value="global">Все проекты</option>
+                <option value="global">{t("allProjects")}</option>
                 {projects.data?.map((project) => (
                   <option key={project.id} value={project.id}>{project.name}</option>
                 ))}
               </select>
-              <span className="eyebrow">{data.data?.directory ?? "Loading telemetry…"}</span>
+              <span className="eyebrow">{data.data?.directory ?? t("loadingTelemetry")}</span>
             </div>
             <div className="top-actions">
               <ExportMenu />
               <Button
                 variant="ghost"
-                aria-label="Language"
-                onClick={() => {
-                  const language = i18n.language === "ru" ? "en" : "ru"
-                  localStorage.setItem("orchestra-language", language)
-                  void i18n.changeLanguage(language)
-                }}
+                aria-label={t("languageToggle")}
+                onClick={() => setLanguage(nextLanguage(i18n.language))}
               >
                 <HugeiconsIcon icon={LanguageSquareIcon} size={18} />
                 {i18n.language.toUpperCase()}
               </Button>
               <Button
                 variant="ghost"
-                aria-label="Theme"
+                aria-label={t("themeToggle")}
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               >
                 <motion.div
@@ -313,12 +311,14 @@ function EmptyState() {
    EXPORT MENU
    ═══════════════════════════════════════════════════════ */
 
-const EXPORT_SCOPES: Array<{ scope: ExportScope; label: string }> = [
-  { scope: "activity", label: "Журнал вызовов" },
-  { scope: "models", label: "Модели" },
-  { scope: "agents", label: "Агенты" },
-  { scope: "daily", label: "По дням" },
-  { scope: "summary", label: "Сводка" },
+// Labels are translation keys, resolved at render time so a language switch
+// re-labels the menu without reloading.
+const EXPORT_SCOPES: Array<{ scope: ExportScope; labelKey: TranslationKey }> = [
+  { scope: "activity", labelKey: "exportActivity" },
+  { scope: "models", labelKey: "exportModels" },
+  { scope: "agents", labelKey: "exportAgents" },
+  { scope: "daily", labelKey: "exportDaily" },
+  { scope: "summary", labelKey: "exportSummary" },
 ]
 
 function ExportMenu() {
@@ -387,7 +387,7 @@ function ExportMenu() {
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: index * 0.05 }}
                   >
-                    <span className="export-item-label">{item.label}</span>
+                    <span className="export-item-label">{t(item.labelKey)}</span>
                     <div className="export-item-actions">
                       <Button
                         variant="ghost"
@@ -445,15 +445,15 @@ function OverviewPage() {
       transition={{ duration: 0.4 }}
     >
       <PageIntro
-        kicker={"global" in data ? `${data.summary.projects} PROJECTS` : `${data.config.budget.toUpperCase()} MODE`}
-        title="Пульс оркестра"
-        text={"global" in data ? "Общая локальная статистика по всем зарегистрированным проектам." : "Маршрутизация, токены и стоимость — без отправки телеметрии наружу."}
+        kicker={"global" in data ? t("overviewKickerProjects", { value: data.summary.projects }) : t("overviewKickerMode", { mode: data.config.budget.toUpperCase() })}
+        title={t("overviewTitle")}
+        text={"global" in data ? t("overviewTextGlobal") : t("overviewTextProject")}
       />
       <div className="metrics-grid">
-        <MetricCard label={t("sessions")} value={formatNumber(data.summary.sessions)} note="локальных запусков" icon={Database01Icon} index={0} />
-        <MetricCard label={t("calls")} value={formatNumber(data.summary.calls)} note="ответов агентов" icon={Activity01Icon} index={1} />
-        <MetricCard label={t("tokens")} value={formatNumber(tokens)} note={`${formatNumber(data.summary.tokens.cache.read)} из кэша`} icon={AiBrain01Icon} index={2} />
-        <MetricCard label={t("cost")} value={formatCost(data.summary.cost)} note="по данным провайдеров" icon={CoinsDollarIcon} index={3} />
+        <MetricCard label={t("sessions")} value={formatNumber(data.summary.sessions)} note={t("sessionsNote")} icon={Database01Icon} index={0} />
+        <MetricCard label={t("calls")} value={formatNumber(data.summary.calls)} note={t("callsNote")} icon={Activity01Icon} index={1} />
+        <MetricCard label={t("tokens")} value={formatNumber(tokens)} note={t("tokensNote", { value: formatNumber(data.summary.tokens.cache.read) })} icon={AiBrain01Icon} index={2} />
+        <MetricCard label={t("cost")} value={formatCost(data.summary.cost)} note={t("costNote")} icon={CoinsDollarIcon} index={3} />
       </div>
       {!("global" in data) && <LivePanel projectId={data.projectId} />}
       <motion.div
@@ -486,18 +486,18 @@ function OverviewPage() {
             <div className="card-heading">
               <div>
                 <span className="eyebrow">{t("usage")}</span>
-                <h2>Токены и расходы</h2>
+                <h2>{t("chartTitle")}</h2>
               </div>
               <div className="chart-controls">
                 <select
                   value={range}
                   onChange={(event) => setRange(event.target.value)}
-                  aria-label="Период графика"
+                  aria-label={t("chartRangeLabel")}
                 >
-                  <option value="7">7 дней</option>
-                  <option value="30">30 дней</option>
-                  <option value="90">90 дней</option>
-                  <option value="all">Все</option>
+                  {[7, 30, 90].map((days) => (
+                    <option key={days} value={String(days)}>{t("rangeDays", { count: days })}</option>
+                  ))}
+                  <option value="all">{t("rangeAll")}</option>
                 </select>
                 <span className="updated">{new Date(data.updatedAt).toLocaleTimeString()}</span>
               </div>
@@ -550,7 +550,7 @@ function OverviewPage() {
                       stroke="#f59e0b"
                       fill="url(#costGrad)"
                       strokeWidth={2}
-                      name="Стоимость"
+                      name={t("chartCostSeries")}
                     />
                     <Area
                       type="monotone"
@@ -583,8 +583,8 @@ function OverviewPage() {
         >
           {!("global" in data) ? (
             <Card className="mcp-card">
-              <span className="eyebrow">MEMORY LAYER</span>
-              <h2>MCP-сервисы</h2>
+              <span className="eyebrow">{t("memoryLayer")}</span>
+              <h2>{t("mcpTitle")}</h2>
               <div className="mcp-list">
                 {Object.entries({ context7: "Context7", codebaseMemory: "Codebase Memory", memoryGraph: "MemoryGraph", playwright: "Playwright" }).map(([key, label], index) => (
                   <motion.div
@@ -595,7 +595,7 @@ function OverviewPage() {
                   >
                     <span className={cn("status-dot", !data.mcp[key as keyof Snapshot["mcp"]] && "off")} />
                     <span>{label}</span>
-                    <small>{data.mcp[key as keyof Snapshot["mcp"]] ? "подключён" : "не настроен"}</small>
+                    <small>{data.mcp[key as keyof Snapshot["mcp"]] ? t("mcpConnected") : t("mcpMissing")}</small>
                   </motion.div>
                 ))}
               </div>
@@ -615,9 +615,9 @@ function OverviewPage() {
             <div className="card-heading">
               <div>
                 <span className="eyebrow">{t("recent")}</span>
-                <h2>Последние вызовы</h2>
+                <h2>{t("recentCalls")}</h2>
               </div>
-              <Link to="/activity" className="text-link">Открыть журнал →</Link>
+              <Link to="/activity" className="text-link">{t("openActivity")}</Link>
             </div>
             <RecentRows rows={data.activity.slice(0, 6)} />
           </Card>
@@ -632,11 +632,12 @@ function OverviewPage() {
    ═══════════════════════════════════════════════════════ */
 
 function ProjectList({ data }: { data: GlobalSnapshot }) {
+  const { t } = useTranslation()
   const setSelectedProject = useUiStore((state) => state.setSelectedProject)
   return (
     <Card className="mcp-card">
       <span className="eyebrow">PROJECTS</span>
-      <h2>Проекты</h2>
+      <h2>{t("projects")}</h2>
       <div className="project-list">
         {data.projects.map((project, index) => (
           <motion.button
@@ -651,7 +652,7 @@ function ProjectList({ data }: { data: GlobalSnapshot }) {
               <strong>{project.name}</strong>
               <small>{project.directory}</small>
             </span>
-            <span>{formatNumber(project.summary.calls)} calls</span>
+            <span>{formatNumber(project.summary.calls)} {t("callsShort")}</span>
             <span>{formatCost(project.summary.cost)}</span>
           </motion.button>
         ))}
@@ -665,6 +666,7 @@ function ProjectList({ data }: { data: GlobalSnapshot }) {
    ═══════════════════════════════════════════════════════ */
 
 function RecentRows({ rows }: { rows: ActivityRow[] }) {
+  const { t } = useTranslation()
   if (!rows.length) return <EmptyState />
   return (
     <div className="recent-list">
@@ -677,10 +679,10 @@ function RecentRows({ rows }: { rows: ActivityRow[] }) {
         >
           <span className="agent-badge">{row.agent?.replace("orch-", "") ?? "unknown"}</span>
           <div>
-            <strong>{row.provider && row.model ? `${row.provider}/${row.model}` : "Модель не определена"}</strong>
-            <small>{row.completedAt ? new Date(row.completedAt).toLocaleString() : "в процессе"}</small>
+            <strong>{row.provider && row.model ? `${row.provider}/${row.model}` : t("modelUnknown")}</strong>
+            <small>{row.completedAt ? new Date(row.completedAt).toLocaleString() : t("inProgress")}</small>
           </div>
-          <span>{formatNumber(row.tokens.input + row.tokens.output + row.tokens.reasoning)} tok</span>
+          <span>{formatNumber(row.tokens.input + row.tokens.output + row.tokens.reasoning)} {t("tokensShort")}</span>
           <span>{formatCost(row.cost)}</span>
         </motion.div>
       ))}
@@ -731,16 +733,6 @@ function liveAgentName(agent?: string): string {
   return agent?.replace("orch-", "") ?? "unknown"
 }
 
-function pluralizeRu(count: number, one: string, few: string, many: string): string {
-  const abs = Math.abs(count)
-  const mod10 = abs % 10
-  const mod100 = abs % 100
-  if (mod100 >= 11 && mod100 <= 19) return many
-  if (mod10 === 1) return one
-  if (mod10 >= 2 && mod10 <= 4) return few
-  return many
-}
-
 function liveCostOfSet(rows: LiveActiveAgent[]): number {
   return rows.reduce((sum, row) => sum + row.cost, 0)
 }
@@ -765,12 +757,12 @@ function LivePanel({ projectId }: { projectId: string }) {
       <Card className="live-card">
         <div className="card-heading">
           <div>
-            <span className="eyebrow">LIVE · ORCHESTRATION</span>
-            <h2>Что происходит сейчас</h2>
+            <span className="eyebrow">{t("liveOrchestration")}</span>
+            <h2>{t("liveTitle")}</h2>
           </div>
           <span className={cn("live-state", running && "active", !connected && "off")}>
             <span className="status-dot" />
-            {running ? t("liveActive") + " · " + active.length : connected ? "ожидание" : "нет соединения"}
+            {running ? t("liveActive") + " · " + active.length : connected ? t("liveWaiting") : t("liveNoConnection")}
           </span>
         </div>
         {active.length ? (
@@ -786,9 +778,9 @@ function LivePanel({ projectId }: { projectId: string }) {
               </motion.div>
             ))}
             <div className="live-total">
-              <span>Идёт в эту секунду</span>
-              <strong>{active.length} {pluralizeRu(active.length, "агент", "агента", "агентов")}</strong>
-              <span>оценочная стоимость</span>
+              <span>{t("liveRunningNow")}</span>
+              <strong>{t("liveAgents", { count: active.length })}</strong>
+              <span>{t("liveEstimatedCost")}</span>
               <strong>{formatCost(totalCost)}</strong>
             </div>
           </div>
@@ -811,6 +803,7 @@ function LivePanel({ projectId }: { projectId: string }) {
 }
 
 function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
+  const { t } = useTranslation()
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
@@ -827,9 +820,9 @@ function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
       <div className="live-body">
         <div className="live-meta">
           <strong>{liveAgentName(row.agent)}</strong>
-          <span>{row.provider && row.model ? row.provider + "/" + row.model : "модель…"}</span>
+          <span>{row.provider && row.model ? row.provider + "/" + row.model : t("liveModelPending")}</span>
         </div>
-        <p className="live-snippet">{row.text ? (row.text.length > 240 ? `…${row.text.slice(-240)}` : row.text) : (row.tokens.output + row.tokens.reasoning > 0 ? "генерирует…" : "начинает отвечать…")}</p>
+        <p className="live-snippet">{row.text ? (row.text.length > 240 ? `…${row.text.slice(-240)}` : row.text) : (row.tokens.output + row.tokens.reasoning > 0 ? t("liveGenerating") : t("liveStarting"))}</p>
         <div className="live-stats">
           <span>{seconds + "s"}</span>
           <span>{formatNumber(row.tokens.output) + " output (" + formatNumber(row.tokens.reasoning) + " reasoning)"}</span>
@@ -848,20 +841,29 @@ function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
 
 const tableFeatureSet = tableFeatures({ columnSizingFeature })
 const activityHelper = createColumnHelper<typeof tableFeatureSet, ActivityRow>()
-const activityColumns = activityHelper.columns([
-  activityHelper.accessor("completedAt", { header: "Время", cell: ({ getValue }) => getValue() ? new Date(getValue()!).toLocaleString() : "—", size: 180 }),
-  activityHelper.accessor("agent", { header: "Агент", cell: ({ getValue }) => getValue()?.replace("orch-", "") ?? "unknown", size: 130 }),
-  activityHelper.accessor((row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown", { id: "model", header: "Модель", size: 300 }),
-  activityHelper.accessor((row) => row.tokens.input + row.tokens.output + row.tokens.reasoning, { id: "tokens", header: "Токены", cell: ({ getValue }) => formatNumber(getValue()), size: 120 }),
-  activityHelper.accessor("cost", { header: "Цена", cell: ({ getValue }) => formatCost(getValue()), size: 100 }),
-  activityHelper.accessor("pricingStatus", { header: "Цена/источник", cell: ({ row }) => pricingLabel(row.original.pricingStatus), size: 120 }),
-  activityHelper.accessor("finish", { header: "Статус", cell: ({ getValue }) => getValue() ?? "—", size: 110 }),
-])
+
+/**
+ * Columns are built per language rather than once at module scope, so headers
+ * follow a language switch. Callers memoize on the active language to keep the
+ * column identities stable between renders.
+ */
+function buildActivityColumns(t: TFunction) {
+  return activityHelper.columns([
+    activityHelper.accessor("completedAt", { header: t("colTime"), cell: ({ getValue }) => getValue() ? new Date(getValue()!).toLocaleString() : "—", size: 180 }),
+    activityHelper.accessor("agent", { header: t("colAgent"), cell: ({ getValue }) => getValue()?.replace("orch-", "") ?? "unknown", size: 130 }),
+    activityHelper.accessor((row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown", { id: "model", header: t("colModel"), size: 300 }),
+    activityHelper.accessor((row) => row.tokens.input + row.tokens.output + row.tokens.reasoning, { id: "tokens", header: t("colTokens"), cell: ({ getValue }) => formatNumber(getValue()), size: 120 }),
+    activityHelper.accessor("cost", { header: t("colCost"), cell: ({ getValue }) => formatCost(getValue()), size: 100 }),
+    activityHelper.accessor("pricingStatus", { header: t("colPricingSource"), cell: ({ row }) => pricingLabel(row.original.pricingStatus), size: 120 }),
+    activityHelper.accessor("finish", { header: t("colStatus"), cell: ({ getValue }) => getValue() ?? "—", size: 110 }),
+  ])
+}
 
 function ActivityPage() {
+  const { t } = useTranslation()
   const selected = useUiStore((state) => state.selectedProject)
   const query = useSnapshot()
-  if (selected === "global") return <ProjectRequired title="Журнал работы" />
+  if (selected === "global") return <ProjectRequired title={t("activityTitle")} />
   if (!query.data) return query.isLoading ? <Loading /> : <ErrorState error={query.error} />
   return (
     <motion.div
@@ -869,10 +871,10 @@ function ActivityPage() {
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
     >
-      <PageIntro kicker="LOCAL EVENT STREAM" title="Журнал работы" text="Метаданные вызовов без содержимого промптов и ответов." />
+      <PageIntro kicker={t("activityKicker")} title={t("activityTitle")} text={t("activityText")} />
       {query.data.activityTruncated && (
         <div className="truncation-note">
-          Показаны последние {formatNumber(query.data.activity.length)} из {formatNumber(query.data.activityTotal)} вызовов. Полный список — через экспорт.
+          {t("activityTruncated", { shown: formatNumber(query.data.activity.length), total: formatNumber(query.data.activityTotal) })}
         </div>
       )}
       <Card className="table-card">
@@ -883,7 +885,10 @@ function ActivityPage() {
 }
 
 function VirtualActivityTable({ data }: { data: ActivityRow[] }) {
-  const table = useTable({ features: tableFeatureSet, columns: activityColumns, data })
+  const { t, i18n: instance } = useTranslation()
+  // Rebuild only when the language changes, not on every render.
+  const columns = useMemo(() => buildActivityColumns(t), [instance.language, t])
+  const table = useTable({ features: tableFeatureSet, columns, data })
   const rows = table.getRowModel().rows
   const parent = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => parent.current, estimateSize: () => 46, overscan: 8 })
@@ -929,11 +934,12 @@ function VirtualActivityTable({ data }: { data: ActivityRow[] }) {
    ═══════════════════════════════════════════════════════ */
 
 function RankingPage({ kind }: { kind: "models" | "agents" }) {
+  const { t } = useTranslation()
   const query = useDashboardData()
   const rows = query.data?.[kind] ?? EMPTY
   const maxTokens = useMemo(() => rows.reduce((max, row) => Math.max(max, totalTokens(row)), 0), [rows])
-  const title = kind === "models" ? "Экономика моделей" : "Нагрузка агентов"
-  const text = kind === "models" ? "Фактические токены и стоимость по каждой использованной модели." : "Кто выполняет работу, сколько контекста потребляет и где происходит эскалация."
+  const title = kind === "models" ? t("modelsTitle") : t("agentsTitle")
+  const text = kind === "models" ? t("modelsText") : t("agentsText")
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -958,8 +964,8 @@ function RankingPage({ kind }: { kind: "models" | "agents" }) {
                     <span style={{ width: `${maxTokens > 0 ? Math.max(3, (totalTokens(row) / maxTokens) * 100) : 3}%` }} />
                   </div>
                 </div>
-                <span>{row.calls} calls</span>
-                <span>{formatNumber(totalTokens(row))} tok</span>
+                <span>{row.calls} {t("callsShort")}</span>
+                <span>{formatNumber(totalTokens(row))} {t("tokensShort")}</span>
                 <span>{formatCost(row.cost)}</span>
               </motion.div>
             ))}
@@ -976,22 +982,42 @@ function RankingPage({ kind }: { kind: "models" | "agents" }) {
    SETTINGS PAGE
    ═══════════════════════════════════════════════════════ */
 
-const AGENTS = [
-  { id: "orch-lead", name: "Lead", role: "Планирование и координация", group: "Основные" },
-  { id: "orch-judge", name: "Judge", role: "Арбитраж сложных решений", group: "Основные" },
-  { id: "orch-repo", name: "Repository", role: "Анализ и изменение кода", group: "Разработка" },
-  { id: "orch-tests", name: "Tests", role: "Тесты и верификация", group: "Разработка" },
-  { id: "orch-critic", name: "Critic", role: "Ревью и поиск проблем", group: "Разработка" },
-  { id: "orch-docs", name: "Docs", role: "Документация и API", group: "Исследование" },
-  { id: "orch-research", name: "Research", role: "Внешнее исследование", group: "Исследование" },
-  { id: "orch-security", name: "Security", role: "Безопасность", group: "Исследование" },
-  { id: "orch-visual-reference", name: "Visual Reference", role: "Анализ визуальных референсов", group: "Визуальные" },
-  { id: "orch-visual-generate", name: "Visual Generate", role: "Генерация изображений", group: "Визуальные" },
-  { id: "orch-visual-review", name: "Visual Review", role: "Визуальная проверка", group: "Визуальные" },
-  { id: "orch-editor", name: "Editor", role: "Изолированное редактирование", group: "Разработка" },
-  { id: "orch-integrator", name: "Integrator", role: "Интеграция изменений", group: "Разработка" },
-  { id: "orch-merge", name: "Merge", role: "Слияние worktree", group: "Разработка" },
-] as const
+// Agent ids and display names are product identifiers and stay untranslated;
+// roles and groups are prose and resolve through the locale catalogue.
+const AGENTS: ReadonlyArray<{ id: string; name: string; roleKey: TranslationKey; groupKey: TranslationKey }> = [
+  { id: "orch-lead", name: "Lead", roleKey: "roleLead", groupKey: "groupCore" },
+  { id: "orch-judge", name: "Judge", roleKey: "roleJudge", groupKey: "groupCore" },
+  { id: "orch-repo", name: "Repository", roleKey: "roleRepo", groupKey: "groupDevelopment" },
+  { id: "orch-tests", name: "Tests", roleKey: "roleTests", groupKey: "groupDevelopment" },
+  { id: "orch-critic", name: "Critic", roleKey: "roleCritic", groupKey: "groupDevelopment" },
+  { id: "orch-docs", name: "Docs", roleKey: "roleDocs", groupKey: "groupResearch" },
+  { id: "orch-research", name: "Research", roleKey: "roleResearch", groupKey: "groupResearch" },
+  { id: "orch-security", name: "Security", roleKey: "roleSecurity", groupKey: "groupResearch" },
+  { id: "orch-visual-reference", name: "Visual Reference", roleKey: "roleVisualReference", groupKey: "groupVisual" },
+  { id: "orch-visual-generate", name: "Visual Generate", roleKey: "roleVisualGenerate", groupKey: "groupVisual" },
+  { id: "orch-visual-review", name: "Visual Review", roleKey: "roleVisualReview", groupKey: "groupVisual" },
+  { id: "orch-editor", name: "Editor", roleKey: "roleEditor", groupKey: "groupDevelopment" },
+  { id: "orch-integrator", name: "Integrator", roleKey: "roleIntegrator", groupKey: "groupDevelopment" },
+  { id: "orch-merge", name: "Merge", roleKey: "roleMerge", groupKey: "groupDevelopment" },
+]
+
+const BUDGET_LABEL_KEYS: Record<"eco" | "balanced" | "quality" | "ebobo", TranslationKey> = {
+  eco: "budgetEco",
+  balanced: "budgetBalanced",
+  quality: "budgetQuality",
+  ebobo: "budgetEbobo",
+}
+
+const ORCHESTRATION_FIELD_KEYS: Array<[
+  "parallelWorkers" | "parallelEditors" | "maxWorkers" | "maxPremiumCallsPerTask" | "confidenceThreshold",
+  TranslationKey,
+]> = [
+  ["parallelWorkers", "fieldParallelWorkers"],
+  ["parallelEditors", "fieldParallelEditors"],
+  ["maxWorkers", "fieldMaxWorkers"],
+  ["maxPremiumCallsPerTask", "fieldMaxPremiumCalls"],
+  ["confidenceThreshold", "fieldConfidenceThreshold"],
+]
 
 const settingsSchema = z.object({
   budget: z.enum(["eco", "balanced", "quality", "ebobo"]),
@@ -1044,7 +1070,7 @@ function SettingsPage() {
   })
   const isDirty = form.formState.isDirty
   const fieldErrors = flattenErrors(form.formState.errors)
-  if (selected === "global") return <ProjectRequired title="Настройка Orchestra" />
+  if (selected === "global") return <ProjectRequired title={t("settingsTitle")} />
   if (!query.data) return query.isLoading ? <Loading /> : <ErrorState error={query.error} />
   return (
     <motion.div
@@ -1052,7 +1078,7 @@ function SettingsPage() {
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
     >
-      <PageIntro kicker="CONFIGURATION" title="Настройка Orchestra" text="Изменения сохраняются локально с резервной копией текущего JSONC." />
+      <PageIntro kicker={t("settingsKicker")} title={t("settingsTitle")} text={t("settingsText")} />
       <form onSubmit={form.handleSubmit((value) => save.mutate(value))} className="settings-stack">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -1062,8 +1088,8 @@ function SettingsPage() {
           <Card className="settings-card">
             <div className="setting-title">
               <div>
-                <h2>Режим бюджета</h2>
-                <p>Один активный runtime-профиль для всей команды.</p>
+                <h2>{t("budgetTitle")}</h2>
+                <p>{t("budgetText")}</p>
               </div>
             </div>
             <Controller
@@ -1084,7 +1110,7 @@ function SettingsPage() {
                       transition={{ delay: 0.1 + index * 0.05 }}
                     >
                       <strong>{mode}</strong>
-                      <span>{({ eco: "Бесплатные workers", balanced: "Разумный баланс", quality: "Качество прежде цены", ebobo: "Максимальный роинг" })[mode]}</span>
+                      <span>{t(BUDGET_LABEL_KEYS[mode])}</span>
                     </motion.button>
                   ))}
                 </div>
@@ -1101,17 +1127,17 @@ function SettingsPage() {
           <Card className="settings-card model-settings">
             <div className="setting-title">
               <div>
-                <h2>Назначение моделей</h2>
-                <p>Выберите подключённую модель отдельно для каждого участника команды.</p>
+                <h2>{t("modelsAssignTitle")}</h2>
+                <p>{t("modelsAssignText")}</p>
               </div>
               <select {...form.register("models.strategy")}>
-                <option value="auto">Автоподбор</option>
-                <option value="manual">Ручной режим</option>
+                <option value="auto">{t("strategyAuto")}</option>
+                <option value="manual">{t("strategyManual")}</option>
               </select>
             </div>
             {query.data.availableModels.length === 0 && (
               <div className="model-empty">
-                OpenCode не вернул подключённые модели. Проверьте авторизацию провайдера и команду <code>opencode models</code>.
+                {t("modelsEmpty")} <code>opencode models</code>.
               </div>
             )}
             <div className="agent-model-list">
@@ -1125,14 +1151,14 @@ function SettingsPage() {
                 >
                   <div className="agent-identity">
                     <strong>{agent.name}</strong>
-                    <span>{agent.role}</span>
+                    <span>{t(agent.roleKey)}</span>
                     <small>{agent.id}</small>
                   </div>
                   <select
-                    aria-label={`Модель для ${agent.name}`}
+                    aria-label={t("modelForAgent", { name: agent.name })}
                     {...form.register(`models.agents.${agent.id}`)}
                   >
-                    <option value="">Автоматически</option>
+                    <option value="">{t("modelAutomatic")}</option>
                     {query.data.availableModels.map((model) => (
                       <option key={model} value={model}>{model}</option>
                     ))}
@@ -1151,20 +1177,14 @@ function SettingsPage() {
           <Card className="settings-card">
             <div className="setting-title">
               <div>
-                <h2>Оркестрация</h2>
-                <p>Параллельность, эскалация и экспериментальные worktree.</p>
+                <h2>{t("orchestrationTitle")}</h2>
+                <p>{t("orchestrationText")}</p>
               </div>
             </div>
             <div className="settings-fields">
-              {([
-                ["parallelWorkers", "Параллельные workers"],
-                ["parallelEditors", "Параллельные editors"],
-                ["maxWorkers", "Максимум workers"],
-                ["maxPremiumCallsPerTask", "Premium вызовов на задачу"],
-                ["confidenceThreshold", "Порог уверенности"],
-              ] as const).map(([name, label]) => (
+              {ORCHESTRATION_FIELD_KEYS.map(([name, labelKey]) => (
                 <label key={name}>
-                  {label}
+                  {t(labelKey)}
                   <input
                     type="number"
                     step={name === "confidenceThreshold" ? "0.01" : "1"}
@@ -1173,11 +1193,11 @@ function SettingsPage() {
                 </label>
               ))}
               <label>
-                Корень worktree
-                <input {...form.register("orchestration.worktreeRoot")} placeholder="не задан" />
+                {t("fieldWorktreeRoot")}
+                <input {...form.register("orchestration.worktreeRoot")} placeholder={t("placeholderUnset")} />
               </label>
               <label className="check-setting">
-                Premium escalation
+                {t("fieldPremiumEscalation")}
                 <Controller
                   name="orchestration.premiumEscalation"
                   control={form.control}
@@ -1185,7 +1205,7 @@ function SettingsPage() {
                 />
               </label>
               <label className="check-setting">
-                Показывать workers
+                {t("fieldExposeWorkers")}
                 <Controller
                   name="orchestration.exposeWorkers"
                   control={form.control}
@@ -1203,8 +1223,8 @@ function SettingsPage() {
         >
           <Card className="settings-card inline-setting">
             <div>
-              <h2>Автоматически принимать все разрешения</h2>
-              <p>Опасный режим: все запросы разрешений для встроенных, пользовательских и Orchestra-агентов будут одобряться без подтверждения, включая команды и доступ вне проекта. После изменения перезапустите OpenCode.</p>
+              <h2>{t("autoAcceptTitle")}</h2>
+              <p>{t("autoAcceptText")}</p>
             </div>
             <Controller
               name="permissions.autoAcceptAll"
@@ -1222,25 +1242,25 @@ function SettingsPage() {
           <Card className="settings-card">
             <div className="setting-title">
               <div>
-                <h2>Pricing</h2>
-                <p>Оценки стоимости и резервный прайс-лист.</p>
+                <h2>{t("pricingTitle")}</h2>
+                <p>{t("pricingText")}</p>
               </div>
             </div>
             <div className="settings-fields">
               <label>
-                Endpoint
-                <input {...form.register("pricing.endpoint")} placeholder="не задан" />
+                {t("fieldEndpoint")}
+                <input {...form.register("pricing.endpoint")} placeholder={t("placeholderUnset")} />
               </label>
               <label>
-                Предупреждать выше USD
+                {t("fieldWarnAboveUsd")}
                 <input type="number" step="0.01" {...form.register("pricing.warnThresholdUSD", { valueAsNumber: true })} />
               </label>
               <label>
-                Обновление прайса, часов
+                {t("fieldPriceRefreshHours")}
                 <input type="number" {...form.register("pricing.refreshIntervalHours", { valueAsNumber: true })} />
               </label>
               <label className="check-setting">
-                Оценивать стоимость
+                {t("fieldEstimateCost")}
                 <Controller
                   name="pricing.estimate"
                   control={form.control}
@@ -1248,7 +1268,7 @@ function SettingsPage() {
                 />
               </label>
               <label className="check-setting">
-                OpenRouter fallback
+                {t("fieldOpenRouterFallback")}
                 <Controller
                   name="pricing.openrouter.enabled"
                   control={form.control}
@@ -1256,7 +1276,7 @@ function SettingsPage() {
                 />
               </label>
               <label>
-                TTL OpenRouter, часов
+                {t("fieldOpenRouterTtl")}
                 <input type="number" {...form.register("pricing.openrouter.ttlHours", { valueAsNumber: true })} />
               </label>
             </div>
@@ -1271,12 +1291,12 @@ function SettingsPage() {
           <Card className="settings-card">
             <div className="setting-title">
               <div>
-                <h2>Аномалии</h2>
-                <p>Сколько стандартных отклонений считать всплеском расходов.</p>
+                <h2>{t("anomaliesTitle")}</h2>
+                <p>{t("anomaliesText")}</p>
               </div>
             </div>
             <label className="settings-field">
-              Sigma
+              {t("fieldSigma")}
               <input type="number" min="0.5" max="6" step="0.1" {...form.register("telemetry.anomalySigma", { valueAsNumber: true })} />
             </label>
           </Card>
@@ -1289,8 +1309,8 @@ function SettingsPage() {
         >
           <Card className="settings-card inline-setting">
             <div>
-              <h2>Локальная телеметрия</h2>
-              <p>Хранить только usage-метаданные. Тексты запросов и ответы не записываются.</p>
+              <h2>{t("telemetryTitle")}</h2>
+              <p>{t("telemetryText")}</p>
             </div>
             <Controller
               name="telemetry.enabled"
@@ -1308,7 +1328,7 @@ function SettingsPage() {
           <Card className="settings-card inline-setting">
             <div>
               <h2>{t("storeTexts")}</h2>
-              <p>Опционально, для отладки. По умолчанию выключено — журнал остаётся без промптов и ответов.</p>
+              <p>{t("storeTextsHint")}</p>
             </div>
             <Controller
               name="telemetry.storeTexts"
@@ -1324,9 +1344,9 @@ function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6 }}
         >
-          <span>{save.isError ? (save.error as Error).message : save.isSuccess ? "Настройки сохранены" : query.data.configPath}</span>
+          <span>{save.isError ? (save.error as Error).message : save.isSuccess ? t("settingsSaved") : query.data.configPath}</span>
           <Button type="submit" disabled={save.isPending || !isDirty}>
-            {save.isPending ? "Сохраняю…" : "Сохранить настройки"}
+            {save.isPending ? t("saving") : t("saveSettings")}
           </Button>
           {fieldErrors.length > 0 && (
             <div className="form-errors" role="alert">
@@ -1344,19 +1364,21 @@ function SettingsPage() {
    ═══════════════════════════════════════════════════════ */
 
 function ProjectRequired({ title }: { title: string }) {
+  const { t } = useTranslation()
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
     >
-      <PageIntro kicker="PROJECT REQUIRED" title={title} text="Выберите конкретный проект в верхней панели." />
+      <PageIntro kicker={t("projectRequired")} title={title} text={t("projectRequiredText")} />
       <Card><EmptyState /></Card>
     </motion.div>
   )
 }
 
 function Loading() {
+  const { t } = useTranslation()
   return (
     <motion.div
       className="loading"
@@ -1370,12 +1392,13 @@ function Loading() {
       >
         <HugeiconsIcon icon={Refresh01Icon} size={24} />
       </motion.div>
-      Читаю локальную телеметрию…
+      {t("loadingTelemetry")}
     </motion.div>
   )
 }
 
 function ErrorState({ error }: { error: unknown }) {
+  const { t } = useTranslation()
   return (
     <motion.div
       className="error-state"
@@ -1383,7 +1406,7 @@ function ErrorState({ error }: { error: unknown }) {
       animate={{ opacity: 1 }}
       transition={{ duration: 0.3 }}
     >
-      Не удалось загрузить dashboard: {error instanceof Error ? error.message : "unknown error"}
+      {t("loadFailed")} {error instanceof Error ? error.message : t("unknownError")}
     </motion.div>
   )
 }

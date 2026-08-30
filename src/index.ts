@@ -1,8 +1,11 @@
+import { readFileSync, statSync } from "node:fs"
+import path from "node:path"
+import { parse as parseJsonc } from "jsonc-parser"
 import type { Config, Plugin } from "@opencode-ai/plugin"
 import { createAgentSet } from "./agents/build.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
 import { InvalidConfigError, loadConfig, type LoadedConfig } from "./config/load.js"
-import { openCodeConfigDirectory } from "./config/paths.js"
+import { globalOrchestraConfig, openCodeConfigDirectory } from "./config/paths.js"
 import { registerProject } from "./dashboard/registry.js"
 import { applyBudgetPreset, DEFAULT_CONFIG } from "./config/defaults.js"
 import type { ModelCandidateInput } from "./config/schema.js"
@@ -33,6 +36,77 @@ function mergeAgent(base: RuntimeAgentConfig, override?: RuntimeAgentConfig): Ru
       ...base.permission,
       ...override.permission,
     },
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Live auto-accept state.
+ *
+ * The dashboard toggle writes orchestra.jsonc while sessions are running, but
+ * plugin config is loaded once at startup, so a statically registered hook
+ * would go stale: the panel shows auto-accept ON while the running session
+ * still prompts. The permission.ask hook below therefore re-reads the toggle
+ * from the config files (mtime-cached) instead of capturing it at load time.
+ * Plugin options passed directly to the plugin still outrank file config,
+ * mirroring loadConfig's merge order (options > project > global).
+ */
+interface AutoAcceptCache {
+  signatures: Map<string, number>
+  value: boolean | undefined
+}
+
+function createLiveAutoAccept(directory: string, rawOptions: Record<string, unknown>): () => boolean {
+  const optionValue = isRecord(rawOptions.permissions) && typeof rawOptions.permissions.autoAcceptAll === "boolean"
+    ? rawOptions.permissions.autoAcceptAll
+    : undefined
+  const projectJsonc = path.join(directory, ".opencode", "orchestra.jsonc")
+  const projectJson = path.join(directory, ".opencode", "orchestra.json")
+  let cache: AutoAcceptCache | undefined
+  return (): boolean => {
+    if (optionValue !== undefined) return optionValue
+    try {
+      // Project JSONC shadows the JSON sibling (same rule as loadConfig).
+      let projected = projectJsonc
+      try {
+        statSync(projectJsonc)
+      } catch {
+        projected = projectJson
+      }
+      const files = [globalOrchestraConfig(), projected]
+      const signatures = new Map<string, number>()
+      let changed = cache === undefined || cache.signatures.size !== files.length
+      for (const file of files) {
+        let mtime = 0
+        try {
+          mtime = statSync(file).mtimeMs
+        } catch {
+          // File does not exist; keep its signature at 0.
+        }
+        signatures.set(file, mtime)
+        if (!changed && cache && cache.signatures.get(file) !== mtime) changed = true
+      }
+      if (!changed && cache) return cache.value ?? false
+      let merged: boolean | undefined
+      for (const file of files) {
+        if ((signatures.get(file) ?? 0) === 0) continue
+        try {
+          const raw = readFileSync(file, "utf8")
+          const parsed = parseJsonc(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as unknown
+          const permissions = isRecord(parsed) && isRecord(parsed.permissions) ? parsed.permissions : undefined
+          if (permissions && typeof permissions.autoAcceptAll === "boolean") merged = permissions.autoAcceptAll
+        } catch {
+          // Mid-save or malformed JSONC: keep the previously known value.
+        }
+      }
+      cache = { signatures, value: merged }
+      return merged ?? false
+    } catch {
+      return cache?.value ?? false
+    }
   }
 }
 
@@ -229,6 +303,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
   await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)
   const orchestra = applyDiscoveredModels(applyBudgetPreset(loaded.config), discovered)
+  const autoAcceptLive = createLiveAutoAccept(directory, rawOptions)
   const prompts = await loadPrompts()
   const agents = createAgentSet(orchestra, prompts)
   const pools: ModelCandidateInput[][] = [
@@ -379,13 +454,11 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
       ...(openRouter ? { openRouter } : {}),
     }),
-    ...(orchestra.permissions.autoAcceptAll
-      ? {
-          "permission.ask": async (_input, output) => {
-            if (output.status !== "deny") output.status = "allow"
-          },
-        }
-      : {}),
+    // Always registered: the handler consults the live toggle so the dashboard
+    // auto-accept switch takes effect without restarting opencode.
+    "permission.ask": async (_input, output) => {
+      if (autoAcceptLive() && output.status !== "deny") output.status = "allow"
+    },
     dispose: async () => {
       priceRefresher.stop()
       await live.dispose()
@@ -429,6 +502,10 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       const eventRecord = event as unknown as { type?: string; properties?: { sessionID?: string; error?: unknown } }
       if (eventRecord.type === "session.error" || eventRecord.type === "session.idle") {
         const sessionID = eventRecord.properties?.sessionID
+        // The session can no longer be mid-generation: finalize any live rows
+        // whose completing message.updated never arrived (abort / pre-token
+        // error), or they linger as phantom agents on the live panel.
+        if (sessionID) live.dropSession(sessionID, eventRecord.type.replace("session.", "session-"))
         if (sessionID && !recoveryNotices.has(`${sessionID}:${eventRecord.type}`)) {
           recoveryNotices.add(`${sessionID}:${eventRecord.type}`)
           await client.app.log({ body: {

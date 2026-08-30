@@ -1,68 +1,43 @@
 import i18n from "i18next"
 import { initReactI18next } from "react-i18next"
+import { DEFAULT_LOCALE, LOCALES, LOCALE_CODES, resolveLocale, type LocaleCode } from "./lib/locales"
 
-const resources = {
-  ru: { translation: {
-    overview: "Обзор",
-    activity: "Журнал",
-    models: "Модели",
-    agents: "Агенты",
-    settings: "Настройка",
-    live: "Локально",
-    liveActive: "Активно",
-    sessions: "Сессии",
-    calls: "Вызовы",
-    tokens: "Токены",
-    cost: "Стоимость",
-    usage: "Использование за 30 дней",
-    recent: "Последняя активность",
-    noData: "Данные появятся после первого запуска агентов Orchestra.",
-    export: "Экспорт",
-    exportFailed: "Не удалось экспортировать",
-    close: "Закрыть",
-    monthProjection: "Прогноз месяца",
-    monthToDate: "потрачено за месяц",
-    aheadOfPace: "впереди среднего темпа",
-    anomaly: "Всплеск расхода",
-    anomalyNote: "выше базовой линии",
-    storeTexts: "Хранить тексты промптов и ответов (для отладки)",
-    liveDisconnected: "Соединение потеряно — переподключаюсь…",
-    liveIdle: "Соединено · ожидание активности агентов…",
-  } },
-  en: { translation: {
-    overview: "Overview",
-    activity: "Activity",
-    models: "Models",
-    agents: "Agents",
-    settings: "Settings",
-    live: "Local",
-    liveActive: "Active",
-    sessions: "Sessions",
-    calls: "Calls",
-    tokens: "Tokens",
-    cost: "Cost",
-    usage: "Usage over 30 days",
-    recent: "Recent activity",
-    noData: "Data will appear after Orchestra agents run for the first time.",
-    export: "Export",
-    exportFailed: "Export failed",
-    close: "Close",
-    monthProjection: "Month projection",
-    monthToDate: "spent this month",
-    aheadOfPace: "ahead of average pace",
-    anomaly: "Spend spike",
-    anomalyNote: "above baseline",
-    storeTexts: "Store prompt and reply texts (for debugging)",
-    liveDisconnected: "Connection lost — reconnecting…",
-    liveIdle: "Connected · waiting for agent activity…",
-  } },
-} as const
+export const LANGUAGE_STORAGE_KEY = "orchestra-language"
+
+const resources = Object.fromEntries(
+  LOCALE_CODES.map((code) => [code, { translation: LOCALES[code] }]),
+)
+
+/** localStorage throws in private-mode/sandboxed frames; fall back silently. */
+function storedLanguage(): LocaleCode {
+  try {
+    return resolveLocale(localStorage.getItem(LANGUAGE_STORAGE_KEY))
+  } catch {
+    return DEFAULT_LOCALE
+  }
+}
 
 void i18n.use(initReactI18next).init({
   resources,
-  lng: localStorage.getItem("orchestra-language") === "en" ? "en" : "ru",
-  fallbackLng: "ru",
+  lng: storedLanguage(),
+  fallbackLng: DEFAULT_LOCALE,
+  supportedLngs: [...LOCALE_CODES],
   interpolation: { escapeValue: false },
 })
+
+/** Persist the choice so a reload keeps the language, then switch at runtime. */
+export function setLanguage(code: LocaleCode): void {
+  try {
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, code)
+  } catch {
+    // Non-fatal: the language still changes for this session.
+  }
+  void i18n.changeLanguage(code)
+}
+
+/** The other supported language, for the two-way toggle in the top bar. */
+export function nextLanguage(current: string): LocaleCode {
+  return resolveLocale(current) === "ru" ? "en" : "ru"
+}
 
 export default i18n
