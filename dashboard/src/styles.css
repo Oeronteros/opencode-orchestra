@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 /* ═══════════════════════════════════════════════════════
@@ -24,8 +23,8 @@
   
   --text-primary: #f4f4f5;
   --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  --text-muted: #52525b;
+  --text-tertiary: #9a9aa3;
+  --text-muted: #85858f;
   
   --accent-violet: #8b5cf6;
   --accent-violet-light: #a78bfa;
@@ -299,7 +298,8 @@ nav { display: grid; gap: 4px; }
 
 .eyebrow {
   color: var(--text-muted);
-  font-size: 9px;
+     font-size: 11px;
+     font-weight: 600;
   line-height: 1.4;
   font-weight: 700;
   letter-spacing: .18em;
@@ -1223,8 +1223,8 @@ html.light {
   
   --text-primary: #18181b;
   --text-secondary: #52525b;
-  --text-tertiary: #71717a;
-  --text-muted: #a1a1aa;
+  --text-tertiary: #52525b;
+  --text-muted: #62626b;
   
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.08);
   --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.12);
@@ -1288,6 +1288,18 @@ html.light .export-item:hover { background: var(--bg-glass); }
 html.light .export-item-label { color: var(--text-primary); }
 html.light .export-close { color: var(--text-tertiary); }
 html.light .export-close:hover { color: var(--text-primary); }
+
+:focus-visible { outline: 2px solid var(--accent-violet-light); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+  .mesh-bg { display: none; }
+}
 
 /* ═══════════════════════════════════════════════════════
    RESPONSIVE

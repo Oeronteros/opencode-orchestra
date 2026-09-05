@@ -17,13 +17,13 @@ const buttonVariants = cva(
           "active:translate-y-0 active:shadow-[0_2px_8px_rgba(139,92,246,0.3)]"
         ),
         outline: cn(
-          "border border-white/[0.1] bg-white/[0.03] text-zinc-200",
-          "hover:bg-white/[0.07] hover:border-white/[0.15]",
+          "border border-[var(--border-medium)] bg-[var(--bg-glass)] text-[var(--text-secondary)]",
+          "hover:bg-[var(--bg-glass-hover)] hover:border-[var(--border-accent)]",
           "hover:shadow-[0_4px_16px_rgba(0,0,0,0.2)]"
         ),
         ghost: cn(
-          "text-zinc-400",
-          "hover:bg-white/[0.06] hover:text-white",
+          "text-[var(--text-secondary)]",
+          "hover:bg-[var(--bg-glass-hover)] hover:text-[var(--text-primary)]",
           "hover:shadow-[0_2px_8px_rgba(0,0,0,0.15)]"
         ),
       },

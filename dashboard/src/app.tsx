@@ -774,8 +774,8 @@ function LivePanel({ projectId }: { projectId: string }) {
             <span className="eyebrow">{t("liveOrchestration")}</span>
             <h2>{t("liveTitle")}</h2>
           </div>
-          <span className={cn("live-state", running && "active", !connected && "off")}>
-            <span className="status-dot" />
+          <span className={cn("live-state", running && "active", !connected && "off")} role="status" aria-live="polite">
+            <span className="status-dot" aria-hidden="true" />
             {running ? t("liveActive") + " · " + active.length : connected ? t("liveWaiting") : t("liveNoConnection")}
           </span>
         </div>
