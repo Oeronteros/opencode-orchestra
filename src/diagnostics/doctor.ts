@@ -536,7 +536,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 
   // --- MCP server availability ---
   const { local, nonLocalCount } = collectLocalMcps(mainConfig.parsed)
-  const known = new Set(["context7", "codebase-memory", "memorygraph"])
+  const known = new Set(["context7", "codebase-memory", "memorygraph", "git", "ast-grep"])
   for (const mcp of local) {
     const isKnown = known.has(mcp.name)
     if (mcp.executable) {
@@ -616,6 +616,40 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     status: codebaseMemory.executable ? "ok" : "info",
     detail: codebaseMemory.executable ? `${codebaseMemory.executable} — ${codebaseMemory.version ?? "unknown"}` : "not installed",
     ...(codebaseMemory.executable ? {} : { hint: "Run `opencode-orchestra install` to provision it." }),
+  })
+
+  // --- Toolchain: git, uvx, ast-grep engine (strictly offline PATH probes) ---
+  const gitTool = resolveExecutable(["git"], ["--version"])
+  push({
+    id: "git",
+    label: "Git",
+    status: gitTool.executable ? "ok" : "warning",
+    detail: gitTool.executable ? `${gitTool.executable} — ${gitTool.version ?? "unknown"}` : "not found",
+    ...(gitTool.executable ? {} : { hint: "Install git or ensure it is in PATH; Git MCP requires it." }),
+  })
+
+  const uvxTool = resolveExecutable(
+    [...localBinCandidates("uvx"), path.join(homeDirectory(), ".cargo", "bin", executableName("uvx")), "uvx"],
+    ["--version"],
+  )
+  push({
+    id: "uvx",
+    label: "uvx",
+    status: uvxTool.executable ? "ok" : "warning",
+    detail: uvxTool.executable ? `${uvxTool.executable} — ${uvxTool.version ?? "unknown"}` : "not found",
+    ...(uvxTool.executable ? {} : { hint: "Install uv (astral.sh/uv); uvx runs Git and ast-grep MCP servers." }),
+  })
+
+  const astGrepEngine = resolveExecutable(
+    ["ast-grep", "sg", ...localBinCandidates("ast-grep"), ...localBinCandidates("sg")],
+    ["--version"],
+  )
+  push({
+    id: "ast-grep",
+    label: "ast-grep engine",
+    status: astGrepEngine.executable ? "ok" : "info",
+    detail: astGrepEngine.executable ? `${astGrepEngine.executable} — ${astGrepEngine.version ?? "unknown"}` : "not installed",
+    ...(astGrepEngine.executable ? {} : { hint: "Install ast-grep (ast-grep.github.io) for local Tree-Sitter parsing; MCP server still starts without it." }),
   })
 
   // --- Routing preflight (non-mutating) ---

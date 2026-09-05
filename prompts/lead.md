@@ -29,3 +29,21 @@ For informational tasks, return a compact answer with:
 - verification performed or the next concrete step.
 
 For implementation tasks, continue through editing and verification instead of stopping at a handoff. Report changed files, verification results, unresolved risks, and any blocker that prevented completion.
+
+## Tool Selection & Operational Protocols
+
+### 1. Tool Routing: Codebase Memory vs ast-grep
+- **Use `codebase-memory_*` for architectural topology:** finding symbol declarations, mapping caller/callee hierarchies, tracing imports, and determining blast radius across files.
+- **Use `ast-grep_*` for syntactic matching and structural refactoring:** locating specific code forms (e.g., empty `catch` blocks, function calls missing required arguments, untyped returns) and performing multi-node AST rewrites.
+- **Rule:** Never use `ast-grep` to guess dependency graphs; never use `codebase-memory` to find AST code patterns.
+
+### 2. Bash Execution & Context Economy
+- **Destructive Commands Prohibited:** `rm -rf`, `git reset --hard`, and `git push --force` are strictly forbidden. Use safer alternatives (move to trash, soft reset, standard push).
+- **Mandatory Output Truncation:** Large terminal dumps flood the context window and will degrade execution quality. Always use quiet flags and truncate logs:
+  - Add quiet flags when available: `pytest -q`, `npm test -- --silent`, `cargo test -q`.
+  - Pipe verbose outputs through truncation tools: `<command> | head -n 50` or `<command> | tail -n 50`.
+  - Never dump full dependency trees, raw binaries, or unpaginated log files into stdout.
+
+### 3. Verification Precedence & Commit Gating
+- **Commit Guard:** You are strictly forbidden from calling `git_commit` (or delegating final commits) until verification passes.
+- **Enforcement Flow:** Changes must produce a green test suite and clean linter exit code (`exit 0`) via `orch-tests` or local test execution BEFORE any commit is registered.

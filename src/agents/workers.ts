@@ -25,13 +25,23 @@ const READ_ONLY: RuntimeAgentConfig["permission"] = {
   external_directory: "ask",
 }
 
+// Read-only repo scout plus structural/history tools. Git mutations
+// (git_commit/git_add/git_reset) and ast-grep rewrites are forbidden by the
+// repo system prompt, not by granular permission denies: the permission
+// schema supports only allow|ask|deny per tool prefix.
+
 const WORKERS: Record<string, WorkerSpec> = {
   "orch-repo": {
     description: "Internal read-only repository scout for focused codebase evidence, ownership, patterns, and change impact.",
     prompt: "Inspect the repository for the exact question. Start with Codebase Memory graph tools for structural discovery, then verify decisive claims against exact source. Return compact evidence with file paths, symbols, coverage, and uncertainties. Do not edit files or delegate.",
     pool: "code",
     capability: "code",
-    permission: READ_ONLY,
+    permission: {
+      ...READ_ONLY,
+      "ast-grep_*": "allow",
+      "ast_grep_*": "allow",
+      "git_*": "allow",
+    },
   },
   "orch-docs": {
     description: "Internal official-documentation and dependency-source scout.",

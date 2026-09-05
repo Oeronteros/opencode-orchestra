@@ -146,6 +146,8 @@ async function mcpStatus(configDirectory: string): Promise<Record<string, boolea
     codebaseMemory: "codebase-memory" in mcp,
     memoryGraph: "memorygraph" in mcp,
     playwright: "playwright" in mcp,
+    git: "git" in mcp,
+    astGrep: "ast-grep" in mcp,
   }
 }
 

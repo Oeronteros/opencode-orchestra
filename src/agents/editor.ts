@@ -8,7 +8,7 @@ export function createEditorAgent(config: OrchestraConfig, prompt?: string): Run
     description: "Isolated implementation worker that edits only its assigned ownership partition in an OpenCode git workspace.",
     mode: "subagent", hidden: true, temperature: 0.15,
     prompt: prompt ?? "Work only inside the isolated worktree assigned by OpenCode. Edit only repository-relative paths in the explicit ownership list. Never touch the parent checkout, shared configuration, lockfiles, or files outside ownership. Run scoped verification, commit all changes, and return base revision, commit, changed files, and tests. Do not delegate. Stop on ownership ambiguity.",
-    permission: { "*": "deny", read: "allow", edit: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", bash: "allow", task: "deny", external_directory: "deny" },
+    permission: { "*": "deny", read: "allow", edit: "allow", glob: "allow", grep: "allow", list: "allow", lsp: "allow", bash: "allow", "ast-grep_*": "allow", "ast_grep_*": "allow", task: "deny", external_directory: "deny" },
     ...(resolved ? { model: resolved.id } : {}),
   }
 }

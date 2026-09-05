@@ -91,6 +91,8 @@ CLI использует Bun напрямую, поэтому отдельный
 - подключит Playwright MCP для браузерной автоматизации;
 - установит статический `codebase-memory-mcp`, включит автоматическую индексацию и подключит его к OpenCode;
 - установит MemoryGraph (`memorygraphMCP`) в изолированное окружение через `uv` и подключит локальную SQLite-память;
+- подключит официальный Git MCP (`uvx mcp-server-git` без `--repository`; путь передаётся динамически через `repo_path`, относительные пути резолвятся от cwd проекта) и прогреет его кэш;
+- подключит ast-grep MCP (`uvx --from git+https://github.com/ast-grep/ast-grep-mcp ast-grep-server`) и прогреет его кэш, чтобы холодный старт 10–25с не ронял MCP-хендшейк (~10с);
 - сохранит все пользовательские MCP и плагины без удаления или переименования;
 - создаст `~/.config/opencode/orchestra.jsonc` с автоматическим выбором моделей;
 - сделает резервную копию существующего конфига перед изменением;
@@ -106,7 +108,7 @@ Superpowers — фреймворк навыков для агентов (obra/su
 bunx @oeronteros-1/opencode-orchestra@latest install --help
 ```
 
-Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-playwright`, `--no-superpowers`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
+Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-git`, `--no-ast-grep`, `--no-playwright`, `--no-superpowers`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
 
 ## Диагностика, обновление и автодополнение
 
@@ -116,7 +118,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install --help
 bunx @oeronteros-1/opencode-orchestra@latest doctor
 ```
 
-Проверяет конфиг OpenCode и `orchestra.jsonc`, регистрацию плагина, доступность настроенных MCP-серверов, пути и версии `uv`, MemoryGraph и Codebase Memory. Флаг `--config-dir DIR` переопределяет каталог конфигурации, а `--json` выводит результат в машиночитаемом виде.
+Проверяет конфиг OpenCode и `orchestra.jsonc`, регистрацию плагина, доступность настроенных MCP-серверов, пути и версии `uv`, `uvx`, `git`, MemoryGraph, Codebase Memory и движка `ast-grep`/`sg` (строго офлайн, без сетевых проб). Флаг `--config-dir DIR` переопределяет каталог конфигурации, а `--json` выводит результат в машиночитаемом виде.
 
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest update
@@ -363,7 +365,7 @@ Fallback-цепочка строится только из worker-пулов (`c
 
 Профили: `architecture`, `debug`, `ui`, `research`, `review`, `security`, `performance`, `migration`, `ops`.
 
-## Context7, Codebase Memory и MemoryGraph
+## Context7, Codebase Memory, MemoryGraph, Git и ast-grep
 
 Context7 остаётся удалённым MCP для актуальной документации библиотек. OAuth отключён; при наличии ключа можно самостоятельно добавить заголовок `CONTEXT7_API_KEY`.
 
@@ -371,12 +373,18 @@ Codebase Memory отвечает за знания, которые можно в
 
 MemoryGraph отвечает за знания, которых нет непосредственно в коде: принятые архитектурные решения, проверенные исправления и повторно используемые паттерны. Используется core-профиль с локальным SQLite в `~/.memorygraph/`. Lead вызывает `recall_memories` не более одного раза в начале релевантной задачи и сохраняет только проверенные устойчивые знания.
 
+Git MCP — официальный `mcp-server-git` через `uvx` без флага `--repository`: сервер наследует cwd проекта, агент передаёт путь динамически через `repo_path`. Используется для `blame`/`log`/`diff` перед рефакторингом и для гейтованного коммита после зелёных тестов.
+
+ast-grep MCP — `uvx --from git+https://github.com/ast-grep/ast-grep-mcp ast-grep-server` для структурного поиска и AST-рефакторинга. Первый холодный старт занимает 10–25с, поэтому инсталлер прогревает кэш (`--help`, таймаут 60с); `--no-deps` пропускает прогрев. Отдельный Ripgrep MCP не нужен: поиск по YAML/Dockerfile/логам идёт через `rg` во встроенном `bash`.
+
 Пакет ставится с PyPI (`memorygraphMCP`, Python ≥3.10, SQLite работает без настройки). GitHub-ветка `main` того же репозитория переписана на TypeScript/Bun и не совместима с PyPI-пакетом, поэтому установщик опирается именно на PyPI-дистрибутив. Если persistent-установка через `uv tool install` не удалась, используется фолбэк `uvx memorygraph`; при полном провале MCP-запись в конфиг не пишется — причина сбоя видна в выводе установщика и doctor.
 
 Разделение намеренное:
 
-- Codebase Memory — актуальная структура репозитория;
+- Codebase Memory — актуальная структура репозитория (где объявлен символ, кто вызывает);
+- ast-grep — синтаксические формы и структурный рефакторинг (пустые catch, вызовы без таймаута);
 - MemoryGraph — история решений и связей между ними;
+- Git MCP — предыстория и причины (blame/log), гейтованный коммит;
 - Context7 — актуальные внешние API и документация.
 
 Если зависимости уже установлены, повторный запуск использует существующие исполняемые файлы. `--no-deps` только записывает MCP-конфигурацию и ожидает, что команды `codebase-memory-mcp` и `memorygraph` уже доступны.

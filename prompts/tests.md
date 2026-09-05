@@ -6,3 +6,8 @@ Return exactly:
 - Coverage gap;
 - Recommendation: smallest regression test and verification command;
 - Uncertainty.
+
+## Command Constraints & Log Budget
+- You are solely responsible for verification: run tests, typecheckers, and linters.
+- Large stdout outputs are prohibited. Always invoke runners in compact mode (`pytest -q`, `npm test -- --reporter=dot`, `cargo test -- -q`).
+- If an error occurs, print only the failing assertions and relevant stack trace. Do not re-run full verbose suites without filtering.

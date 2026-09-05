@@ -37,6 +37,10 @@ export interface InstallOptions {
   context7: boolean
   codebaseMemory: boolean
   memoryGraph: boolean
+  /** Configure the official Git MCP (uvx mcp-server-git) by default; false explicitly disables it. */
+  git?: boolean
+  /** Configure ast-grep MCP by default; false explicitly disables it. */
+  astGrep?: boolean
   /** Configure Playwright MCP by default; false explicitly disables it. */
   playwright?: boolean
   /** Add the Superpowers plugin (obra/superpowers) to the plugin array by default; false explicitly disables it. */
@@ -64,6 +68,8 @@ export interface InstallResult {
   dependencies: {
     codebaseMemory: ProvisionedDependency
     memoryGraph: ProvisionedDependency
+    git: ProvisionedDependency
+    astGrep: ProvisionedDependency
   }
 }
 
@@ -320,6 +326,51 @@ async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDepend
   }
 }
 
+/**
+ * Warm the `uvx` cache for the official Git MCP so the first agent start
+ * does not pay the cold-download cost inside the ~10s MCP handshake window.
+ * Best-effort: failures are reported but never block config writes because
+ * `uvx` remains a valid autonomous runtime that retries at launch.
+ */
+async function warmGitMcp(enabled: boolean, shouldWarm: boolean): Promise<ProvisionedDependency> {
+  const command = ["uvx", "mcp-server-git"]
+  if (!enabled) return { command, status: "skipped" }
+  if (!shouldWarm) return { command, status: "skipped", reason: "warmup skipped (--no-deps or dry-run)" }
+  try {
+    const result = spawnWithCmdFallback("uvx", ["mcp-server-git", "--help"], { stdio: "ignore", timeout: 60_000 })
+    if (result.error) throw result.error
+    if (result.status !== 0) throw new Error(`uvx mcp-server-git --help exited with ${result.status ?? "unknown"}`)
+    return { command, status: "installed" }
+  } catch (error: unknown) {
+    const reason = failureReason(error)
+    return { command, status: "failed" as const, ...(reason ? { reason } : {}) }
+  }
+}
+
+/**
+ * Warm the `uvx` cache for ast-grep MCP (`git+https://…` source).
+ * Cold clone + env build takes 10–25s; without warmup the first MCP
+ * handshake (~10s timeout) almost certainly fails.
+ */
+async function warmAstGrepMcp(enabled: boolean, shouldWarm: boolean): Promise<ProvisionedDependency> {
+  const command = ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"]
+  if (!enabled) return { command, status: "skipped" }
+  if (!shouldWarm) return { command, status: "skipped", reason: "warmup skipped (--no-deps or dry-run)" }
+  try {
+    const result = spawnWithCmdFallback(
+      "uvx",
+      ["--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server", "--help"],
+      { stdio: "ignore", timeout: 60_000 },
+    )
+    if (result.error) throw result.error
+    if (result.status !== 0) throw new Error(`ast-grep warmup exited with ${result.status ?? "unknown"}`)
+    return { command, status: "installed" }
+  } catch (error: unknown) {
+    const reason = failureReason(error)
+    return { command, status: "failed" as const, ...(reason ? { reason } : {}) }
+  }
+}
+
 export async function install(options: InstallOptions): Promise<InstallResult> {
   const shouldProvision = options.provisionDependencies && !options.dryRun
   // Companion MCPs are optional: failed provisioning must not prevent plugin setup.
@@ -335,6 +386,11 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
         return { command: "memorygraph", status: "failed" as const, ...(reason ? { reason } : {}) }
       })
     : { command: "memorygraph", status: "skipped" as const }
+  // Git + ast-grep warmup is best-effort cache pre-heating (60s timeout each).
+  // A failed warmup still writes the MCP config: uvx retries at runtime.
+  // Undefined means enabled (backward compatible with callers that predate the flags).
+  const git = await warmGitMcp(options.git !== false, shouldProvision)
+  const astGrep = await warmAstGrepMcp(options.astGrep !== false, shouldProvision)
 
   const configDirectory = path.resolve(options.configDirectory ?? openCodeConfigDirectory())
   const openCodeConfig = await existingMainConfig(configDirectory)
@@ -474,6 +530,25 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
       timeout: 30_000,
     })
   }
+  // Git + ast-grep: uvx is an autonomous runtime, so the config is written
+  // even when the best-effort warmup failed (transient network must not block
+  // configuration; uvx retries at first MCP launch).
+  if (options.git !== false) {
+    addMcp("git", {
+      type: "local",
+      command: ["uvx", "mcp-server-git"],
+      enabled: true,
+      timeout: 30_000,
+    })
+  }
+  if (options.astGrep !== false) {
+    addMcp("ast-grep", {
+      type: "local",
+      command: ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"],
+      enabled: true,
+      timeout: 30_000,
+    })
+  }
 
   let backup: string | undefined
   if (updated !== original && !options.dryRun) {
@@ -524,6 +599,8 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     dependencies: {
       codebaseMemory: codebase,
       memoryGraph: memoryGraph,
+      git,
+      astGrep,
     },
   }
 }
@@ -546,6 +623,8 @@ function usage(): string {
     "  --no-context7        Do not configure Context7 MCP",
     "  --no-codebase-memory Do not install or configure Codebase Memory MCP",
     "  --no-memorygraph     Do not install or configure MemoryGraph MCP",
+    "  --no-git             Do not configure Git MCP",
+    "  --no-ast-grep        Do not configure ast-grep MCP",
     "  --no-playwright      Do not configure Playwright MCP",
     "  --no-superpowers     Do not add the Superpowers plugin",
     "  --no-deps            Only write config; do not install local MCP executables",
@@ -627,6 +706,8 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     context7: true,
     codebaseMemory: true,
     memoryGraph: true,
+    git: true,
+    astGrep: true,
     playwright: true,
     superpowers: true,
     provisionDependencies: true,
@@ -638,6 +719,8 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     if (argument === "--no-context7") options.context7 = false
     else if (argument === "--no-codebase-memory") options.codebaseMemory = false
     else if (argument === "--no-memorygraph") options.memoryGraph = false
+    else if (argument === "--no-git") options.git = false
+    else if (argument === "--no-ast-grep") options.astGrep = false
     else if (argument === "--no-playwright") options.playwright = false
     else if (argument === "--no-superpowers") options.superpowers = false
     else if (argument === "--no-deps") options.provisionDependencies = false
@@ -690,6 +773,8 @@ async function main(): Promise<void> {
     const dependencyLine = ({ status, reason }: ProvisionedDependency): string => `${status}${reason ? ` (${reason})` : ""}`
     console.log(`Codebase Memory: ${dependencyLine(result.dependencies.codebaseMemory)}`)
     console.log(`MemoryGraph: ${dependencyLine(result.dependencies.memoryGraph)}`)
+    console.log(`Git: ${dependencyLine(result.dependencies.git)}`)
+    console.log(`ast-grep: ${dependencyLine(result.dependencies.astGrep)}`)
     if (result.changed.length > 0) console.log(`Changed: ${result.changed.join(", ")}`)
     if (result.preserved.length > 0) console.log(`Preserved: ${result.preserved.join(", ")}`)
     if (result.backup) console.log(`Backup: ${result.backup}`)

@@ -83,6 +83,8 @@ export async function detectMcpPresence(configDirectory: string = openCodeConfig
     codebaseMemory: "codebase-memory" in mcp,
     memoryGraph: "memorygraph" in mcp,
     playwright: "playwright" in mcp,
+    git: "git" in mcp,
+    astGrep: "ast-grep" in mcp,
   }
 }
 

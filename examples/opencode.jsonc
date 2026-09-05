@@ -8,5 +8,19 @@
       }
     ],
     "superpowers@git+https://github.com/obra/superpowers.git"
-  ]
+  ],
+  "mcp": {
+    "git": {
+      "type": "local",
+      "command": ["uvx", "mcp-server-git"],
+      "enabled": true,
+      "timeout": 30000
+    },
+    "ast-grep": {
+      "type": "local",
+      "command": ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"],
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
 }

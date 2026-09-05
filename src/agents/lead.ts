@@ -37,12 +37,21 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
       grep: "allow",
       list: "allow",
       lsp: "allow",
-      bash: "ask",
+      // Autonomous coordination loop: allow without per-step confirmation.
+      // Destructive shell patterns (rm -rf, git reset --hard, git push --force,
+      // git clean -f, mkfs, dd, output truncation bypass) cannot be expressed as
+      // granular deny rules here — RuntimeAgentConfig allows only
+      // allow|ask|deny per tool — so they are enforced via system prompts
+      // (prompts/lead.md §§2–3) instead of an engine-level deny list.
+      bash: "allow",
       "context7_*": "allow",
       "codebase-memory_*": "allow",
       "codebase_memory_*": "allow",
       "codebase-memory-mcp_*": "allow",
       "memorygraph_*": "allow",
+      "git_*": "allow",
+      "ast-grep_*": "allow",
+      "ast_grep_*": "allow",
       ...(config.superpowers.compatibility ? { skill: "allow" as const } : {}),
       task: {
         "*": "deny",

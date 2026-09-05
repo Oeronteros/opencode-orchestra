@@ -435,3 +435,22 @@ test("runDoctor includes the first schema issue in the routing-skip warning", as
   assert.match(check?.detail ?? "", /invalid orchestra config/)
   assert.match(check?.detail ?? "", /budget/)
 })
+
+test("runDoctor reports git, uvx, and ast-grep toolchain checks offline", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-toolchain-"))
+  await writeFile(
+    path.join(directory, "opencode.json"),
+    JSON.stringify({ plugin: ["@oeronteros-1/opencode-orchestra@latest"] }),
+    "utf8",
+  )
+  const report = await runDoctor({ configDirectory: directory })
+  const git = report.checks.find((c: Check) => c.id === "git")
+  const uvx = report.checks.find((c: Check) => c.id === "uvx")
+  const astGrep = report.checks.find((c: Check) => c.id === "ast-grep")
+  assert.ok(git, "git check present")
+  assert.ok(uvx, "uvx check present")
+  assert.ok(astGrep, "ast-grep check present")
+  assert.ok(["ok", "warning"].includes(git?.status ?? ""))
+  assert.ok(["ok", "warning"].includes(uvx?.status ?? ""))
+  assert.ok(["ok", "info"].includes(astGrep?.status ?? ""))
+})

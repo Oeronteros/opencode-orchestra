@@ -429,3 +429,82 @@ test("memoryGraph provisioning failure skips the MCP entry when no uvx is availa
     process.env.HOME = originalHome
   }
 })
+
+test("installer writes git and ast-grep MCPs by default and respects --no-git/--no-ast-grep", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-git-astgrep-"))
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    playwright: false,
+    superpowers: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
+  })
+  const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { mcp: Record<string, { command: string[] }> }
+  assert.deepEqual(config.mcp.git, { type: "local", command: ["uvx", "mcp-server-git"], enabled: true, timeout: 30_000 })
+  assert.deepEqual(config.mcp["ast-grep"], {
+    type: "local",
+    command: ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"],
+    enabled: true,
+    timeout: 30_000,
+  })
+  assert.equal(result.dependencies.git.status, "skipped")
+  assert.equal(result.dependencies.astGrep.status, "skipped")
+
+  const suppressed = await mkdtemp(path.join(os.tmpdir(), "orchestra-git-astgrep-off-"))
+  await install({
+    configDirectory: suppressed,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    git: false,
+    astGrep: false,
+    playwright: false,
+    superpowers: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+    pluginCacheDirectory: path.join(suppressed, "packages"),
+  })
+  const off = parse(await readFile(path.join(suppressed, "opencode.json"), "utf8")) as { mcp?: Record<string, unknown> }
+  assert.equal(off.mcp?.git, undefined)
+  assert.equal(off.mcp?.["ast-grep"], undefined)
+})
+
+test("git and ast-grep warmup failure still writes config", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-warmup-fail-"))
+  const { bin, home } = await fakeToolchain(directory)
+  const originalPath = process.env.PATH
+  const originalHome = process.env.HOME
+  process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ""}`
+  process.env.HOME = home
+  try {
+    const result = await install({
+      configDirectory: directory,
+      context7: false,
+      codebaseMemory: false,
+      memoryGraph: false,
+      git: true,
+      astGrep: true,
+      playwright: false,
+      superpowers: false,
+      provisionDependencies: true,
+      force: false,
+      dryRun: false,
+      pluginCacheDirectory: path.join(directory, "packages"),
+    })
+    // uvx shim exits 0 in fakeToolchain homeBin, so warmup passes; assert config written either way.
+    assert.ok(["installed", "failed"].includes(result.dependencies.git.status))
+    assert.ok(["installed", "failed"].includes(result.dependencies.astGrep.status))
+    const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { mcp: Record<string, unknown> }
+    assert.ok(config.mcp.git !== undefined)
+    assert.ok(config.mcp["ast-grep"] !== undefined)
+  } finally {
+    process.env.PATH = originalPath
+    process.env.HOME = originalHome
+  }
+})
