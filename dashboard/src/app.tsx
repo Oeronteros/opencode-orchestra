@@ -33,6 +33,7 @@ import { downloadExport } from "./export"
 import i18n, { nextLanguage, setLanguage } from "./i18n"
 import { cn } from "./lib/cn"
 import type { TranslationKey } from "./lib/locales"
+import { splitTokens } from "./lib/tokens"
 import { snapshotResetDecision, type SnapshotResetState } from "./lib/snapshot-reset"
 import { useUiStore } from "./store"
 import type { ActivityRow, AggregateRow, DashboardConfig, GlobalSnapshot, LiveActiveAgent, LiveSnapshot, Snapshot } from "./types"
@@ -72,7 +73,17 @@ function pricingLabel(status?: "paid" | "free" | "subscription" | "unknown"): st
 }
 
 function totalTokens(row: AggregateRow): number {
-  return row.tokens.input + row.tokens.output + row.tokens.reasoning
+  return splitTokens(row.tokens).total
+}
+
+function formatTokensInOut(tokens: AggregateRow["tokens"]): string {
+  const split = splitTokens(tokens)
+  return `${formatNumber(split.input)} ↓ / ${formatNumber(split.output)} ↑`
+}
+
+function formatTokensInOutCompact(tokens: AggregateRow["tokens"] | ActivityRow["tokens"]): string {
+  const split = splitTokens(tokens)
+  return `${formatNumber(split.input)} ↓ · ${formatNumber(split.output)} ↑`
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -435,7 +446,10 @@ function OverviewPage() {
   const data = query.data
   if (query.isLoading) return <Loading />
   if (!data) return <ErrorState error={query.error} />
-  const tokens = data.summary.tokens.input + data.summary.tokens.output + data.summary.tokens.reasoning
+  const tokenSplit = splitTokens(data.summary.tokens)
+  const tokenCacheNote = tokenSplit.cacheWrite > 0
+    ? t("tokensNoteWithWrite", { read: formatNumber(tokenSplit.cacheRead), write: formatNumber(tokenSplit.cacheWrite) })
+    : t("tokensNote", { value: formatNumber(tokenSplit.cacheRead) })
   const projection = data.projection
   const latestAnomaly = data.anomalies[data.anomalies.length - 1]
   return (
@@ -452,7 +466,7 @@ function OverviewPage() {
       <div className="metrics-grid">
         <MetricCard label={t("sessions")} value={formatNumber(data.summary.sessions)} note={t("sessionsNote")} icon={Database01Icon} index={0} />
         <MetricCard label={t("calls")} value={formatNumber(data.summary.calls)} note={t("callsNote")} icon={Activity01Icon} index={1} />
-        <MetricCard label={t("tokens")} value={formatNumber(tokens)} note={t("tokensNote", { value: formatNumber(data.summary.tokens.cache.read) })} icon={AiBrain01Icon} index={2} />
+        <MetricCard label={t("tokens")} value={formatTokensInOut(data.summary.tokens)} note={tokenCacheNote} icon={AiBrain01Icon} index={2} />
         <MetricCard label={t("cost")} value={formatCost(data.summary.cost)} note={t("costNote")} icon={CoinsDollarIcon} index={3} />
       </div>
       {!("global" in data) && <LivePanel projectId={data.projectId} />}
@@ -682,7 +696,7 @@ function RecentRows({ rows }: { rows: ActivityRow[] }) {
             <strong>{row.provider && row.model ? `${row.provider}/${row.model}` : t("modelUnknown")}</strong>
             <small>{row.completedAt ? new Date(row.completedAt).toLocaleString() : t("inProgress")}</small>
           </div>
-          <span>{formatNumber(row.tokens.input + row.tokens.output + row.tokens.reasoning)} {t("tokensShort")}</span>
+          <span>{formatTokensInOutCompact(row.tokens)} {t("tokensShort")}</span>
           <span>{formatCost(row.cost)}</span>
         </motion.div>
       ))}
@@ -852,7 +866,7 @@ function buildActivityColumns(t: TFunction) {
     activityHelper.accessor("completedAt", { header: t("colTime"), cell: ({ getValue }) => getValue() ? new Date(getValue()!).toLocaleString() : "—", size: 180 }),
     activityHelper.accessor("agent", { header: t("colAgent"), cell: ({ getValue }) => getValue()?.replace("orch-", "") ?? "unknown", size: 130 }),
     activityHelper.accessor((row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown", { id: "model", header: t("colModel"), size: 300 }),
-    activityHelper.accessor((row) => row.tokens.input + row.tokens.output + row.tokens.reasoning, { id: "tokens", header: t("colTokens"), cell: ({ getValue }) => formatNumber(getValue()), size: 120 }),
+    activityHelper.accessor((row) => splitTokens(row.tokens).total, { id: "tokens", header: t("colTokens"), cell: ({ row }) => formatTokensInOutCompact(row.original.tokens), size: 170 }),
     activityHelper.accessor("cost", { header: t("colCost"), cell: ({ getValue }) => formatCost(getValue()), size: 100 }),
     activityHelper.accessor("pricingStatus", { header: t("colPricingSource"), cell: ({ row }) => pricingLabel(row.original.pricingStatus), size: 120 }),
     activityHelper.accessor("finish", { header: t("colStatus"), cell: ({ getValue }) => getValue() ?? "—", size: 110 }),
@@ -965,7 +979,7 @@ function RankingPage({ kind }: { kind: "models" | "agents" }) {
                   </div>
                 </div>
                 <span>{row.calls} {t("callsShort")}</span>
-                <span>{formatNumber(totalTokens(row))} {t("tokensShort")}</span>
+                <span>{formatTokensInOutCompact(row.tokens)} {t("tokensShort")}</span>
                 <span>{formatCost(row.cost)}</span>
               </motion.div>
             ))}

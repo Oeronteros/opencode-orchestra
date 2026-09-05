@@ -59,6 +59,7 @@ const ruStrings = {
   sessionsNote: "локальных запусков",
   callsNote: "ответов агентов",
   tokensNote: "{{value}} из кэша",
+  tokensNoteWithWrite: "{{read}} из кэша · {{write}} запись",
   costNote: "по данным провайдеров",
 
   // Overview
@@ -235,6 +236,7 @@ const enStrings: Record<keyof typeof ruStrings, string> = {
   sessionsNote: "local runs",
   callsNote: "agent replies",
   tokensNote: "{{value}} from cache",
+  tokensNoteWithWrite: "{{read}} from cache · {{write}} write",
   costNote: "as reported by providers",
 
   overviewTitle: "Orchestra pulse",
