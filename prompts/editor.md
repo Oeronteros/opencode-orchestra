@@ -6,6 +6,7 @@ Return exactly:
 - Tests and verification commands/results;
 - Unresolved risks or blockers.
 
-## Structural Changes via ast-grep
-- Use `ast-grep_*` when making systematic, multi-file syntactic transformations to guarantee AST validity.
-- Do not use `ast-grep` for arbitrary text replacement in non-code files (YAML, JSON, Markdown); use standard file reading and patch editing tools instead.
+## Structural Validation via ast-grep
+- Use `ast-grep_*` to locate all targets before a systematic code change and to verify that expected patterns disappeared or changed afterward. Cap searches with `max_results` and prefer compact text output.
+- ast-grep MCP is read-only. Apply changes with the normal edit tool; do not claim the MCP itself performed a rewrite or guaranteed semantic correctness.
+- Do not use `ast-grep` for arbitrary text matching in non-code files (YAML, JSON, Markdown); use standard file reading and patch editing tools instead.

@@ -1,6 +1,6 @@
 import type { OrchestraConfig } from "../config/schema.js"
 import { resolveModel } from "../routing/model-resolver.js"
-import type { AgentSet, RuntimeAgentConfig } from "./types.js"
+import { readOnlyGitPermissions, safeBashPermissions, type AgentSet, type RuntimeAgentConfig } from "./types.js"
 import type { PromptBundle } from "./build.js"
 
 interface WorkerSpec {
@@ -25,11 +25,6 @@ const READ_ONLY: RuntimeAgentConfig["permission"] = {
   external_directory: "ask",
 }
 
-// Read-only repo scout plus structural/history tools. Git mutations
-// (git_commit/git_add/git_reset) and ast-grep rewrites are forbidden by the
-// repo system prompt, not by granular permission denies: the permission
-// schema supports only allow|ask|deny per tool prefix.
-
 const WORKERS: Record<string, WorkerSpec> = {
   "orch-repo": {
     description: "Internal read-only repository scout for focused codebase evidence, ownership, patterns, and change impact.",
@@ -40,7 +35,7 @@ const WORKERS: Record<string, WorkerSpec> = {
       ...READ_ONLY,
       "ast-grep_*": "allow",
       "ast_grep_*": "allow",
-      "git_*": "allow",
+      ...readOnlyGitPermissions(),
     },
   },
   "orch-docs": {
@@ -57,7 +52,8 @@ const WORKERS: Record<string, WorkerSpec> = {
     capability: "code",
     permission: {
       ...READ_ONLY,
-      bash: "allow",
+      bash: safeBashPermissions(),
+      "playwright_*": "allow",
     },
   },
   "orch-research": {
@@ -79,14 +75,14 @@ const WORKERS: Record<string, WorkerSpec> = {
     prompt: "Perform a focused security analysis. Report only evidence-backed attack paths with impact, likelihood, and mitigation. Do not edit or delegate.",
     pool: "reasoning",
     capability: "security",
-    permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow" },
+    permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow", "playwright_*": "allow" },
   },
   "orch-visual-reference": {
     description: "Internal visual-reference scout for UI patterns, layout, motion, and interaction examples.",
     prompt: "Collect relevant visual references and explain which concrete layout, hierarchy, motion, and interaction ideas transfer to this product. Do not edit or delegate.",
     pool: "vision",
     capability: "vision",
-    permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow" },
+    permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow", "playwright_*": "allow" },
   },
   "orch-visual-generate": {
     description: "Internal visual generator for exploratory mockups when an image-generation tool is available.",
@@ -100,7 +96,7 @@ const WORKERS: Record<string, WorkerSpec> = {
     prompt: "Review the provided visual material against the task. Report observable issues, severity, and precise recommendations. Do not edit or delegate.",
     pool: "vision",
     capability: "vision",
-    permission: READ_ONLY,
+    permission: { ...READ_ONLY, "playwright_*": "allow" },
   },
 }
 

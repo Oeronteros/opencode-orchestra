@@ -227,7 +227,14 @@ function connectedModels(directory: string): string[] {
   return models
 }
 
-async function snapshot(directory: string, configDirectory: string, includeModels = true, options: { activityLimit?: number; dailyLimit?: number } = {}): Promise<SnapshotData> {
+interface SnapshotOptions {
+  activityLimit?: number
+  dailyLimit?: number
+  /** Zero/undefined keeps the full ranking history; a positive value filters ranking rows by age. */
+  rankingDays?: number
+}
+
+async function snapshot(directory: string, configDirectory: string, includeModels = true, options: SnapshotOptions = {}): Promise<SnapshotData> {
   const config = (await loadConfigForDirectory(directory, configDirectory)).config
   const ledger = await readLedgerState(path.resolve(directory, config.telemetry.directory, "state.json"))
   const activity: ActivityRow[] = []
@@ -257,6 +264,12 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   const analytics = analyzeDaily(daily, new Date(), config.telemetry.anomalySigma)
   const activityLimit = options.activityLimit ?? 5_000
   const dailyLimit = options.dailyLimit ?? 30
+  const rankingCutoff = options.rankingDays && options.rankingDays > 0
+    ? Date.now() - options.rankingDays * 24 * 60 * 60 * 1_000
+    : 0
+  const rankingActivity = rankingCutoff > 0
+    ? activity.filter((row) => (row.completedAt ?? row.createdAt ?? 0) >= rankingCutoff)
+    : activity
   return {
     projectId: projectId(directory),
     updatedAt: ledger.updatedAt,
@@ -280,8 +293,8 @@ async function snapshot(directory: string, configDirectory: string, includeModel
       cost: totalCost,
       tokens: totalTokens,
     },
-    models: aggregate(activity, (row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown"),
-    agents: aggregate(activity, (row) => row.agent ?? "unknown"),
+    models: aggregate(rankingActivity, (row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown"),
+    agents: aggregate(rankingActivity, (row) => row.agent ?? "unknown"),
      activity: activityLimit === 0 ? activity : activity.slice(0, activityLimit),
      activityTotal: activity.length,
      activityTruncated: activityLimit > 0 && activity.length > activityLimit,
@@ -318,7 +331,7 @@ async function knownProjects(directory: string, configDirectory: string): Promis
   return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-async function projectSnapshots(directory: string, configDirectory: string, options: { dailyLimit?: number } = {}): Promise<SnapshotData[]> {
+async function projectSnapshots(directory: string, configDirectory: string, options: SnapshotOptions = {}): Promise<SnapshotData[]> {
   const results = await Promise.all((await knownProjects(directory, configDirectory)).map(async (project) => {
     try { return await snapshot(project.directory, configDirectory, false, options) } catch { return undefined }
   }))
@@ -329,8 +342,8 @@ function projectInfo(data: SnapshotData): ProjectInfo {
   return { id: data.projectId, name: data.project, directory: data.directory, lastSeenAt: data.updatedAt, updatedAt: data.updatedAt, summary: data.summary }
 }
 
-async function globalSnapshot(directory: string, configDirectory: string, dailyLimit = 30): Promise<GlobalSnapshot> {
-  const snapshots = await projectSnapshots(directory, configDirectory, { dailyLimit: 0 })
+async function globalSnapshot(directory: string, configDirectory: string, dailyLimit = 30, rankingDays = 0): Promise<GlobalSnapshot> {
+  const snapshots = await projectSnapshots(directory, configDirectory, { dailyLimit: 0, rankingDays })
   const tokens = emptyTokens()
   let sessions = 0
   let calls = 0
@@ -740,7 +753,8 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
           if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
            const range = url.searchParams.get("range")
            const dailyLimit = range === "all" ? 0 : Math.max(1, Math.min(90, Number(range) || 30))
-           sendJson(response, 200, await snapshot(target, configDirectory, true, { dailyLimit }))
+           const rankingDays = range === null || range === "all" ? 0 : dailyLimit
+           sendJson(response, 200, await snapshot(target, configDirectory, true, { dailyLimit, rankingDays }))
           return
         }
         if (request.method === "GET" && url.pathname === "/api/projects") {
@@ -751,7 +765,8 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
         if (request.method === "GET" && url.pathname === "/api/global") {
            const range = url.searchParams.get("range")
            const dailyLimit = range === "all" ? 0 : Math.max(1, Math.min(90, Number(range) || 30))
-           sendJson(response, 200, await globalSnapshot(directory, configDirectory, dailyLimit))
+           const rankingDays = range === null || range === "all" ? 0 : dailyLimit
+           sendJson(response, 200, await globalSnapshot(directory, configDirectory, dailyLimit, rankingDays))
           return
         }
         if (request.method === "GET" && url.pathname === "/api/export") {

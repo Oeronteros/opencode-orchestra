@@ -1,7 +1,7 @@
 import type { OrchestraConfig } from "../config/schema.js"
 import { PROFILE_CATALOG } from "../profiles/catalog.js"
 import { leadResolveRequest, resolveModel } from "../routing/model-resolver.js"
-import type { RuntimeAgentConfig } from "./types.js"
+import { leadGitPermissions, safeBashPermissions, type RuntimeAgentConfig } from "./types.js"
 
 export function createLeadAgent(config: OrchestraConfig, basePrompt: string): RuntimeAgentConfig {
   const enabled = Object.values(PROFILE_CATALOG).filter(
@@ -37,21 +37,17 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
       grep: "allow",
       list: "allow",
       lsp: "allow",
-      // Autonomous coordination loop: allow without per-step confirmation.
-      // Destructive shell patterns (rm -rf, git reset --hard, git push --force,
-      // git clean -f, mkfs, dd, output truncation bypass) cannot be expressed as
-      // granular deny rules here — RuntimeAgentConfig allows only
-      // allow|ask|deny per tool — so they are enforced via system prompts
-      // (prompts/lead.md §§2–3) instead of an engine-level deny list.
-      bash: "allow",
+      // Autonomous coordination with engine-enforced destructive-command denies.
+      bash: safeBashPermissions(),
       "context7_*": "allow",
       "codebase-memory_*": "allow",
       "codebase_memory_*": "allow",
       "codebase-memory-mcp_*": "allow",
       "memorygraph_*": "allow",
-      "git_*": "allow",
+      ...leadGitPermissions(),
       "ast-grep_*": "allow",
       "ast_grep_*": "allow",
+      "playwright_*": "allow",
       ...(config.superpowers.compatibility ? { skill: "allow" as const } : {}),
       task: {
         "*": "deny",

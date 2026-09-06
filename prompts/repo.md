@@ -8,5 +8,5 @@ Return exactly:
 
 ## Search Tooling Protocol
 - Use `codebase-memory_*` exclusively for symbol lookups, caller graphs, and understanding project architecture.
-- Use `ast-grep_*` exclusively for finding exact syntactic patterns, code shapes, and anti-patterns.
+- Use `ast-grep_*` exclusively for finding exact syntactic patterns, code shapes, and anti-patterns. Always set a finite `max_results` and prefer compact text output.
 - Read-only Git access: You may inspect history via `git_log` or `git_diff` to explain legacy decisions. Never invoke mutation operations (`git_commit`, `git_add`, `git_reset`).

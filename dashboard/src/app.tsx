@@ -2,6 +2,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import {
   Activity01Icon,
   AiBrain01Icon,
+  ArrowUpDownIcon,
   Chart01Icon,
   CoinsDollarIcon,
   DashboardSquare01Icon,
@@ -10,6 +11,7 @@ import {
   LanguageSquareIcon,
   Moon02Icon,
   Refresh01Icon,
+  Search01Icon,
   Settings01Icon,
   Sun02Icon,
 } from "@hugeicons/core-free-icons"
@@ -18,8 +20,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { createRootRoute, createRoute, createRouter, Link, Outlet } from "@tanstack/react-router"
 import { columnSizingFeature, createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { motion, AnimatePresence } from "motion/react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { motion, AnimatePresence, useReducedMotion } from "motion/react"
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
 import { Controller, useForm } from "react-hook-form"
 import type { TFunction } from "i18next"
 import { useTranslation } from "react-i18next"
@@ -266,6 +268,125 @@ function PageIntro({ kicker, title, text }: { kicker: string; title: string; tex
   )
 }
 
+function TiltSurface({ children, className, intensity = 7 }: { children: ReactNode; className?: string; intensity?: number }) {
+  const reduceMotion = useReducedMotion()
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (reduceMotion || event.pointerType === "touch") return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = (event.clientX - bounds.left) / bounds.width
+    const y = (event.clientY - bounds.top) / bounds.height
+    event.currentTarget.style.setProperty("--pointer-x", `${(x * 100).toFixed(1)}%`)
+    event.currentTarget.style.setProperty("--pointer-y", `${(y * 100).toFixed(1)}%`)
+    event.currentTarget.style.setProperty("--tilt-x", `${((0.5 - y) * intensity).toFixed(2)}deg`)
+    event.currentTarget.style.setProperty("--tilt-y", `${((x - 0.5) * intensity).toFixed(2)}deg`)
+  }
+
+  const resetTilt = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.currentTarget.style.setProperty("--pointer-x", "50%")
+    event.currentTarget.style.setProperty("--pointer-y", "50%")
+    event.currentTarget.style.setProperty("--tilt-x", "0deg")
+    event.currentTarget.style.setProperty("--tilt-y", "0deg")
+  }
+
+  return (
+    <div
+      className={cn("tilt-surface", className)}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={resetTilt}
+    >
+      {children}
+    </div>
+  )
+}
+
+function OrchestraHero({ kicker, title, text, calls, callsLabel }: { kicker: string; title: string; text: string; calls: string; callsLabel: string }) {
+  const reduceMotion = useReducedMotion()
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    if (reduceMotion || event.pointerType === "touch") return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = (event.clientX - bounds.left) / bounds.width
+    const y = (event.clientY - bounds.top) / bounds.height
+    event.currentTarget.style.setProperty("--hero-x", `${(x * 100).toFixed(1)}%`)
+    event.currentTarget.style.setProperty("--hero-y", `${(y * 100).toFixed(1)}%`)
+    event.currentTarget.style.setProperty("--hero-rx", `${((0.5 - y) * 5).toFixed(2)}deg`)
+    event.currentTarget.style.setProperty("--hero-ry", `${((x - 0.5) * 7).toFixed(2)}deg`)
+  }
+
+  const resetHero = (event: ReactPointerEvent<HTMLElement>) => {
+    event.currentTarget.style.setProperty("--hero-x", "72%")
+    event.currentTarget.style.setProperty("--hero-y", "38%")
+    event.currentTarget.style.setProperty("--hero-rx", "0deg")
+    event.currentTarget.style.setProperty("--hero-ry", "0deg")
+  }
+
+  const orbitTransition = (duration: number, reverse = false) => ({
+    duration,
+    repeat: Infinity,
+    ease: "linear" as const,
+    ...(reverse ? { repeatType: "loop" as const } : {}),
+  })
+
+  return (
+    <motion.section
+      className="overview-hero"
+      initial={{ opacity: 0, y: 18 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.55 }}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={resetHero}
+    >
+      <div className="hero-copy">
+        <div className="hero-live-pill"><span className="status-dot" />{kicker}</div>
+        <h1>{title}</h1>
+        <p>{text}</p>
+        <div className="hero-signal">
+          <span>{calls}</span>
+          <small>{callsLabel}</small>
+          <i aria-hidden="true" />
+        </div>
+      </div>
+      <div className="orchestra-visual" aria-hidden="true">
+        <div className="orchestra-stage">
+          <div className="stage-horizon" />
+          <div className="orbit-plane orbit-plane-a">
+            <motion.div
+              className="orbit-spinner"
+              animate={reduceMotion ? undefined : { rotate: 360 }}
+              transition={orbitTransition(18)}
+            >
+              <span className="orbit-node node-lead">LEAD</span>
+              <span className="orbit-node node-code">CODE</span>
+              <span className="orbit-node node-test">TEST</span>
+            </motion.div>
+          </div>
+          <div className="orbit-plane orbit-plane-b">
+            <motion.div
+              className="orbit-spinner"
+              animate={reduceMotion ? undefined : { rotate: -360 }}
+              transition={orbitTransition(24, true)}
+            >
+              <span className="orbit-node node-research">RESEARCH</span>
+              <span className="orbit-node node-review">REVIEW</span>
+            </motion.div>
+          </div>
+          <div className="orchestra-core">
+            <div className="core-halo" />
+            <div className="core-shell">
+              <span /><span /><span /><span />
+            </div>
+            <small>ORCHESTRA</small>
+          </div>
+          <span className="stage-particle particle-a" />
+          <span className="stage-particle particle-b" />
+          <span className="stage-particle particle-c" />
+        </div>
+      </div>
+    </motion.section>
+  )
+}
+
 /* ═══════════════════════════════════════════════════════
    METRIC CARD — Glassmorphism + Shimmer
    ═══════════════════════════════════════════════════════ */
@@ -283,18 +404,20 @@ function MetricCard({ label, value, note, icon, index = 0 }: {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.1, duration: 0.4 }}
     >
-      <Card className="metric-card group">
-        <div className="metric-icon">
-          <HugeiconsIcon icon={icon} size={20} strokeWidth={1.8} />
-        </div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-        <small>{note}</small>
-        {/* Shimmer effect on hover */}
-        <div className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none">
-          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/[0.03] to-transparent animate-[shimmer_3s_ease-in-out_infinite] bg-[length:200%_100%]" />
-        </div>
-      </Card>
+      <TiltSurface className="metric-tilt" intensity={9}>
+        <Card className="metric-card depth-card group">
+          <div className="metric-icon">
+            <HugeiconsIcon icon={icon} size={20} strokeWidth={1.8} />
+          </div>
+          <span>{label}</span>
+          <strong>{value}</strong>
+          <small>{note}</small>
+          {/* Shimmer effect on hover */}
+          <div className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none">
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/[0.03] to-transparent animate-[shimmer_3s_ease-in-out_infinite] bg-[length:200%_100%]" />
+          </div>
+        </Card>
+      </TiltSurface>
     </motion.div>
   )
 }
@@ -442,6 +565,7 @@ function ExportMenu() {
 function OverviewPage() {
   const { t } = useTranslation()
   const [range, setRange] = useState("30")
+  const [chartSeries, setChartSeries] = useState({ input: true, output: true, cost: true })
   const query = useDashboardData(range)
   const data = query.data
   if (query.isLoading) return <Loading />
@@ -452,16 +576,29 @@ function OverviewPage() {
     : t("tokensNote", { value: formatNumber(tokenSplit.cacheRead) })
   const projection = data.projection
   const latestAnomaly = data.anomalies[data.anomalies.length - 1]
+  const chartTotals = data.daily.reduce(
+    (totals, day) => ({ input: totals.input + day.input, output: totals.output + day.output, cost: totals.cost + day.cost }),
+    { input: 0, output: 0, cost: 0 },
+  )
+  const toggleChartSeries = (series: keyof typeof chartSeries) => {
+    setChartSeries((current) => {
+      const activeCount = Object.values(current).filter(Boolean).length
+      if (current[series] && activeCount === 1) return current
+      return { ...current, [series]: !current[series] }
+    })
+  }
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
     >
-      <PageIntro
+      <OrchestraHero
         kicker={"global" in data ? t("overviewKickerProjects", { value: data.summary.projects }) : t("overviewKickerMode", { mode: data.config.budget.toUpperCase() })}
         title={t("overviewTitle")}
         text={"global" in data ? t("overviewTextGlobal") : t("overviewTextProject")}
+        calls={formatNumber(data.summary.calls)}
+        callsLabel={t("calls")}
       />
       <div className="metrics-grid">
         <MetricCard label={t("sessions")} value={formatNumber(data.summary.sessions)} note={t("sessionsNote")} icon={Database01Icon} index={0} />
@@ -496,7 +633,8 @@ function OverviewPage() {
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.4 }}
         >
-          <Card className="chart-card">
+          <TiltSurface className="dashboard-tilt chart-tilt" intensity={1.5}>
+          <Card className="chart-card depth-card">
             <div className="card-heading">
               <div>
                 <span className="eyebrow">{t("usage")}</span>
@@ -517,6 +655,26 @@ function OverviewPage() {
               </div>
             </div>
             {data.daily.length ? (
+              <>
+              <div className="chart-series" aria-label={t("chartTitle")}>
+                {([
+                  { key: "input", label: t("chartInputSeries"), value: formatNumber(chartTotals.input) },
+                  { key: "output", label: t("chartOutputSeries"), value: formatNumber(chartTotals.output) },
+                  { key: "cost", label: t("chartCostSeries"), value: formatCost(chartTotals.cost) },
+                ] as const).map((series) => (
+                  <button
+                    type="button"
+                    key={series.key}
+                    className={cn("chart-series-pill", `series-${series.key}`, !chartSeries[series.key] && "muted")}
+                    aria-pressed={chartSeries[series.key]}
+                    onClick={() => toggleChartSeries(series.key)}
+                  >
+                    <i aria-hidden="true" />
+                    <span>{series.label}</span>
+                    <strong>{series.value}</strong>
+                  </button>
+                ))}
+              </div>
               <div className="chart-wrap">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={data.daily}>
@@ -534,7 +692,7 @@ function OverviewPage() {
                         <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid stroke="rgba(255,255,255,.04)" vertical={false} />
+                    <CartesianGrid stroke="rgba(255,255,255,.055)" strokeDasharray="3 7" vertical={false} />
                     <XAxis
                       dataKey="date"
                       tickFormatter={(v) => String(v).slice(5)}
@@ -543,13 +701,24 @@ function OverviewPage() {
                       axisLine={false}
                     />
                     <YAxis
+                      yAxisId="tokens"
                       stroke="#52525b"
                       tickLine={false}
                       axisLine={false}
                       width={48}
                       tickFormatter={formatNumber}
                     />
+                    <YAxis
+                      yAxisId="cost"
+                      orientation="right"
+                      stroke="#8a7045"
+                      tickLine={false}
+                      axisLine={false}
+                      width={48}
+                      tickFormatter={(value) => formatCost(Number(value))}
+                    />
                     <Tooltip
+                      cursor={{ stroke: "rgba(167,139,250,.24)", strokeWidth: 1 }}
                       contentStyle={{
                         background: "rgba(12, 15, 22, 0.95)",
                         border: "1px solid rgba(255,255,255,.1)",
@@ -557,46 +726,67 @@ function OverviewPage() {
                         backdropFilter: "blur(16px)",
                         boxShadow: "0 16px 64px rgba(0,0,0,0.5)",
                       }}
+                      formatter={(value, name) => [
+                        name === t("chartCostSeries") ? formatCost(Number(value)) : formatNumber(Number(value)),
+                        name,
+                      ]}
                     />
-                    <Area
+                    {chartSeries.cost && <Area
                       type="monotone"
                       dataKey="cost"
+                      yAxisId="cost"
                       stroke="#f59e0b"
                       fill="url(#costGrad)"
                       strokeWidth={2}
                       name={t("chartCostSeries")}
-                    />
-                    <Area
+                      dot={false}
+                      activeDot={{ r: 4, fill: "#f59e0b", stroke: "rgba(245,158,11,.25)", strokeWidth: 6 }}
+                      animationDuration={700}
+                    />}
+                    {chartSeries.input && <Area
                       type="monotone"
                       dataKey="input"
+                      yAxisId="tokens"
                       stackId="1"
                       stroke="#8b5cf6"
                       fill="url(#tokens)"
                       strokeWidth={2}
-                    />
-                    <Area
+                      name={t("chartInputSeries")}
+                      dot={false}
+                      activeDot={{ r: 4, fill: "#8b5cf6", stroke: "rgba(139,92,246,.25)", strokeWidth: 6 }}
+                      animationDuration={700}
+                    />}
+                    {chartSeries.output && <Area
                       type="monotone"
                       dataKey="output"
+                      yAxisId="tokens"
                       stackId="1"
                       stroke="#22d3ee"
                       fill="url(#outputGrad)"
                       strokeWidth={2}
-                    />
+                      name={t("chartOutputSeries")}
+                      dot={false}
+                      activeDot={{ r: 4, fill: "#22d3ee", stroke: "rgba(34,211,238,.22)", strokeWidth: 6 }}
+                      animationDuration={700}
+                    />}
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
+              </>
             ) : (
               <EmptyState />
             )}
           </Card>
+          </TiltSurface>
         </motion.div>
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.5 }}
         >
+          <TiltSurface className={cn("dashboard-tilt", "global" in data && "projects-tilt")} intensity={"global" in data ? 1.25 : 4}>
           {!("global" in data) ? (
-            <Card className="mcp-card">
+            <Card className="mcp-card depth-card">
               <span className="eyebrow">{t("memoryLayer")}</span>
               <h2>{t("mcpTitle")}</h2>
               <div className="mcp-list">
@@ -617,6 +807,7 @@ function OverviewPage() {
           ) : (
             <ProjectList data={data} />
           )}
+          </TiltSurface>
         </motion.div>
       </div>
       {!("global" in data) && (
@@ -649,7 +840,7 @@ function ProjectList({ data }: { data: GlobalSnapshot }) {
   const { t } = useTranslation()
   const setSelectedProject = useUiStore((state) => state.setSelectedProject)
   return (
-    <Card className="mcp-card">
+    <Card className="mcp-card depth-card">
       <span className="eyebrow">PROJECTS</span>
       <h2>{t("projects")}</h2>
       <div className="project-list">
@@ -947,13 +1138,82 @@ function VirtualActivityTable({ data }: { data: ActivityRow[] }) {
    RANKING PAGE
    ═══════════════════════════════════════════════════════ */
 
+type RankingSortKey = "calls" | "tokens" | "cost"
+type RankingSortDirection = "asc" | "desc"
+
+function rankingMetric(row: AggregateRow, key: RankingSortKey): number {
+  if (key === "calls") return row.calls
+  if (key === "tokens") return totalTokens(row)
+  return row.cost
+}
+
+function modelIdentity(id: string): { provider?: string; name: string } {
+  if (id === "unknown") return { name: id }
+  const separator = id.indexOf("/")
+  return separator > 0 ? { provider: id.slice(0, separator), name: id.slice(separator + 1) } : { name: id }
+}
+
+function humanizeAgentId(id: string): string {
+  return id
+    .replace(/^orch-/, "")
+    .split("-")
+    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : part)
+    .join(" ")
+}
+
 function RankingPage({ kind }: { kind: "models" | "agents" }) {
   const { t } = useTranslation()
-  const query = useDashboardData()
-  const rows = query.data?.[kind] ?? EMPTY
-  const maxTokens = useMemo(() => rows.reduce((max, row) => Math.max(max, totalTokens(row)), 0), [rows])
+  const [range, setRange] = useState("all")
+  const [search, setSearch] = useState("")
+  const [sort, setSort] = useState<{ key: RankingSortKey; direction: RankingSortDirection }>({ key: "cost", direction: "desc" })
+  const query = useDashboardData(range)
+  const sourceRows = query.data?.[kind] ?? EMPTY
   const title = kind === "models" ? t("modelsTitle") : t("agentsTitle")
   const text = kind === "models" ? t("modelsText") : t("agentsText")
+  const sortLabel = sort.key === "calls" ? t("calls") : sort.key === "tokens" ? t("tokens") : t("cost")
+
+  const rows = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase()
+    const filtered = needle
+      ? sourceRows.filter((row) => {
+          const agent = kind === "agents" ? AGENTS.find((item) => item.id === row.id) : undefined
+          const role = agent ? t(agent.roleKey) : ""
+          return `${row.id} ${agent?.name ?? ""} ${role}`.toLocaleLowerCase().includes(needle)
+        })
+      : [...sourceRows]
+    return filtered.sort((a, b) => {
+      const delta = rankingMetric(a, sort.key) - rankingMetric(b, sort.key)
+      if (delta !== 0) return sort.direction === "asc" ? delta : -delta
+      return b.cost - a.cost || b.tokens.output - a.tokens.output || a.id.localeCompare(b.id)
+    })
+  }, [kind, search, sort, sourceRows, t])
+
+  const summary = useMemo(() => rows.reduce(
+    (total, row) => ({ calls: total.calls + row.calls, cost: total.cost + row.cost }),
+    { calls: 0, cost: 0 },
+  ), [rows])
+  const maxMetric = useMemo(() => rows.reduce((max, row) => Math.max(max, rankingMetric(row, sort.key)), 0), [rows, sort.key])
+  const metricTotal = useMemo(() => rows.reduce((total, row) => total + rankingMetric(row, sort.key), 0), [rows, sort.key])
+  const topThreeShare = useMemo(() => {
+    if (metricTotal <= 0) return 0
+    const top = [...rows].sort((a, b) => rankingMetric(b, sort.key) - rankingMetric(a, sort.key)).slice(0, 3)
+    return top.reduce((total, row) => total + rankingMetric(row, sort.key), 0) / metricTotal
+  }, [metricTotal, rows, sort.key])
+
+  const changeSort = (key: RankingSortKey) => {
+    setSort((current) => current.key === key
+      ? { key, direction: current.direction === "desc" ? "asc" : "desc" }
+      : { key, direction: "desc" })
+  }
+
+  const formatRankingMetric = (row: AggregateRow): string => {
+    if (sort.key === "cost") return formatCost(row.cost)
+    return formatNumber(rankingMetric(row, sort.key))
+  }
+
+  if (query.isLoading) return <Loading />
+  if (!query.data) return <ErrorState error={query.error} />
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -961,28 +1221,99 @@ function RankingPage({ kind }: { kind: "models" | "agents" }) {
       transition={{ duration: 0.4 }}
     >
       <PageIntro kicker={kind.toUpperCase()} title={title} text={text} />
-      <Card className="ranking-card">
+      <div className="ranking-toolbar">
+        <label className="ranking-search">
+          <HugeiconsIcon icon={Search01Icon} size={17} aria-hidden="true" />
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={kind === "models" ? t("rankingSearchModels") : t("rankingSearchAgents")}
+          />
+        </label>
+        <div className="ranking-range" role="group" aria-label={t("rankingPeriod")}>
+          {["7", "30", "90", "all"].map((value) => (
+            <button
+              type="button"
+              key={value}
+              className={cn(range === value && "active")}
+              aria-pressed={range === value}
+              onClick={() => setRange(value)}
+            >
+              {value === "all" ? t("rankingAllTime") : t("rangeDays", { count: Number(value) })}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="ranking-summary">
+        <div><span>{t("rankingPositions")}</span><strong>{formatNumber(rows.length)}</strong></div>
+        <div><span>{t("calls")}</span><strong>{formatNumber(summary.calls)}</strong></div>
+        <div><span>{t("cost")}</span><strong>{formatCost(summary.cost)}</strong></div>
+        <div><span>{t("rankingTopThree")}</span><strong>{Math.round(topThreeShare * 100)}%</strong><small>{sortLabel}</small></div>
+      </div>
+      <Card className="ranking-card ranking-card-upgraded">
         {rows.length ? (
-          <div className="ranking-list">
-            {rows.map((row, index) => (
-              <motion.div
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.03 }}
-                key={row.id}
-              >
-                <span className="rank">{String(index + 1).padStart(2, "0")}</span>
-                <div className="rank-main">
-                  <strong>{row.id.replace("orch-", "")}</strong>
-                  <div className="usage-bar">
-                    <span style={{ width: `${maxTokens > 0 ? Math.max(3, (totalTokens(row) / maxTokens) * 100) : 3}%` }} />
-                  </div>
-                </div>
-                <span>{row.calls} {t("callsShort")}</span>
-                <span>{formatTokensInOutCompact(row.tokens)} {t("tokensShort")}</span>
-                <span>{formatCost(row.cost)}</span>
-              </motion.div>
-            ))}
+          <>
+            <div className="ranking-head" role="row">
+              <span>#</span>
+              <span>{kind === "models" ? t("rankingModel") : t("rankingAgent")}</span>
+              {(["calls", "tokens", "cost"] as const).map((key) => {
+                const label = key === "calls" ? t("calls") : key === "tokens" ? t("tokens") : t("cost")
+                const active = sort.key === key
+                return (
+                  <button
+                    type="button"
+                    key={key}
+                    className={cn(active && "active")}
+                    onClick={() => changeSort(key)}
+                    aria-label={t("rankingSortBy", { metric: label })}
+                  >
+                    {label}
+                    {active ? <span aria-hidden="true">{sort.direction === "desc" ? "↓" : "↑"}</span> : <HugeiconsIcon icon={ArrowUpDownIcon} size={12} aria-hidden="true" />}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="ranking-list ranking-list-upgraded">
+              {rows.map((row, index) => {
+                const model = modelIdentity(row.id)
+                const agent = kind === "agents" ? AGENTS.find((item) => item.id === row.id) : undefined
+                const name = kind === "models" ? model.name : agent?.name ?? humanizeAgentId(row.id)
+                const secondary = kind === "models"
+                  ? model.provider
+                  : agent ? t(agent.roleKey) : t("rankingAgentRoleFallback")
+                const unknown = row.id === "unknown"
+                return (
+                  <motion.div
+                    initial={{ opacity: 0, x: -12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: Math.min(index, 12) * 0.025 }}
+                    key={row.id}
+                  >
+                    <span className="rank">{String(index + 1).padStart(2, "0")}</span>
+                    <div className="ranking-identity">
+                      <div className="ranking-name">
+                        {kind === "models" && model.provider && <span className="provider-badge">{model.provider}</span>}
+                        <strong>{unknown ? t("rankingUnknown") : name}</strong>
+                      </div>
+                      {secondary && <small>{secondary}</small>}
+                      <div className="usage-bar" title={`${sortLabel}: ${formatRankingMetric(row)}`}>
+                        <span style={{ width: `${maxMetric > 0 ? Math.max(3, (rankingMetric(row, sort.key) / maxMetric) * 100) : 3}%` }} />
+                      </div>
+                      <span className="ranking-bar-caption">{sortLabel} · {formatRankingMetric(row)}</span>
+                    </div>
+                    <span className="ranking-metric metric-calls"><small>{t("calls")}</small><b>{formatNumber(row.calls)}</b></span>
+                    <span className="ranking-metric metric-tokens" title={formatTokensInOutCompact(row.tokens)}><small>{t("tokens")}</small><b>{formatNumber(totalTokens(row))}</b></span>
+                    <span className="ranking-metric metric-cost"><small>{t("cost")}</small><b>{formatCost(row.cost)}</b></span>
+                  </motion.div>
+                )
+              })}
+            </div>
+          </>
+        ) : sourceRows.length ? (
+          <div className="ranking-empty-search">
+            <HugeiconsIcon icon={Search01Icon} size={22} />
+            <span>{t("rankingNoMatches")}</span>
           </div>
         ) : (
           <EmptyState />

@@ -12,7 +12,7 @@ export function Switch(props: ComponentProps<typeof BaseSwitch.Root>) {
         "data-[checked]:bg-gradient-to-r data-[checked]:from-violet-600 data-[checked]:to-violet-500",
         "data-[checked]:border-violet-500/30",
         "data-[checked]:shadow-[0_0_16px_rgba(139,92,246,0.3)]",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent",
         "hover:border-white/[0.1]",
         "data-[checked]:hover:border-violet-400/40"
       )}

@@ -34,7 +34,7 @@ For implementation tasks, continue through editing and verification instead of s
 
 ### 1. Tool Routing: Codebase Memory vs ast-grep
 - **Use `codebase-memory_*` for architectural topology:** finding symbol declarations, mapping caller/callee hierarchies, tracing imports, and determining blast radius across files.
-- **Use `ast-grep_*` for syntactic matching and structural refactoring:** locating specific code forms (e.g., empty `catch` blocks, function calls missing required arguments, untyped returns) and performing multi-node AST rewrites.
+- **Use `ast-grep_*` for syntactic matching and structural validation:** locate exact code forms, test rules on snippets, cap searches with `max_results`, and use compact text output. The server is read-only: apply changes with the normal edit tool, then run the same structural query again to verify the transformation.
 - **Rule:** Never use `ast-grep` to guess dependency graphs; never use `codebase-memory` to find AST code patterns.
 
 ### 2. Bash Execution & Context Economy
@@ -47,3 +47,6 @@ For implementation tasks, continue through editing and verification instead of s
 ### 3. Verification Precedence & Commit Gating
 - **Commit Guard:** You are strictly forbidden from calling `git_commit` (or delegating final commits) until verification passes.
 - **Enforcement Flow:** Changes must produce a green test suite and clean linter exit code (`exit 0`) via `orch-tests` or local test execution BEFORE any commit is registered.
+
+### 4. Browser Verification
+- Use `playwright_*` for browser behavior, screenshots, console errors, and accessibility-relevant interaction checks. Prefer `orch-tests` for deterministic browser verification and visual workers for reference/review evidence.

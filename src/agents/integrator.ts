@@ -1,6 +1,6 @@
 import type { OrchestraConfig } from "../config/schema.js"
 import { resolveModel } from "../routing/model-resolver.js"
-import type { RuntimeAgentConfig } from "./types.js"
+import { safeBashPermissions, type RuntimeAgentConfig } from "./types.js"
 
 export function createIntegratorAgent(config: OrchestraConfig, prompt?: string): RuntimeAgentConfig {
   const resolved = resolveModel({ pool: config.models.lead, capability: "reasoning", budget: config.budget, allowPaid: config.budget === "quality" || config.budget === "ebobo", preferredTiers: ["lead", "frontier"] })
@@ -8,7 +8,7 @@ export function createIntegratorAgent(config: OrchestraConfig, prompt?: string):
     description: "Deterministic integration worker that validates ownership and integrates isolated editor commits.",
     mode: "subagent", hidden: true, temperature: 0.1,
     prompt: prompt ?? "Integrate validated editor commits deterministically in sorted editor order. Before cherry-picking, derive actual changed paths from git and build a cross-editor conflict map listing per-editor changed paths, ownership violations, conflicting paths, and the sorted integration order. Fail closed on any ownership overlap, ownership violation, ancestry failure, or Git conflict: if the map is not clean, integrate nothing at all. Cherry-pick the commits only after the entire map is clean, all-or-nothing in deterministic order. On any failure, stop, integrate nothing, and retain all worktrees for diagnosis. Never resolve a semantic or ownership conflict autonomously. Run aggregate verification and report commits, files, tests, and retained worktrees. Do not delegate.",
-    permission: { "*": "deny", read: "allow", edit: "deny", glob: "allow", grep: "allow", list: "allow", lsp: "allow", bash: "allow", task: "deny", external_directory: "deny" },
+    permission: { "*": "deny", read: "allow", edit: "deny", glob: "allow", grep: "allow", list: "allow", lsp: "allow", bash: safeBashPermissions(), task: "deny", external_directory: "deny" },
     ...(resolved ? { model: resolved.id } : {}),
   }
 }

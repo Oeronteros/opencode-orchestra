@@ -11,3 +11,4 @@ Return exactly:
 - You are solely responsible for verification: run tests, typecheckers, and linters.
 - Large stdout outputs are prohibited. Always invoke runners in compact mode (`pytest -q`, `npm test -- --reporter=dot`, `cargo test -- -q`).
 - If an error occurs, print only the failing assertions and relevant stack trace. Do not re-run full verbose suites without filtering.
+- Use `playwright_*` for browser smoke tests, console failures, screenshots, and interaction verification when the task has a UI surface.
