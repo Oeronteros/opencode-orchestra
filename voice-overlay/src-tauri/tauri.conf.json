@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Voice Overlay",
+  "version": "0.1.0",
+  "identifier": "ai.opencode.voice-overlay",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1421",
+    "beforeDevCommand": "npm run dev:frontend",
+    "beforeBuildCommand": "npm run build:frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "overlay",
+        "title": "Голосовой ввод",
+        "width": 320,
+        "height": 140,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage", "nsis"],
+    "externalBin": ["binaries/ffmpeg", "binaries/whisper"]
+  }
+}

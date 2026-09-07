@@ -18,6 +18,7 @@
 - Existing builds untouched: `src/`, `dashboard/`, `dist/`, `dashboard-dist/` are never modified. Root `package.json` gains exactly two scripts: `dev:voice`, `build:voice`.
 - All user-facing copy in Russian.
 - No commits without the user's explicit request. Every task ends with verify + report, never `git commit`.
+- Non-goals (from spec, not in this plan): streaming STT, live waveform/level meter, global hotkey, session picker, cloud fallback, in-app model-download button (manual download commands ship in README instead).
 - Backend tasks (2, 3, 4-Rust-parts, 5) execute on a machine with a Rust toolchain and ffmpeg; Task 1 (pure TS) executes anywhere with Node 22+.
 
 ---
@@ -650,7 +651,14 @@ mod tests {
     }
 }
 ```
-(`app.path()` needs `use tauri::Manager;` — add that import line with the other `use` lines. The executor adds `use tauri::Manager;` at the top; without it the code does not compile. Include it: the file's imports are `use std::path::PathBuf;`, `use std::sync::Mutex;`, `use tauri::Manager;`, `use tauri::State;`.)
+(`app.path()` needs the `Manager` trait: the file's import block after Task 3 must read exactly:
+```rust
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager, State};
+```
+`Stdio`/`AppHandle` are used by Task 3; add all four lines when applying Task 3 so the file compiles after every task.)
 
 - [ ] **Step 4: Run tests to verify they fail**
 
@@ -753,11 +761,8 @@ pub struct Recording {
 }
 ```
 (`Recording` no longer derives `Default`/`Clone` — remove those derives; `Child` is neither.)
-Append this implementation block to `main.rs`:
+Append this implementation block to `main.rs` (the `use` lines already live in the top import block per the note in Task 2 Step 3 — do not repeat them):
 ```rust
-use std::process::Stdio;
-use tauri::AppHandle;
-
 pub const MIN_WAV_BYTES: u64 = 16000;
 
 pub fn parse_dshow_devices(stderr: &str) -> Vec<String> {
@@ -904,6 +909,8 @@ pub async fn start_recording(
         id
     };
     let wav = state.app_dir.join(format!("record-{id}.wav"));
+    std::fs::create_dir_all(&state.app_dir)
+        .map_err(|e| format!("transcribe-failed: нет доступа к каталогу данных: {e}"))?;
     let mut args = if let Ok(test_input) = std::env::var("VOICE_FFMPEG_TEST_INPUT") {
         vec!["-f".to_string(), "lavfi".to_string(), "-i".to_string(), test_input]
     } else {
@@ -992,7 +999,11 @@ pub async fn stop_recording(state: State<'_, AppState>) -> Result<String, String
         let _ = stdin.write_all(b"q\n").await;
         let _ = stdin.shutdown().await;
     }
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rec.child.wait()).await;
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(5), rec.child.wait()).await;
+    if finished.is_err() {
+        let _ = rec.child.kill().await;
+        let _ = rec.child.wait().await;
+    }
     let size = std::fs::metadata(&rec.wav)
         .map(|m| m.len())
         .unwrap_or(0);
@@ -1084,40 +1095,26 @@ pub async fn transcribe(
     }
     let whisper = sidecar_path(&app, "binaries/whisper")?;
     let out_base = format!("{wav}.out");
-    let status = tokio::process::Command::new(whisper)
-        .args([
-            "-m", &model_path.to_string_lossy(),
-            "-l", "ru",
-            "-f", &wav,
-            "-otxt", "-of", &out_base,
-        ])
-        .output();
-    let out = tokio::time::timeout(std::time::Duration::from_secs(600), status)
-        .await
-        .map_err(|_| "transcribe-failed: превышено время ожидания распознавания".to_string())
-        .map_err(|e| e)?;
-```
-No — double `map_err` on a nested Result is wrong (`timeout` yields `Result<Result<Output, io::Error>, Elapsed>`). Write it correctly:
-```rust
+    let args = vec![
+        "-m".to_string(),
+        model_path.to_string_lossy().into_owned(),
+        "-l".to_string(),
+        "ru".to_string(),
+        "-f".to_string(),
+        wav.clone(),
+        "-otxt".to_string(),
+        "-of".to_string(),
+        out_base.clone(),
+    ];
     let output = tokio::time::timeout(std::time::Duration::from_secs(600), async {
         tokio::process::Command::new(whisper)
-            .args([
-                "-m",
-                &model_path.to_string_lossy(),
-                "-l",
-                "ru",
-                "-f",
-                wav.as_str(),
-                "-otxt",
-                "-of",
-                out_base.as_str(),
-            ])
+            .args(&args)
             .output()
             .await
     })
-    .await
-    .map_err(|_| "transcribe-failed: превышено время ожидания распознавания".to_string())?
-    .map_err(|e| format!("transcribe-failed: не удалось запустить whisper: {e}"))?;
+        .await
+        .map_err(|_| "transcribe-failed: превышено время ожидания распознавания".to_string())?
+        .map_err(|e| format!("transcribe-failed: не удалось запустить whisper: {e}"))?;
     if !output.status.success() {
         return Err(format!(
             "transcribe-failed: whisper завершился с кодом {}",
@@ -1321,7 +1318,7 @@ export function App() {
     try {
       wav = await stopRecording();
     } catch (e) {
-      fail(auto ? `too-long: ${String(e)}` : String(e));
+      fail(String(e));
       return;
     }
     let text: string;
@@ -1334,7 +1331,7 @@ export function App() {
     setPreview(text);
     try {
       await appendToPrompt(settings, text);
-      setNotice("Вставлено в промпт");
+      setNotice(auto ? "Достигнут лимит 120 секунд — вставлено в промпт" : "Вставлено в промпт");
       setStatus("idle");
     } catch (e) {
       const message = String(e);
@@ -1389,7 +1386,6 @@ export function App() {
   );
 }
 ```
-Note on the `auto` path: when the 120 s watchdog fires, `onStop(true)` prefixes `too-long` only if `stopRecording` itself errors; on success the flow continues to transcribe and the notice reads as normal. To make the cap visible, after a successful auto-stop the notice is overridden: in `onStop`, when `auto === true` and everything succeeds, `setNotice("Достигнут лимит 120 секунд — вставлено в промпт")`. The executor applies this one-line adjustment while writing the file (it is specified here, not left to judgment).
 
 - [ ] **Step 6: Verify UI task**
 
@@ -1453,4 +1449,297 @@ Expected: `deb` + `appimage` artifacts emitted; no changes to `dist/` or `dashbo
 | 5 | `serve` без TUI, повторить | Ответ `true`, текст теряется — подтверждает предусловие живого TUI (не баг) |
 | 6 | 121 с записи | Автостоп на 120 с, notice про лимит |
 
+Verify + report (no commit without explicit request).
+
+---
+
+### Task 6: Web target — sessions delivery (`opencode web`)
+
+**Spec:** `docs/superpowers/specs/2026-09-07-voice-overlay-design.md`, Section 6. Read it before touching code.
+
+**Endpoint choice (locked from live docs 2026-09-07, `https://opencode.ai/docs/server/`):** `POST /session/:id/prompt_async` (same body as `/session/:id/message`, returns 204, no wait). NOT `POST /session/:id/message` — it waits for the model response and would hang the overlay. Body: `{ parts: [{ type: "text", text }] }`. Sessions: `GET /session` → `Session[]`. Part shape + field names are reconciled against live `/doc` on the toolchain machine before release (Step 1); if they differ, adjust ONLY the payload constructors below and record the deviation in `voice-overlay/README.md`.
+
+**Files:**
+- Modify: `voice-overlay/src/lib/opencode.ts` (append web section), `voice-overlay/src/api.ts` (+2 fns), `voice-overlay/src/lib/errors.ts` (+2 codes), `voice-overlay/test/errors.test.ts` (10 → 12), `voice-overlay/src/settings.tsx` (target + sessionId), `voice-overlay/src/App.tsx` (branch after preview), `voice-overlay/src-tauri/src/main.rs` (+2 commands, +2 pure fns, +3 tests, handler), `voice-overlay/README.md` (web section)
+- Create: `voice-overlay/test/web.test.ts`
+
+**Interfaces:**
+- Consumes: `ServerConfig`, `basicAuthHeader` (Task 1); `Recording`/`AppState` untouched; error contract `"<code>: <text>"` unchanged.
+- Produces: `Target = "tui" | "web"`, `SessionRef { id: string; title: string }`, `sessionListRequest(cfg)`, `sessionMessageRequest(cfg, sessionId, text)`, `parseSessionList(json: unknown): SessionRef[]`, `parseSendResult(status: number): "sent" | "unauthorized" | "session-not-found" | "fallback"`, api `listSessions(cfg)`, `sendToSession(cfg, sessionId, text)`, Rust `session_url`, `message_url`, commands `list_sessions`, `send_to_session`.
+
+- [ ] **Step 1: Reconcile with live `/doc` (toolchain machine with `opencode web` running)**
+
+Run: `curl -s http://127.0.0.1:4096/doc | python3 -c "import sys,json; d=json.load(sys.stdin); ps=d.get('paths',d); print('\n'.join(sorted(ps.keys())))" | grep -E "session" | head -20`
+Expected: paths include `/session` (get) and `/session/{id}/prompt_async` (post). Then fetch the post schema and check the `parts` item shape contains a text field named `text` with a discriminator `type: "text"`. If the shape differs (e.g. `content` instead of `parts`), adjust ONLY `sessionMessageRequest` (TS) and `send_to_session` (Rust) payload literals, keep field order, and append the deviation to `voice-overlay/README.md` web section. Do not redesign.
+
+- [ ] **Step 2: Write the failing TS tests**
+
+Create `voice-overlay/test/web.test.ts`:
+```ts
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  parseSendResult,
+  parseSessionList,
+  sessionListRequest,
+  sessionMessageRequest,
+} from "../src/lib/opencode.js";
+
+const CFG = { host: "127.0.0.1", port: 4096, username: "", password: "" };
+
+describe("sessionListRequest", () => {
+  it("GETs /session with JSON content type", () => {
+    const req = sessionListRequest(CFG);
+    assert.equal(req.url, "http://127.0.0.1:4096/session");
+    assert.equal(req.method, "GET");
+    assert.equal(req.headers["Content-Type"], "application/json");
+  });
+});
+
+describe("sessionMessageRequest", () => {
+  it("POSTs text part to prompt_async (204, no wait)", () => {
+    const req = sessionMessageRequest(CFG, "ses_123", "привет");
+    assert.equal(req.url, "http://127.0.0.1:4096/session/ses_123/prompt_async");
+    assert.equal(req.method, "POST");
+    assert.equal(req.body, JSON.stringify({ parts: [{ type: "text", text: "привет" }] }));
+  });
+  it("URL-encodes the session id", () => {
+    const req = sessionMessageRequest(CFG, "a/b c", "x");
+    assert.ok(req.url.includes("/session/a%2Fb%20c/prompt_async"), req.url);
+  });
+});
+
+describe("parseSessionList", () => {
+  it("extracts id+title, falls back to id", () => {
+    assert.deepEqual(
+      parseSessionList([{ id: "s1", title: "Shop" }, { id: "s2" }]),
+      [{ id: "s1", title: "Shop" }, { id: "s2", title: "s2" }],
+    );
+  });
+  it("rejects non-arrays and items without id", () => {
+    assert.deepEqual(parseSessionList({}), []);
+    assert.deepEqual(parseSessionList([{ title: "x" }]), []);
+    assert.deepEqual(parseSessionList(null), []);
+  });
+});
+
+describe("parseSendResult", () => {
+  it("2xx -> sent", () => {
+    assert.equal(parseSendResult(200), "sent");
+    assert.equal(parseSendResult(204), "sent");
+  });
+  it("401/403 -> unauthorized, 404 -> session-not-found", () => {
+    assert.equal(parseSendResult(401), "unauthorized");
+    assert.equal(parseSendResult(403), "unauthorized");
+    assert.equal(parseSendResult(404), "session-not-found");
+  });
+  it("rest -> fallback", () => {
+    assert.equal(parseSendResult(500), "fallback");
+    assert.equal(parseSendResult(0), "fallback");
+  });
+});
+```
+
+- [ ] **Step 3: Run tests to verify they fail**
+
+Run: `npm --prefix voice-overlay test`
+Expected: FAIL — `web.test.ts` fails with `ERR_MODULE_NOT_FOUND` for `sessionListRequest` etc. (all 15 old tests still PASS). Correct red state.
+
+- [ ] **Step 4: Implement TS web section (append to `src/lib/opencode.ts`)**
+
+```ts
+export type Target = "tui" | "web";
+
+export interface SessionRef {
+  id: string;
+  title: string;
+}
+
+export interface SessionHttpRequest {
+  url: string;
+  method: "GET" | "POST";
+  headers: Record<string, string>;
+  body?: string;
+}
+
+function authHeaders(cfg: ServerConfig): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (cfg.username !== "") headers["Authorization"] = "Basic " + basicAuthHeader(cfg.username, cfg.password);
+  return headers;
+}
+
+export function sessionListRequest(cfg: ServerConfig): SessionHttpRequest {
+  return {
+    url: `http://${cfg.host}:${cfg.port}/session`,
+    method: "GET",
+    headers: authHeaders(cfg),
+  };
+}
+
+export function sessionMessageRequest(cfg: ServerConfig, sessionId: string, text: string): SessionHttpRequest {
+  return {
+    url: `http://${cfg.host}:${cfg.port}/session/${encodeURIComponent(sessionId)}/prompt_async`,
+    method: "POST",
+    headers: authHeaders(cfg),
+    body: JSON.stringify({ parts: [{ type: "text", text }] }),
+  };
+}
+
+export type SendOutcome = "sent" | "unauthorized" | "session-not-found" | "fallback";
+
+export function parseSendResult(status: number): SendOutcome {
+  if (status === 401 || status === 403) return "unauthorized";
+  if (status === 404) return "session-not-found";
+  if (status >= 200 && status < 300) return "sent";
+  return "fallback";
+}
+
+export function parseSessionList(json: unknown): SessionRef[] {
+  if (!Array.isArray(json)) return [];
+  const out: SessionRef[] = [];
+  for (const item of json) {
+    if (typeof item !== "object" || item === null) continue;
+    const rec = item as Record<string, unknown>;
+    if (typeof rec["id"] !== "string" || rec["id"] === "") continue;
+    const id = rec["id"];
+    const title = typeof rec["title"] === "string" && rec["title"] !== "" ? rec["title"] : id;
+    if (!out.some((s) => s.id === id)) out.push({ id, title });
+  }
+  return out;
+}
+```
+
+- [ ] **Step 5: Wire api/settings/errors/App**
+
+Append to `voice-overlay/src/api.ts`:
+```ts
+import type { ServerConfig, SessionRef } from "./lib/opencode";
+
+export function listSessions(cfg: ServerConfig): Promise<SessionRef[]> {
+  return invoke<SessionRef[]>("list_sessions", { cfg });
+}
+
+export function sendToSession(cfg: ServerConfig, sessionId: string, text: string): Promise<boolean> {
+  return invoke<boolean>("send_to_session", { cfg, sessionId, text });
+}
+```
+(Note: extend the existing `import type { ServerConfig }` line — do not add a second import from the same module.)
+In `voice-overlay/src/lib/errors.ts`: add `"no-session"` and `"session-not-found"` to `ERROR_CODES` + COPY entries `"no-session": "Нет ни одной сессии. Создай сессию в opencode web и обнови список."`, `"session-not-found": "Сессия не найдена (удалена?). Обнови список и выбери снова."`.
+In `voice-overlay/test/errors.test.ts`: update the expected sorted list to 12 entries (add `"no-session"`, `"session-not-found"`).
+In `voice-overlay/src/settings.tsx`: extend `OverlaySettings` with `target: Target; sessionId: string`, DEFAULTS with `target: "tui", sessionId: ""` (existing `loadSettings` merge already migrates old stored settings), `SettingsView` props with `sessions: SessionRef[]`, add target radio (`tui` — «TUI-промпт», `web` — «Web-сессия») + session `<select>` (hidden+disabled when `target === "tui"`, options from `props.sessions`, first option `value=""` — «Выбери сессию»).
+In `voice-overlay/src/App.tsx`: extend `codeOf` list with the 2 new codes; add `sessions` state + `loadSessions()` (calls `listSessions(settings)` on mount, on settings save, and on `showSettings` close; failure → `[]`); pass `sessions` to `SettingsView`; after transcribe: `if (settings.target === "web") { setPreview(text); setNotice(auto ? "Достигнут лимит 120 секунд — нажми «Отправить в сессию»" : "Проверь текст и нажми «Отправить в сессию»"); setStatus("idle"); return; }` (NO auto-send — spec rule); render send button when `preview !== "" && settings.target === "web" && status === "idle"`: disabled when `settings.sessionId === ""`, onClick → `sendToSession(settings, settings.sessionId, preview)` → notice «Отправлено в сессию» + `setPreview("")`; on error: `session-not-found:` → `fail` (re-pick), `fallback:/server-unreachable:` → clipboard fallback (same as TUI). Switching `target` clears `error` and sets `status` to `"idle"` (spec: смена таргета сбрасывает ошибку).
+
+- [ ] **Step 6: Implement Rust commands (append to `src-tauri/src/main.rs`)**
+
+Pure fns + tests:
+```rust
+pub fn session_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}/session")
+}
+
+pub fn message_url(host: &str, port: u16, session_id: &str) -> String {
+    format!("http://{host}:{port}/session/{session_id}/prompt_async")
+}
+```
+(`session_id` is inserted raw — the TS side `encodeURIComponent`s; Rust receives the already-encoded id from `sendToSession`. Document with a one-line comment.)
+Tests to append in `mod tests`:
+```rust
+#[test]
+fn session_urls_match_docs_contract() {
+    assert_eq!(session_url("127.0.0.1", 4096), "http://127.0.0.1:4096/session");
+    assert_eq!(
+        message_url("127.0.0.1", 4096, "ses_123"),
+        "http://127.0.0.1:4096/session/ses_123/prompt_async"
+    );
+}
+
+#[test]
+fn send_outcome_mirrors_ts_contract() {
+    assert_eq!(send_outcome(204), "sent");
+    assert_eq!(send_outcome(200), "sent");
+    assert_eq!(send_outcome(401), "unauthorized");
+    assert_eq!(send_outcome(404), "session-not-found");
+    assert_eq!(send_outcome(500), "fallback");
+}
+```
+with:
+```rust
+pub fn send_outcome(status: u16) -> &'static str {
+    if status == 401 || status == 403 {
+        return "unauthorized";
+    }
+    if status == 404 {
+        return "session-not-found";
+    }
+    if (200..300).contains(&status) {
+        return "sent";
+    }
+    "fallback"
+}
+```
+Commands:
+```rust
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub title: String,
+}
+
+#[tauri::command]
+pub async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
+    let mut req = reqwest::Client::new().get(session_url(&cfg.host, cfg.port));
+    if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
+        req = req.header("Authorization", auth);
+    }
+    let resp = req.send().await.map_err(|e| format!("server-unreachable: {e}"))?;
+    let status = resp.status().as_u16();
+    if status == 401 || status == 403 {
+        return Err("unauthorized: проверь пароль сервера (OPENCODE_SERVER_PASSWORD)".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("fallback: http {}", resp.status()));
+    }
+    let items = resp.json::<Vec<serde_json::Value>>().await.map_err(|e| format!("fallback: {e}"))?;
+    let mut out: Vec<SessionInfo> = Vec::new();
+    for item in &items {
+        let Some(id) = item.get("id").and_then(|v| v.as_str()) else { continue };
+        if id.is_empty() || out.iter().any(|s: &SessionInfo| s.id == id) { continue; }
+        let title = item.get("title").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or(id).to_string();
+        out.push(SessionInfo { id: id.to_string(), title });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn send_to_session(cfg: ServerConfig, session_id: String, text: String) -> Result<bool, String> {
+    if session_id.is_empty() {
+        return Err("session-not-found: выбери сессию в настройках.".to_string());
+    }
+    let mut req = reqwest::Client::new()
+        .post(message_url(&cfg.host, cfg.port, &session_id))
+        .json(&serde_json::json!({ "parts": [{ "type": "text", "text": text }] }));
+    if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
+        req = req.header("Authorization", auth);
+    }
+    let resp = req.send().await.map_err(|e| format!("server-unreachable: {e}"))?;
+    let status = resp.status().as_u16();
+    if send_outcome(status) != "sent" {
+        if status == 401 || status == 403 {
+            return Err("unauthorized: проверь пароль сервера (OPENCODE_SERVER_PASSWORD)".to_string());
+        }
+        if status == 404 {
+            return Err("session-not-found: сессия не найдена (удалена?). Обнови список и выбери снова.".to_string());
+        }
+        return Err(format!("fallback: http {}", resp.status()));
+    }
+    Ok(true)
+}
+```
+Register `list_sessions, send_to_session` in `generate_handler![...]`.
+
+- [ ] **Step 7: README web section + verify**
+
+Append to `voice-overlay/README.md` a `## Web-таргет (opencode web)` section: `opencode web --port 4096` precondition, target switch, session picker, explicit-send rule, endpoint choice rationale (`prompt_async` 204 no-wait vs blocking `/message`), `/doc` reconciliation status + any deviation.
+Run: `npm --prefix voice-overlay run typecheck` (clean) + `npm --prefix voice-overlay test` (all PASS incl. new `web.test.ts`, updated `errors.test.ts` with 12 codes).
+Run (Rust machine): `cargo test` — all PASS (9 tests: 7 old + 2 new).
 Verify + report (no commit without explicit request).
