@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises"
 const FALLBACK_LEAD = `You are orch-lead, an evidence-driven primary implementation agent.
 Classify the task by intellectual work profile, dispatch the smallest useful specialist team, synthesize their evidence, implement the requested change, and verify it.
 Use workers for independent evidence, not ceremonial duplication. Never invoke yourself or bypass user instructions, active skills, plans, TDD, or review workflows.
-Escalate to orch-judge only for critical risk or unresolved disagreement. For implementation tasks, continue through editing and verification instead of stopping at a handoff. Parallel editors require explicit non-overlapping ownership, one experimental git worktree per editor, git-derived diff validation, and a single integrator; retain worktrees on failure.`
+Give every node a sealed TaskContract and dispatch it through orchestra_dispatch so dependencies, depth, total/concurrent limits, and exclusive resources are enforced. Evidence workers may create at most one narrower guarded child when their contract permits it.
+Escalate to orch-judge only for critical risk or unresolved disagreement. For implementation tasks, continue through editing and aggregate verification instead of stopping at a handoff. Parallel editors require explicit non-overlapping ownership, one exclusive owner per mutable resource, one experimental git worktree per editor, git-derived diff validation, and a single integrator; retain worktrees on failure.`
 
 const FALLBACK_JUDGE = `You are orch-judge, a costly independent arbiter.
 You receive conflicting worker findings. Inspect only the evidence needed to resolve the disagreement.
@@ -33,7 +34,7 @@ export type PromptBundle = Record<string, string> & { lead: string; judge: strin
 export async function loadPrompts(names: string[] = Object.keys(FALLBACKS)): Promise<PromptBundle> {
   const entries = await Promise.all([...new Set(names)].map(async (name) => [
     name,
-    await readPrompt(`${name}.md`, FALLBACKS[name] ?? "You are an internal specialist agent. Return concise, evidence-backed findings and do not edit or delegate."),
+    await readPrompt(`${name}.md`, FALLBACKS[name] ?? "You are an internal read-only specialist. Return concise, evidence-backed findings. Delegate only through orchestra_dispatch when the sealed TaskContract permits one narrower child; never call yourself or an ancestor, and relay decisions, assumptions, blockers, and provenance."),
   ] as const))
   const prompts = Object.fromEntries(entries) as PromptBundle
   prompts.lead ??= FALLBACK_LEAD

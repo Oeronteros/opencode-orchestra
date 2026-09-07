@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -38,15 +38,68 @@ test("explicit config path is resolved from project", async () => {
   assert.equal(loaded.source, path.join(project, "custom.jsonc"))
 })
 
-test("parallel editor configuration is opt-in and bounded", () => {
-  assert.equal(orchestraConfigSchema.parse({}).orchestration.parallelEditors, 0)
-  assert.equal(orchestraConfigSchema.parse({ orchestration: { parallelEditors: 8, worktreeRoot: ".tmp/worktrees" } }).orchestration.worktreeRoot, ".tmp/worktrees")
+test("orchestration agent limits have shared defaults and strict bounds", () => {
+  for (const input of [{}, { orchestration: {} }]) {
+    const orchestration = orchestraConfigSchema.parse(input).orchestration
+    assert.equal(orchestration.parallelWorkers, 8)
+    assert.equal(orchestration.maxWorkers, 8)
+    assert.equal(orchestration.parallelEditors, 0)
+    assert.equal(orchestration.maxDelegationDepth, 2)
+  }
+
+  const configured = orchestraConfigSchema.parse({
+    orchestration: { parallelWorkers: 1, parallelEditors: 8, maxWorkers: 1, maxDelegationDepth: 4, worktreeRoot: ".tmp/worktrees" },
+  }).orchestration
+  assert.equal(configured.parallelWorkers, 1)
+  assert.equal(configured.parallelEditors, 8)
+  assert.equal(configured.maxWorkers, 1)
+  assert.equal(configured.maxDelegationDepth, 4)
+  assert.equal(configured.worktreeRoot, ".tmp/worktrees")
+
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelWorkers: 0 } }))
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelWorkers: 9 } }))
   assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelEditors: 9 } }))
   assert.throws(() => orchestraConfigSchema.parse({ orchestration: { parallelEditors: -1 } }))
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { maxWorkers: 0 } }))
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { maxWorkers: 9 } }))
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { maxDelegationDepth: 0 } }))
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { maxDelegationDepth: 5 } }))
+  assert.throws(() => orchestraConfigSchema.parse({ orchestration: { maxDelegationDepth: 2.5 } }))
+})
+
+test("published JSON schema mirrors orchestration defaults and bounds", async () => {
+  type NumericSchema = { type: "integer"; minimum: number; maximum: number; default: number }
+  const published = JSON.parse(
+    await readFile(path.resolve("schema/opencode-orchestra.schema.json"), "utf8"),
+  ) as { properties: { orchestration: { properties: Record<string, NumericSchema> } } }
+  const properties = published.properties.orchestration.properties
+
+  assert.deepEqual(properties.parallelWorkers, { type: "integer", minimum: 1, maximum: 8, default: 8 })
+  assert.deepEqual(properties.parallelEditors, { type: "integer", minimum: 0, maximum: 8, default: 0 })
+  assert.deepEqual(properties.maxWorkers, { type: "integer", minimum: 1, maximum: 8, default: 8 })
+  assert.deepEqual(properties.maxDelegationDepth, { type: "integer", minimum: 1, maximum: 4, default: 2 })
 })
 
 test("automatic permission acceptance is explicit and disabled by default", () => {
   assert.equal(orchestraConfigSchema.parse({}).permissions.autoAcceptAll, false)
   assert.equal(orchestraConfigSchema.parse({ permissions: { autoAcceptAll: true } }).permissions.autoAcceptAll, true)
   assert.throws(() => orchestraConfigSchema.parse({ permissions: { autoAcceptAll: "yes" } }))
+})
+
+test("per-agent fallback chains are ordered, bounded, and backward compatible", () => {
+  const defaults = orchestraConfigSchema.parse({})
+  assert.deepEqual(defaults.models.fallback, { enabled: true, maxRetries: 2, agents: {} })
+
+  const configured = orchestraConfigSchema.parse({
+    models: {
+      fallback: {
+        enabled: true,
+        maxRetries: 2,
+        agents: { "orch-repo": ["openai/gpt-5", "google/gemini-pro"] },
+      },
+    },
+  })
+  assert.deepEqual(configured.models.fallback.agents["orch-repo"], ["openai/gpt-5", "google/gemini-pro"])
+  assert.throws(() => orchestraConfigSchema.parse({ models: { fallback: { agents: { "orch-repo": ["openai/gpt-5", "openai/gpt-5"] } } } }))
+  assert.throws(() => orchestraConfigSchema.parse({ models: { fallback: { agents: { "orch-repo": Array.from({ length: 6 }, (_, index) => `vendor/model-${index}`) } } } }))
 })

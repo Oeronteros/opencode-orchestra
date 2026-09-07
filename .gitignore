@@ -18,6 +18,17 @@ dashboard-dist/
 *.log
 logs/
 coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+*.pid.lock
+
+# local package archives and tool caches
+*.tgz
+.cache/
+.vite/
 
 # local plugin config (developer machine)
 /.opencode/orchestra.jsonc

@@ -178,8 +178,12 @@ interface SnapshotData {
   configPath: string
   config: {
     budget: string
-    models: { strategy: "auto" | "manual"; agents: Record<string, string> }
-    orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; profiles?: unknown; worktreeRoot?: string | undefined }
+    models: {
+      strategy: "auto" | "manual"
+      agents: Record<string, string>
+      fallback: { enabled: boolean; maxRetries: number; agents: Record<string, string[]> }
+    }
+    orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; maxDelegationDepth: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; profiles?: unknown; worktreeRoot?: string | undefined }
   permissions: { autoAcceptAll: boolean }
   superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
   telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
@@ -325,7 +329,11 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     configPath: path.join(directory, ".opencode", "orchestra.jsonc"),
     config: {
       budget: config.budget,
-       models: { strategy: config.models.strategy, agents: config.models.agents },
+       models: {
+         strategy: config.models.strategy,
+         agents: config.models.agents,
+         fallback: config.models.fallback,
+       },
        orchestration: config.orchestration,
        permissions: config.permissions,
        superpowers: config.superpowers,
@@ -351,6 +359,7 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     availableModels: [...new Set([
       ...(includeModels ? connectedModels(directory) : []),
       ...Object.values(config.models.agents),
+      ...Object.values(config.models.fallback.agents).flat(),
       ...config.models.lead, ...config.models.judge, ...Object.values(config.models.worker).flat(),
     ].map((model) => typeof model === "string" ? model : model.id))].sort(),
   }

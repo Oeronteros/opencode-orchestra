@@ -36,9 +36,14 @@ export interface DashboardConfig {
   models: {
     strategy: "auto" | "manual"
     agents: Record<string, string>
+    fallback: {
+      enabled: boolean
+      maxRetries: number
+      agents: Record<string, string[]>
+    }
   }
   telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
-  orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; worktreeRoot?: string }
+  orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; maxDelegationDepth: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; worktreeRoot?: string }
   permissions: { autoAcceptAll: boolean }
   superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
   pricing: { endpoint?: string; refreshIntervalHours: number; estimate: boolean; warnThresholdUSD: number; openrouter: { enabled: boolean; ttlHours: number }; aliases: Array<{ canonical: string; aliases: string[] }> }

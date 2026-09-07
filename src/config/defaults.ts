@@ -16,8 +16,9 @@ export function withDefaults(input: unknown): OrchestraConfig {
 }
 
 export function applyBudgetPreset(config: OrchestraConfig): OrchestraConfig {
-  // Zod's compatibility default is 1. Treat that value as implicit for the
-  // preset modes, while leaving every other user supplied value untouched.
+  // Zod's premium-call compatibility default is 1. Treat that value as
+  // implicit for the preset modes, while leaving every other user supplied
+  // value untouched.
   // This keeps old configs valid and makes the mode useful without requiring
   // users to add a new field.
   // EBOBO retains its established orchestration preset of five premium
@@ -36,8 +37,6 @@ export function applyBudgetPreset(config: OrchestraConfig): OrchestraConfig {
     ...config,
     orchestration: {
       ...config.orchestration,
-      parallelWorkers: 8,
-      maxWorkers: 12,
       premiumEscalation: true,
       maxPremiumCallsPerTask,
       confidenceThreshold: 0.95,

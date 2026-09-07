@@ -7,7 +7,7 @@ import pluginModule, { mcpServerForTool, OrchestraPlugin, server } from "../src/
 import { DEFAULT_CONFIG, withDefaults } from "../src/config/defaults.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
 import type { Ledger } from "../src/telemetry/ledger.js"
-import { createOrchestraTools } from "../src/tools.js"
+import { createOrchestraTools, type DispatchContext } from "../src/tools.js"
 import { createAgentSet, type PromptBundle } from "../src/agents/build.js"
 
 test("entrypoint exposes a stable id and server", () => {
@@ -21,6 +21,72 @@ test("MCP tool prefixes map to stable telemetry server names", () => {
   assert.equal(mcpServerForTool("ast-grep_find_code"), "astGrep")
   assert.equal(mcpServerForTool("playwright_browser_navigate"), "playwright")
   assert.equal(mcpServerForTool("bash"), undefined)
+})
+
+test("native Orchestra tasks require sealed editor nodes and consume shared capacity", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-native-guard-"))
+  const initialize = OrchestraPlugin as unknown as (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, unknown>>
+  const hooks = await initialize({ directory: project, client: { app: { log: async () => undefined } } }, { telemetry: { enabled: false }, orchestration: { parallelEditors: 2 } })
+  const before = hooks["tool.execute.before"] as (input: { tool: string; sessionID: string; callID: string }, output: { args: Record<string, unknown> }) => Promise<void>
+  const after = hooks["tool.execute.after"] as (input: { callID: string }, output: { output: string }) => Promise<void>
+  const tools = hooks.tool as Record<string, { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }>
+  try {
+    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "bypass" }, { args: { subagent_type: "orch-repo", description: "unsealed" } }), /sealed editor/)
+    const prepared = JSON.parse(await tools.orchestration_prepare_edit_plan!.execute({
+      task: "fix module", profile: "debug", baseSha: "0123456789abcdef", partitions: [{ id: "editor", description: "fix", ownership: ["src/**"] }],
+    }, { sessionID: "native-root" }))
+    assert.equal(prepared.ok, true)
+    const args = { subagent_type: "orch-editor", description: "editor", prompt: "Fix module" }
+    await before({ tool: "task", sessionID: "native-root", callID: "editor-call" }, { args })
+    assert.match(args.prompt, /Sealed TaskContract/)
+    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "duplicate" }, { args }), /already running/)
+    await after({ callID: "editor-call" }, { output: "completed" })
+    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "integrator" }, { args: { subagent_type: "orch-integrator", description: "integrator" } }), /validate_commit/)
+  } finally {
+    await (hooks.dispose as () => Promise<void>)()
+  }
+})
+
+test("orchestra_dispatch retries a worker with its next configured model", async () => {
+  const config = withDefaults({
+    models: {
+      strategy: "manual",
+      agents: { "orch-repo": "vendor/primary" },
+      fallback: { enabled: true, maxRetries: 1, agents: { "orch-repo": ["vendor/secondary"] } },
+    },
+  })
+  const agents = createAgentSet(config, { lead: "lead", judge: "judge" })
+  const promptModels: string[] = []
+  let child = 0
+  const client = {
+    session: {
+      create: async () => ({ data: { id: `child-${++child}` } }),
+      prompt: async (options: { body: { model: { providerID: string; modelID: string } } }) => {
+        const model = `${options.body.model.providerID}/${options.body.model.modelID}`
+        promptModels.push(model)
+        if (model === "vendor/primary") throw Object.assign(new Error("provider overloaded"), { status: 503 })
+        return { data: { parts: [{ type: "text", text: "secondary result" }] } }
+      },
+    },
+  } as unknown as DispatchContext["client"]
+  const reliability: Array<{ outcome: string; model?: string }> = []
+  const ledger = {
+    recordReliabilityEvent: async (_sessionID: string, event: { outcome: string; model?: string }) => { reliability.push(event) },
+  } as unknown as Ledger
+  const dispatch = createOrchestraTools(config, ledger, undefined, undefined, { client, agents, directory: process.cwd() }).orchestra_dispatch as unknown as {
+    execute(args: { agent: string; task: string; nodeId?: string }, context: Record<string, unknown>): Promise<string>
+  }
+
+  const result = JSON.parse(await dispatch.execute(
+    { agent: "orch-repo", task: "Inspect the repository", nodeId: "n0" },
+    { sessionID: "parent", worktree: process.cwd() },
+  )) as { ok: boolean; model: string; output: string }
+
+  assert.equal(result.ok, true)
+  assert.equal(result.model, "vendor/secondary")
+  assert.equal(result.output, "secondary result")
+  assert.deepEqual(promptModels, ["vendor/primary", "vendor/secondary"])
+  assert.deepEqual(reliability.map((event) => event.outcome), ["failed", "retried"])
 })
 
 test("MCP execution hooks persist successful usage metrics", async () => {
@@ -97,14 +163,17 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   const configure = hooks.config as (input: Record<string, unknown>) => Promise<void>
   await configure(runtime)
 
-  const agents = runtime.agent as Record<string, { mode: string }>
+  const agents = runtime.agent as Record<string, { mode: string; permission?: Record<string, unknown> }>
   const commands = runtime.command as Record<string, { template: string }>
   const tools = hooks.tool as Record<string, unknown>
 
   assert.equal(agents["orch-lead"]?.mode, "primary")
   assert.equal(agents["orch-repo"]?.mode, "subagent")
+  assert.equal(agents["orch-repo"]?.permission?.task, "deny")
+  assert.equal(agents["orch-repo"]?.permission?.orchestra_dispatch, "allow")
+  assert.equal(runtime.subagent_depth, 2)
   assert.equal((commands.orchestra as { agent?: string })?.agent, "orch-lead")
-  assert.ok(commands.orchestra?.template.includes("execute the returned plan yourself"))
+  assert.ok(commands.orchestra?.template.includes("unchanged TaskContract"))
   assert.ok(commands["orchestra-status"]?.template.includes("orchestra_status"))
   assert.ok(commands["plugin-status"]?.template.includes("orchestra_plugin_status"))
   assert.ok(tools.orchestra_route)
@@ -287,7 +356,7 @@ test("consensus report requires and updates the current session", async () => {
   await (hooks.dispose as () => Promise<void>)()
 })
 
-test("ebobo routes the full worker roster with frontier arbitration", async () => {
+test("ebobo fills the shared eight-node cap with frontier arbitration", async () => {
   const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-ebobo-"))
   const initialize = OrchestraPlugin as unknown as (
     input: Record<string, unknown>,
@@ -298,7 +367,13 @@ test("ebobo routes the full worker roster with frontier arbitration", async () =
       directory: project,
       client: { app: { log: async () => undefined } },
     },
-    { budget: "ebobo", telemetry: { enabled: false } },
+    // Pin the orchestration caps so a developer's global orchestra.jsonc
+    // (lowest-precedence layer) cannot shrink the eight-node budget.
+    {
+      budget: "ebobo",
+      telemetry: { enabled: false },
+      orchestration: { maxWorkers: 8, parallelWorkers: 8 },
+    },
   )
   const route = (hooks.tool as Record<string, unknown>).orchestra_route as {
     execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
@@ -309,7 +384,7 @@ test("ebobo routes the full worker roster with frontier arbitration", async () =
     escalation: { escalate: boolean }
   }
 
-  assert.equal(result.workers.length, 9)
+  assert.equal(result.workers.length, 7)
   assert.equal(result.parallelWorkers, 8)
   assert.equal(result.escalation.escalate, true)
 })

@@ -1,5 +1,19 @@
 # OpenCode Orchestra
 
+## Bounded Loop
+
+Enable in `orchestra.jsonc`, then restart OpenCode:
+
+```json
+{ "orchestration": { "loop": { "enabled": true, "maxIterations": 10, "maxMinutes": 30, "noProgressLimit": 3 } } }
+```
+
+Use `/loop Fix the failing tests` or `/loop --file docs/plan.md`. Bare paths are inline goals; file loading is explicit and delegated to the agent's normal permissioned read tool. No plugin filesystem read is performed. Missing files or permission requests require user attention.
+
+`/loop status` reports state; `/loop stop` prevents further iterations. Both return a command notice without asking the model to act. Use OpenCode interrupt to abort an already-running turn. Limits stop future iteration submissions, not tools already executing. State is in memory and is lost on restart.
+
+Only an unquoted final `MORE: <remaining work>` authorizes another iteration. Unknown replies pause; permission requests pause; errors and new user messages stop the loop. `DONE: <summary>` records an assistant completion claim, not independent verification. Ask the lead to run checks through normal tools. A nonempty `verifyCommand` fails closed because permission-safe runtime shell verification is unsupported. Defaults: disabled, 10 iterations (including the first), 30 minutes, 3 consecutive identical normalized MORE reasons.
+
 [![npm version](https://img.shields.io/npm/v/@oeronteros-1/opencode-orchestra)](https://www.npmjs.com/package/@oeronteros-1/opencode-orchestra) [![license](https://img.shields.io/npm/l/@oeronteros-1/opencode-orchestra)](LICENSE) [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-4f46e5)](https://opencode.ai/docs/plugins/)
 
 `@oeronteros-1/opencode-orchestra` — стабильный плагин-оркестратор для OpenCode. Он добавляет ведущего агента, команду скрытых специалистов, арбитра для сложных случаев, автоматический выбор подключённых моделей, контроль стоимости, локальную телеметрию и интеграцию Context7 + Codebase Memory + MemoryGraph.
@@ -24,7 +38,7 @@
 
 - **Graceful degradation при невалидном `orchestra.jsonc`**: если глобальный или проектный конфиг не парсится либо не проходит валидацию схемы, плагин продолжает запуск на безопасных default-значениях, пишет один warning с путём к конфигу и sanitized-причиной и **не перезаписывает** файл. Обнаружение моделей, регистрация проектов, телеметрия и создание агентов/инструментов продолжаются как обычно.
 - **Структурированная причина маршрутизации**: `orchestra_route` возвращает `routing.lead.model` вместе с машиночитаемым `routing.lead.reason` (`code`, `text`, `matchedCapabilities`, `score`, `budget`) и `routing.source` (`exact_override`, `manual_pool`, `auto_discovered`, `budget_exclusion`, `no_candidate`). `code` — стабильный идентификатор решения; `text` — диагностическая строка без секретов и промптов.
-- **Политика ошибок и capability-aware fallback**: retryable-ошибки (rate-limit/429, timeout/408, provider 5xx/overloaded) переключают на следующий совместимый кандидат; terminal-ошибки (auth/401/403, invalid-request/400/404, неизвестная) останавливают цепочку. Альтернативы фильтруются по capability и бюджету и ранжируются детерминированно: compatibility → priority → tier → бюджетный класс стоимости → id. Плагин **не перехватывает** provider retry: цепочка `fallback.chains` передаётся только для dispatch-failover через `orch-lead`.
+- **Политика ошибок и capability-aware fallback**: retryable-ошибки (rate-limit/429, timeout/408, provider 5xx/overloaded) переключают на следующий совместимый кандидат; terminal-ошибки (auth/401/403, invalid-request/400/404, неизвестная) останавливают цепочку. `orchestra_dispatch` выполняет реальные резервные попытки для evidence/review/merge/judge subagents; первичный lead и workspace-aware editor/integrator остаются на нативном dispatch OpenCode.
 - **События надёжности (reliability events)**: ledger записывает sanitized-события `failed`/`retried` только из реально наблюдаемых попыток (модель, класс ошибки, следующая модель, номер попытки, исход). Сырой текст ошибки не сохраняется; список ограничен последними 100 событиями.
 - **Routing-проверки `doctor`**: неразрушающие проверки для lead/judge/workers, точных overrides, дубликатов и неизвестных цен (предупреждение, никогда не `free`). Валидный частичный конфиг не считается ошибкой.
 - **Карта конфликтов и сохранённые worktrees**: `orch-integrator` строит детерминированную cross-editor карту конфликтов (`editors`, `conflictingPaths`, `ownershipViolations`, `order`, `clean`), работает fail-closed при любом нарушении ownership/ancestry/git-конфликте и сохраняет worktrees для диагностики.
@@ -160,6 +174,9 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
   "$schema": "https://unpkg.com/@oeronteros-1/opencode-orchestra@latest/schema/opencode-orchestra.schema.json",
   "budget": "balanced",
   "orchestration": {
+    "parallelWorkers": 8,
+    "maxWorkers": 8,
+    "maxDelegationDepth": 2,
     "parallelEditors": 0,
     "worktreeRoot": ".orchestra/worktrees"
   },
@@ -188,6 +205,25 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
 ```
 
 Доступные имена: `orch-lead`, `orch-repo`, `orch-docs`, `orch-tests`, `orch-research`, `orch-critic`, `orch-security`, `orch-visual-reference`, `orch-visual-generate`, `orch-visual-review`, `orch-editor`, `orch-integrator`, `orch-merge`, `orch-judge`.
+
+Для ручного порядка резервных моделей оставьте основную модель в `models.agents`, а альтернативы перечислите в `models.fallback.agents`:
+
+```jsonc
+{
+  "models": {
+    "agents": { "orch-repo": "anthropic/claude-sonnet-4-5" },
+    "fallback": {
+      "enabled": true,
+      "maxRetries": 2,
+      "agents": {
+        "orch-repo": ["openai/gpt-5-mini", "google/gemini-2.5-pro"]
+      }
+    }
+  }
+}
+```
+
+Dashboard позволяет искать модели по provider и имени, менять порядок fallback и сохраняет недоступную в данный момент модель без молчаливого удаления.
 
 `orch-repo` — read-only разведчик репозитория. Он собирает карту символов, зависимостей, истории Git, diff и blast radius для lead/editor, но не редактирует файлы и не выполняет Git-мутации. Разрешения на Git задаются по точным MCP tool names: чтение разрешено, операции записи принудительно запрещены движком.
 
@@ -232,7 +268,7 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
 - `eco` — сильный приоритет бесплатных workers; judge вызывается только при критическом несогласии;
 - `balanced` — бесплатные workers, subscription-first lead, frontier judge при низкой уверенности или споре;
 - `quality` — разрешает передовые платные модели для lead и workers, предпочитает сильные `lead/frontier` модели и вызывает frontier judge для критических, неуверенных или спорных решений;
-- `ebobo` — максимальный режим: до 8 параллельных и 12 суммарных workers, весь доступный состав специалистов, frontier-first выбор моделей и обязательный `orch-judge`. Платные модели не штрафуются.
+- `ebobo` — максимальный по качеству режим: frontier-first выбор моделей и обязательный `orch-judge`; платные модели не штрафуются. Количество агентов остаётся под общими настройками orchestration и скрыто не увеличивается.
 
 В `ebobo` «топовая» модель определяется без жёсткой привязки к бренду: приоритет получают подключённые модели класса `frontier`, затем `lead`, а внутри класса учитываются capabilities, контекст и пользовательский priority. Точное назначение через `models.agents` всё равно имеет высший приоритет.
 
@@ -274,7 +310,7 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
 
 Как определяется стоимость: raw model ID нормализуется (регистр, разделители, префикс провайдера, namespace-обёртки, `:free`-суффиксы), затем цена ищется в порядке: явная цена из конфига → псевдонимы → snapshot провайдера → OpenRouter. Совпадение по ключевым словам/нечёткое сравнение защищено от ложных срабатываний: похожие модели семейства (`GPT-5.6`, `GPT-5.6 Mini`, `GPT-5.6 Sol`) не схлопываются. Итог всегда один из четырёх статусов: `paid` (цена известна), `free` ($0, токены считаются), `subscription` ($0 + статус подписки) или `unknown` (токены считаются, стоимость — `null`, никогда не выдаётся за бесплатную). Токены и биллинг — две независимые величины.
 
-Resolver формирует упорядоченный список fallback-кандидатов из доступных пользователю моделей, предпочитая схожую стоимость и совместимые capabilities. Цепочка передаётся lead в поле `fallback`; execution-слой может переключиться на следующий кандидат при ошибке провайдера. Если текущая версия OpenCode не предоставляет provider-interception, сам плагин не перехватывает вызов и не обещает автоматический retry. Прогноз стоимости — информативное поле: выполнение не блокируется, а предупреждение помогает подтвердить расходы заранее.
+Resolver формирует упорядоченный список fallback-кандидатов из доступных пользователю моделей, предпочитая схожую стоимость и совместимые capabilities. `orchestra_dispatch` последовательно создаёт дочерние subagent-попытки с явным `provider/model` и переключается только после retryable-ошибки. Нативные вызовы первичного lead и изолированных editor/integrator не перехватываются. Прогноз стоимости — информативное поле: выполнение не блокируется, а предупреждение помогает подтвердить расходы заранее.
 
 ### Структурированная причина маршрутизации
 
@@ -322,11 +358,11 @@ Resolver формирует упорядоченный список fallback-к�
 
 ### Capability-aware fallback
 
-Fallback-цепочка строится только из worker-пулов (`code`, `reasoning`, `research`, `vision`, `image`). Кандидаты фильтруются по budget-eligibility (платные исключаются при исчерпании лимита), а явно несовместимые с требуемой capability отсеиваются до выбора победителя. Неизвестные по capability модели остаются в цепочке, но ранжируются ниже. Альтернативы упорядочиваются детерминированно: compatibility → priority → tier → бюджетный класс стоимости → id. `fallback.chains` в ответе `orchestra_route` содержит `enabled`, `maxRetries` и усечённую до `maxRetries + 1` цепочку на каждую capability. Плагин не перехватывает вызовы провайдера: цепочка предназначена для безопасного dispatch-failover через `orch-lead`.
+Автоматическая fallback-цепочка строится из подходящего пула роли. Кандидаты фильтруются по budget-eligibility, а явно несовместимые с требуемой capability отсеиваются. Неизвестные по capability модели остаются в цепочке, но ранжируются ниже. Явный `models.fallback.agents[agent]` заменяет автоматические альтернативы и сохраняет пользовательский порядок; primary берётся из `models.agents` или resolver. `fallback.chains` и `fallback.agents` в ответе `orchestra_route` ограничены до `maxRetries + 1` моделей.
 
 ### События надёжности
 
-Там, где Orchestra может наблюдать выполнение, ledger записывает событие надёжности только из реально наблюдаемых попыток: `attempt`, `model`, `errorKind` (policy-класс, не сырой текст), `outcome` (`failed`/`retried`/`succeeded`), `nextModel` и `at`. Переход `retried` фиксируется только при последующей наблюдаемой попытке после retryable-ошибки; события ограничены последними 100, строки обрезаются, а неопознанные записи отбрасываются. Креды, промпты и тела ответов провайдера никогда не сохраняются. Если вызовы провайдера перехватить нельзя, эквивалентные policy-метаданные возвращаются в `orch-lead`, но фейковое событие выполнения не записывается.
+Там, где Orchestra может наблюдать выполнение, ledger записывает событие надёжности только из реально наблюдаемых попыток: `attempt`, `model`, `errorKind` (policy-класс, не сырой текст), `outcome` (`failed`/`retried`/`succeeded`), `nextModel` и `at`. Переход `retried` фиксируется только при фактическом запуске следующей попытки; события ограничены последними 100, строки обрезаются, а неопознанные записи отбрасываются. Креды, промпты и тела ответов провайдера никогда не сохраняются.
 
 ### Routing-проверки `doctor`
 
@@ -347,9 +383,19 @@ Fallback-цепочка строится только из worker-пулов (`c
 
 ## Агенты и команды
 
-Плагин добавляет один публичный primary-агент `orch-lead`, скрытых workers, скрытый reduce-агент `orch-merge` и скрытый `orch-judge`. Workers не могут редактировать файлы или делегировать работу дальше; lead может вызывать только агентов Orchestra, после чего сам реализует изменения и проверяет результат.
+Плагин добавляет один публичный primary-агент `orch-lead`, скрытых workers, скрытый reduce-агент `orch-merge` и скрытый `orch-judge`. Evidence-workers не могут редактировать файлы и сохраняют `task: deny`, но при явном разрешении в запечатанном TaskContract могут поднять одного read-only ребёнка через защищённый `orchestra_dispatch`. `orch-editor`, `orch-integrator`, `orch-merge`, `orch-judge` и visual generator не делегируют.
 
-`orch-lead` строит dependency-aware DAG: независимые ветки одного уровня запускаются параллельно через OpenCode Task tool в пределах `parallelWorkers`, downstream-узлы ждут свои зависимости, а после всех веток `orch-merge` один раз объединяет результаты с сохранением источников, конфликтов и неопределённости. Затем `orch-lead` редактирует файлы и запускает релевантную проверку. Для безопасной параллельной реализации можно явно задать непересекающиеся ownership partitions и включить `orchestration.parallelEditors`: каждый `orch-editor` работает в отдельном experimental Git worktree, коммитит изменения, а `orch-integrator` проверяет фактический diff и интегрирует коммиты в детерминированном порядке. При конфликте worktrees сохраняются для диагностики; значение `0` (по умолчанию) полностью отключает editor mode. Это явный fan-out/fan-in pipeline, а не последовательный список рекомендаций.
+`orch-lead` строит dependency-aware DAG из единого каталога профилей. Каждый узел получает стабильный `nodeId` и TaskContract с целью, входами, ожидаемым результатом, критериями готовности, разрешёнными путями, эксклюзивными изменяемыми ресурсами и бюджетом делегирования. Независимые ветки запускаются через `orchestra_dispatch`; runtime проверяет зависимости, запрещает повторный/подменённый контракт и ведёт состояния `pending`, `queued`, `running`, `succeeded`, `failed` и `blocked`. После веток `orch-merge` один раз объединяет результаты с сохранением источников, решений, предположений, блокеров и неопределённости.
+
+Контекст ребёнка — снимок на момент запуска, а не общая непрерывно обновляемая память. Поэтому новые ограничения и решения передаются явно через parent/child handoff. Дочерние и вложенные session ID, созданные через `orchestra_dispatch`, привязываются к корневому запуску; `/orchestra-status` показывает общий runtime-state и агрегированную телеметрию этих сессий. Нативные editor/integrator учитываются в runtime по узлам плана, а их дочерняя телеметрия остаётся в сессиях OpenCode.
+
+`orchestration.parallelWorkers` — жёсткий общий предел одновременно исполняемых Orchestra-workers, а `orchestration.maxWorkers` — жёсткий предел уникальных worker-узлов во всём дереве, включая вложенных детей. Оба значения по умолчанию равны `8` и допускают диапазон `1..8`. `maxDelegationDepth` по умолчанию `2`: lead находится на глубине 0, его worker — 1, ребёнок worker-а — 2. Режимы `eco`, `balanced`, `quality` и `ebobo` меняют стоимость, модели и эскалацию, но не лимиты агентов. Ограничение числа агентов самого хоста OpenCode/Codex задаётся хостом отдельно и этим репозиторием не повышается.
+
+Для изменяемого внешнего ресурса (`browser:<session>`, workbook, dev-server и т. п.) TaskContract задаёт `exclusiveResources`: второй независимый узел ждёт освобождения владельцем. Для файловых правок включается `orchestration.parallelEditors`: каждый `orch-editor` получает непересекающийся ownership и отдельный experimental Git worktree. `orchestration_validate_commit` берёт base SHA и partitions из запечатанного плана, а не доверяет повторно переданным данным. `orch-integrator` запускается один раз, после чего lead обязан выполнить общую проверку; при конфликте или красных тестах завершение не объявляется, worktrees сохраняются для диагностики.
+
+В лимит 8 входят workers всех уровней, но не primary lead. Места для ещё не запущенных узлов плана зарезервированы: вложенный ребёнок не может израсходовать бюджет merger/judge. Новый завершённый цикл планирования получает новый бюджет; незавершённый запущенный план заменить нельзя. Эксклюзивные ресурсы координируются внутри одного корневого запуска, не между отдельными процессами хоста.
+
+Нативный `task` разрешён только для editor/integrator: `description` должен точно совпадать с запечатанным `nodeId`, `subagent_type` — с назначенным агентом; повторное использование `task_id` запрещено. Эти вызовы учитываются в общем лимите через plugin hooks. Интегратор не запускается до успешной проверки всех editor-коммитов. Итоговые тесты и проверка соблюдения внешних ресурсных договорённостей остаются обязанностью lead; runtime не перехватывает произвольные действия сторонних MCP-клиентов.
 
 ### `orch-judge` — арбитр для критических решений
 
@@ -370,7 +416,7 @@ Fallback-цепочка строится только из worker-пулов (`c
 /plugin-status
 ```
 
-`/orchestra <задача>` закреплена за `orch-lead`: команда сначала вызывает `orchestra_route`, затем lead сам выполняет возвращённый план без делегирования самому себе. Workers по умолчанию скрыты из `@`-автодополнения (`orchestration.exposeWorkers: false`), но доступны lead через Task tool и отображаются в локальном dashboard и `/orchestra-status`.
+`/orchestra <задача>` закреплена за `orch-lead`: команда сначала вызывает `orchestra_route`, затем lead выполняет запечатанный план, не вызывая самого себя. Workers по умолчанию скрыты из `@`-автодополнения (`orchestration.exposeWorkers: false`), но доступны через защищённый dispatcher и отображаются в локальном dashboard и `/orchestra-status`.
 
 `/orchestra-status` показывает статистику текущей Orchestra-сессии, а `/plugin-status` — версию загруженного плагина, бюджет, стратегию моделей и состояние companion MCP.
 

@@ -33,11 +33,20 @@
         "priority": 100,
         "capabilities": ["reasoning", "review"]
       }
-    ]
+    ],
+    // Optional ordered per-agent overrides. Without one, a compatible chain is derived from the pool.
+    "fallback": {
+      "enabled": true,
+      "maxRetries": 2,
+      "agents": {
+        "orch-repo": ["provider/backup-code-model", "provider/last-resort-code-model"]
+      }
+    }
   },
   "orchestration": {
-    "parallelWorkers": 3,
-    "maxWorkers": 5,
+    "parallelWorkers": 8,
+    "maxWorkers": 8,
+    "maxDelegationDepth": 2,
     "premiumEscalation": true,
     "maxPremiumCallsPerTask": 1,
     "confidenceThreshold": 0.72,

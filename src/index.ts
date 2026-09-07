@@ -22,10 +22,15 @@ import { calcCost } from "./pricing/cost.js"
 import { resolvePricingSync, type ResolverConfig } from "./pricing/resolver.js"
 import { detectMcpPresence, resolvePluginVersion, PACKAGE_NAME, type PluginStatus } from "./plugin-status.js"
 import { createGitWorktreeAdapter } from "./orchestration/worktree-adapter.js"
+import { OrchestrationRunState, type DispatchLease } from "./orchestration/run-state.js"
+import { releasePlanMode, type ReminderMessage } from "./routing/plan-reminder.js"
+import { LoopController } from "./loop/controller.js"
+import { loopPrompt, resolveLoopGoal } from "./loop/protocol.js"
 
 type MutableConfig = Omit<Config, "agent" | "command"> & {
   agent?: Record<string, RuntimeAgentConfig>
   command?: Record<string, { template: string; description?: string; agent?: string }>
+  subagent_depth?: number
 }
 
 function mergeAgent(base: RuntimeAgentConfig, override?: RuntimeAgentConfig): RuntimeAgentConfig {
@@ -153,6 +158,9 @@ const livePartKinds = new Map<string, string>()
 // resurrecting an active row that no finish will ever remove.
 const finishedLiveMessages = new Set<string>()
 const recoveryNotices = new Set<string>()
+// Sessions where the plan→build transition reminder was already logged, so a
+// long-lived plan conversation does not re-log the release on every turn.
+const planReleaseNotices = new Set<string>()
 
 const MCP_TOOL_PREFIXES: Array<[prefix: string, server: string]> = [
   ["codebase-memory-mcp_", "codebaseMemory"],
@@ -320,9 +328,30 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
   await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)
   const orchestra = applyDiscoveredModels(applyBudgetPreset(loaded.config), discovered)
+  const coordinator = new OrchestrationRunState({
+    maxWorkers: orchestra.orchestration.maxWorkers,
+    parallelWorkers: orchestra.orchestration.parallelWorkers,
+    maxDelegationDepth: orchestra.orchestration.maxDelegationDepth,
+  })
+  const nativeLeases = new Map<string, DispatchLease>()
   const autoAcceptLive = createLiveAutoAccept(directory, rawOptions)
   const prompts = await loadPrompts()
   const agents = createAgentSet(orchestra, prompts)
+  const loopInputs = new Set<string>()
+  const loopIdle = new Set<string>()
+  const loop = new LoopController({
+    enabled: orchestra.orchestration.loop.enabled,
+    maxIterations: orchestra.orchestration.loop.maxIterations,
+    maxMinutes: orchestra.orchestration.loop.maxMinutes,
+    noProgressLimit: orchestra.orchestration.loop.noProgressLimit,
+    verifyCommand: orchestra.orchestration.loop.verifyCommand,
+    prompt: async (sessionID, text) => {
+      loopInputs.add(sessionID)
+      loopIdle.delete(sessionID)
+      await client.session.promptAsync({ path: { id: sessionID }, query: { directory }, body: { agent: "orch-lead", parts: [{ type: "text", text }] }, throwOnError: true })
+    },
+    log: (message) => { void client.app.log({ body: { service: "opencode-orchestra", level: "warn", message } }).catch(() => undefined) },
+  })
   const pools: ModelCandidateInput[][] = [
     orchestra.models.lead,
     ...Object.values(orchestra.models.worker),
@@ -372,7 +401,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     const durationMs = timing?.start !== undefined && timing.end !== undefined
       ? Math.max(0, timing.end - timing.start)
       : Math.max(0, Date.now() - active.startedAt)
-    await ledger.recordMcpCall(active.sessionID, {
+    await ledger.recordMcpCall(coordinator.rootSessionID(active.sessionID), {
       server: active.server,
       tool: active.tool,
       durationMs,
@@ -475,6 +504,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
   return {
     config: async (input) => {
       const mutable = input as unknown as MutableConfig
+      mutable.subagent_depth ??= orchestra.orchestration.maxDelegationDepth
       mutable.agent ??= {}
       for (const [name, agent] of Object.entries(agents)) {
         const merged = mergeAgent(agent, mutable.agent[name])
@@ -498,20 +528,44 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       mutable.command.orchestra ??= {
         description: "Classify a task and execute it through orch-lead",
         agent: "orch-lead",
-        template: "Call orchestra_route for this task: $ARGUMENTS. Then execute the returned plan yourself as orch-lead. For safe parallel implementation, call orchestration_prepare_edit_plan with explicit ownership, run each orch-editor in its own experimental git workspace, validate every commit with orchestration_validate_commit, then call orch-integrator once. Otherwise implement directly. Always verify the result.",
+        template: "Call orchestra_route for this task: $ARGUMENTS. Execute only ready sealed nodes through orchestra_dispatch, passing each nodeId and unchanged TaskContract. For parallel implementation, call orchestration_prepare_edit_plan with baseSha plus non-overlapping file/resource ownership, run each orch-editor in its isolated workspace, validate each commit from the sealed plan, then call orch-integrator once. Always run aggregate verification before completion.",
       }
+      mutable.command.loop ??= {
+        description: "Drive one goal to completion through bounded orch-lead iterations",
+        agent: "orch-lead",
+        template: "$ARGUMENTS",
+      }
+    },
+    "command.execute.before": async (input, output) => {
+      if (input.command !== "loop") return
+      const argument = input.arguments.trim()
+      if (argument === "stop") { loopInputs.delete(input.sessionID); loop.stop(input.sessionID); throw new Error("Loop stopped. No further iterations will be submitted; use OpenCode interrupt to abort any current turn.") }
+      if (argument === "status") {
+        const state = loop.get(input.sessionID)
+        throw new Error(state ? `Loop ${state.status}; iteration ${state.iteration}; ${state.reason}` : "No loop in this session.")
+      }
+      const goal = resolveLoopGoal(argument)
+      if (!output.parts.some((part) => part.type === "text")) throw new Error("Loop command has no text part; activation refused.")
+      loop.start(input.sessionID, goal)
+      loopIdle.delete(input.sessionID)
+      loopInputs.add(input.sessionID)
+      for (const part of output.parts) if (part.type === "text") part.text = loopPrompt(goal)
     },
     tool: createOrchestraTools(orchestra, ledger, pluginStatus, {
       get snapshot() { return priceRefresher.snapshot },
       ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
       ...(openRouter ? { openRouter } : {}),
-    }),
+    }, { client, agents, directory, coordinator }),
     // Always registered: the handler consults the live toggle so the dashboard
     // auto-accept switch takes effect without restarting opencode.
     "permission.ask": async (_input, output) => {
+      loop.stop(_input.sessionID, "paused", "Permission request requires user attention")
       if (autoAcceptLive() && output.status !== "deny") output.status = "allow"
     },
     dispose: async () => {
+      loop.dispose()
+      loopInputs.clear()
+      loopIdle.clear()
       priceRefresher.stop()
       await live.dispose()
       promptBuffers.clear()
@@ -523,9 +577,12 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       livePartKinds.clear()
       finishedLiveMessages.clear()
       recoveryNotices.clear()
+      planReleaseNotices.clear()
       mcpCalls.clear()
       completedMcpCalls.clear()
       pendingMcpFailures.clear()
+      coordinator.dispose()
+      nativeLeases.clear()
       sessionAgent.clear()
       sessionModel.clear()
       streamObservers.clear()
@@ -533,6 +590,8 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     },
     "chat.message": async ({ sessionID, agent, model }, output) => {
       if (!sessionID) return
+      if (loopInputs.delete(sessionID)) loop.bind(sessionID, output.message.id)
+      else loop.stop(sessionID, "cancelled", "New user message interrupted the loop")
       if (agent) sessionAgent.set(sessionID, agent)
       if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: model.modelID ?? (model as { id?: string }).id ?? "" })
       if (!storeTextsFlag) return
@@ -553,24 +612,67 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (agent) sessionAgent.set(sessionID, agent)
       if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: (model as { modelID?: string }).modelID ?? model.id })
     },
-    "tool.execute.before": async ({ tool, sessionID, callID }) => {
+    // OpenCode's built-in plan agent persists a read-only system-reminder into
+    // the conversation and only counter-injects the plan→build transition for
+    // the built-in "build" agent. Without this, orch-lead inherits the stale
+    // "Plan mode ACTIVE" constraint after a Plan→orch-lead switch and refuses
+    // to implement. Mutating output.messages in place is the documented
+    // contract for this hook; OpenCode converts the mutated array to model
+    // messages immediately after the hook returns.
+    "experimental.chat.messages.transform": async (_input, output) => {
+      if (!releasePlanMode(output.messages as ReminderMessage[])) return
+      const sessionID = output.messages.findLast((message) => message.info.role === "user")?.info.sessionID
+      if (sessionID && !planReleaseNotices.has(sessionID)) {
+        planReleaseNotices.add(sessionID)
+        await client.app.log({
+          body: {
+            service: "opencode-orchestra",
+            level: "info",
+            message: "Orchestra released stale plan-mode state for orch-lead",
+            extra: { sessionID },
+          },
+        }).catch(() => undefined)
+      }
+    },
+    "tool.execute.before": async ({ tool, sessionID, callID }, output) => {
+      if (tool === "question") loop.stop(sessionID, "paused", "Question requires user attention")
+      if (tool === "task" && (output?.args?.subagent_type?.startsWith("orch-") || sessionAgent.get(sessionID)?.startsWith("orch-") || coordinator.snapshot(sessionID))) {
+        const args = output?.args
+        const node = typeof args?.description === "string" ? coordinator.sealedNode(sessionID, args.description) : undefined
+        if (coordinator.sessionContext(sessionID) || !node || !["orch-editor", "orch-integrator"].includes(node.agent)
+          || args?.subagent_type !== node.agent || args?.task_id) {
+          throw new Error("Orchestra native task requires a sealed editor/integrator nodeId as description, the assigned subagent_type, and a fresh task. Use orchestra_dispatch for evidence.")
+        }
+        const result = await coordinator.acquire({ parentSessionID: sessionID, nodeId: node.id, agent: node.agent, task: node.contract.objective, contract: node.contract })
+        if (!result.ok) throw new Error(result.error)
+        nativeLeases.set(callID, result.lease)
+        args.prompt = `Sealed TaskContract (do not widen):\n${JSON.stringify(node.contract)}\nValidated editor commits: ${JSON.stringify(coordinator.validatedCommits(sessionID))}\n\n${args.prompt ?? ""}`
+        if (node.agent === "orch-integrator") args.prompt += "\nUse one git cherry-pick invocation for the complete ordered commit list. On conflict run git cherry-pick --abort and report any rollback failure. Never cherry-pick commits in separate transactions."
+      }
       const server = mcpServerForTool(tool)
       if (!server) return
       const failureKey = `${sessionID}:${tool}`
       mcpCalls.set(callID, { sessionID, tool, server, startedAt: Date.now(), retry: pendingMcpFailures.has(failureKey) })
     },
     "tool.execute.after": async ({ callID }, output) => {
+      const lease = nativeLeases.get(callID)
+      if (lease) {
+        coordinator.complete(lease, true)
+        nativeLeases.delete(callID)
+      }
       await recordMcpCompletion(callID, true, output.output.length)
     },
     event: async ({ event }) => {
       const eventRecord = event as unknown as { type?: string; properties?: { sessionID?: string; error?: unknown } }
       if (eventRecord.type === "session.error" || eventRecord.type === "session.idle") {
         const sessionID = eventRecord.properties?.sessionID
+        if (sessionID && eventRecord.type === "session.idle" && loop.get(sessionID)) { loopIdle.add(sessionID); setTimeout(() => { void loop.tick(sessionID) }, 0) }
+        if (sessionID && eventRecord.type === "session.error") { loopInputs.delete(sessionID); loop.stop(sessionID, "failed", "Session error or cancellation") }
         // The session can no longer be mid-generation: finalize any live rows
         // whose completing message.updated never arrived (abort / pre-token
         // error), or they linger as phantom agents on the live panel.
         if (sessionID) live.dropSession(sessionID, eventRecord.type.replace("session.", "session-"))
-        if (sessionID && !recoveryNotices.has(`${sessionID}:${eventRecord.type}`)) {
+        if (sessionID && !loop.get(sessionID) && !recoveryNotices.has(`${sessionID}:${eventRecord.type}`)) {
           recoveryNotices.add(`${sessionID}:${eventRecord.type}`)
           await client.app.log({ body: {
             service: "opencode-orchestra",
@@ -586,6 +688,11 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (event.type === "message.part.updated") {
         const part = event.properties.part
         if (part.type === "tool" && part.state.status === "error") {
+          const lease = nativeLeases.get(part.callID)
+          if (lease) {
+            coordinator.complete(lease, false, "Native worker task failed.")
+            nativeLeases.delete(part.callID)
+          }
           await recordMcpCompletion(part.callID, false, 0, part.state.time)
         }
         const delta = event.properties.delta ?? ""
@@ -635,6 +742,18 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (event.type !== "message.updated") return
       const info = event.properties.info
       if (info.role !== "assistant") return
+      if (info.time.completed !== undefined && info.finish === "stop" && !info.error && loop.get(info.sessionID)?.status === "running") {
+        // Read the finalized assistant message, never user/telemetry text.
+        const parentID = info.parentID
+        const state = loop.get(info.sessionID)
+        void client.session.message({ path: { id: info.sessionID, messageID: info.id }, query: { directory }, throwOnError: true }).then((result) => {
+          if (loop.get(info.sessionID) !== state || state?.status !== "running" || result.data?.info.role !== "assistant") return
+          const text = result.data.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+          loop.reply(info.sessionID, parentID, info.id, text)
+          // Submission is deferred beyond the completing event callback.
+          if (loopIdle.has(info.sessionID)) setTimeout(() => { void loop.tick(info.sessionID) }, 0)
+        }).catch(() => { if (loop.get(info.sessionID) === state) loop.stop(info.sessionID, "failed", "Unable to read finalized assistant reply") })
+      }
       // If a turn emits no assistant-only part (e.g. some non-streaming path),
       // start the live row from the still-running assistant message instead.
       const finished =
@@ -678,7 +797,8 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         if (oldest === undefined) break
         finishedLiveMessages.delete(oldest)
       }
-      await ledger.recordAssistant(info)
+      const ledgerSessionID = coordinator.rootSessionID(info.sessionID)
+      await ledger.recordAssistant({ ...info, sessionID: ledgerSessionID })
       if (storeTextsFlag) {
         const prompt = promptBuffers.get(info.sessionID)
         const reply = replyBuffers.get(info.id)
@@ -688,7 +808,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
           const text: { prompt?: string; reply?: string } = {}
           if (prompt !== undefined) text.prompt = prompt
           if (reply !== undefined) text.reply = reply
-          await ledger.recordText(info.sessionID, info.id, text)
+          await ledger.recordText(ledgerSessionID, info.id, text)
         }
       }
     },

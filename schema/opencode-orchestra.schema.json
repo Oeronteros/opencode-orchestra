@@ -35,9 +35,19 @@
           "additionalProperties": false,
           "properties": {
             "enabled": { "type": "boolean", "default": true },
-            "maxRetries": { "type": "integer", "minimum": 0, "maximum": 5, "default": 2 }
+            "maxRetries": { "type": "integer", "minimum": 0, "maximum": 5, "default": 2 },
+            "agents": {
+              "type": "object",
+              "default": {},
+              "additionalProperties": {
+                "type": "array",
+                "maxItems": 5,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[^/]+/.+$" }
+              }
+            }
           },
-          "default": { "enabled": true, "maxRetries": 2 }
+          "default": { "enabled": true, "maxRetries": 2, "agents": {} }
         }
       }
     },
@@ -45,10 +55,21 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "parallelWorkers": { "type": "integer", "minimum": 1, "maximum": 8, "default": 3 },
+        "parallelWorkers": { "type": "integer", "minimum": 1, "maximum": 8, "default": 8 },
+        "loop": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "maxIterations": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 },
+            "maxMinutes": { "type": "number", "minimum": 1, "maximum": 1440, "default": 30 },
+            "noProgressLimit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 3 },
+            "verifyCommand": { "type": "string", "default": "", "description": "Nonempty values fail closed: runtime shell verification is unsupported." }
+          }
+        },
         "parallelEditors": { "type": "integer", "minimum": 0, "maximum": 8, "default": 0 },
         "worktreeRoot": { "type": "string", "minLength": 1 },
-        "maxWorkers": { "type": "integer", "minimum": 1, "maximum": 12, "default": 5 },
+        "maxWorkers": { "type": "integer", "minimum": 1, "maximum": 8, "default": 8 },
+        "maxDelegationDepth": { "type": "integer", "minimum": 1, "maximum": 4, "default": 2 },
         "premiumEscalation": { "type": "boolean", "default": true },
         "maxPremiumCallsPerTask": { "type": "integer", "minimum": 0, "maximum": 24, "default": 1 },
         "confidenceThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.72 },

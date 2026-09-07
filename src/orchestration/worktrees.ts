@@ -13,6 +13,14 @@ export async function createEditorWorktree(git: GitRunner, repo: string, taskId:
 
 export async function assertCommitDescendsFromBase(git: GitRunner, repo: string, baseSha: string, commitSha: string): Promise<void> { const result = await git.run(["merge-base", "--is-ancestor", baseSha, commitSha], repo); if (result.exitCode !== 0) throw new Error("commit is not descended from base: " + commitSha) }
 
-export async function integrateValidatedCommits(git: GitRunner, repo: string, commits: string[]): Promise<void> { for (const commit of commits) { const result = await git.run(["cherry-pick", commit], repo); if (result.exitCode !== 0) { await git.run(["cherry-pick", "--abort"], repo); throw new Error("cherry-pick conflict for " + commit + ": " + result.stderr) } } }
+export async function integrateValidatedCommits(git: GitRunner, repo: string, commits: string[]): Promise<void> {
+  if (commits.length === 0) return
+  // A single sequencer lets abort restore HEAD even if a later commit conflicts.
+  const result = await git.run(["cherry-pick", ...commits], repo)
+  if (result.exitCode !== 0) {
+    const rollback = await git.run(["cherry-pick", "--abort"], repo)
+    throw new Error("cherry-pick conflict: " + result.stderr + (rollback.exitCode !== 0 ? "; abort failed: " + rollback.stderr : ""))
+  }
+}
 
 export async function collectCommitChanges(git: GitRunner, repo: string, baseSha: string, commitSha: string): Promise<ChangedPath[]> { const result = await git.run(["diff", "--name-status", "-z", "--find-renames", baseSha + "..." + commitSha], repo); if (result.exitCode !== 0) throw new Error(result.stderr || "git diff failed"); return parseNameStatusZ(result.stdout) }

@@ -21,6 +21,10 @@ const READ_ONLY: RuntimeAgentConfig["permission"] = {
   "codebase-memory_*": "allow",
   "codebase_memory_*": "allow",
   "codebase-memory-mcp_*": "allow",
+  // Evidence workers may create a single guarded child when their sealed
+  // TaskContract permits it. Native task remains denied so every nested call
+  // passes through Orchestra's depth, ancestry, and worker-limit checks.
+  orchestra_dispatch: "allow",
   task: "deny",
   external_directory: "ask",
 }
@@ -28,7 +32,7 @@ const READ_ONLY: RuntimeAgentConfig["permission"] = {
 const WORKERS: Record<string, WorkerSpec> = {
   "orch-repo": {
     description: "Internal read-only repository scout for focused codebase evidence, ownership, patterns, and change impact.",
-    prompt: "Inspect the repository for the exact question. Start with Codebase Memory graph tools for structural discovery, then verify decisive claims against exact source. Return compact evidence with file paths, symbols, coverage, and uncertainties. Do not edit files or delegate.",
+    prompt: "Inspect the repository for the exact question. Start with Codebase Memory graph tools for structural discovery, then verify decisive claims against exact source. Return compact evidence with file paths, symbols, coverage, and uncertainties. Do not edit files. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "code",
     capability: "code",
     permission: {
@@ -40,14 +44,14 @@ const WORKERS: Record<string, WorkerSpec> = {
   },
   "orch-docs": {
     description: "Internal official-documentation and dependency-source scout.",
-    prompt: "Research official documentation and upstream source. Prefer primary sources, cite direct URLs, distinguish facts from inference, and do not edit or delegate.",
+    prompt: "Research official documentation and upstream source. Prefer primary sources, cite direct URLs, and distinguish facts from inference. Do not edit files. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "research",
     capability: "research",
     permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow", "context7_*": "allow" },
   },
   "orch-tests": {
     description: "Internal test scout that finds reproduction paths, coverage gaps, and safe verification commands.",
-    prompt: "Inspect tests and reproduction paths. Use Codebase Memory to find impacted callers, callees, and test surfaces before targeted source checks. You may run read-only or test commands, but never edit. Return the smallest useful regression-test recommendation.",
+    prompt: "Inspect tests and reproduction paths. Use Codebase Memory to find impacted callers, callees, and test surfaces before targeted source checks. You may run read-only or test commands, but never edit. Return the smallest useful regression-test recommendation. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "code",
     capability: "code",
     permission: {
@@ -58,28 +62,28 @@ const WORKERS: Record<string, WorkerSpec> = {
   },
   "orch-research": {
     description: "Internal technical researcher for implementations, standards, and current ecosystem evidence.",
-    prompt: "Find high-signal technical references. Prefer official docs, standards, and source code. Return evidence and decision implications; do not edit or delegate.",
+    prompt: "Find high-signal technical references. Prefer official docs, standards, and source code. Return evidence and decision implications; do not edit files. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "research",
     capability: "research",
     permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow", "context7_*": "allow" },
   },
   "orch-critic": {
     description: "Internal independent critic that challenges conclusions and detects missing evidence or unsafe assumptions.",
-    prompt: "Independently critique the proposed conclusion. Identify contradictions, missing evidence, hidden assumptions, and the strongest alternative. Do not edit or delegate.",
+    prompt: "Independently critique the proposed conclusion. Identify contradictions, missing evidence, hidden assumptions, and the strongest alternative. Do not edit files. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "reasoning",
     capability: "review",
     permission: READ_ONLY,
   },
   "orch-security": {
     description: "Internal security scout for concrete trust-boundary, authorization, secret, and data-handling risks.",
-    prompt: "Perform a focused security analysis. Report only evidence-backed attack paths with impact, likelihood, and mitigation. Do not edit or delegate.",
+    prompt: "Perform a focused security analysis. Report only evidence-backed attack paths with impact, likelihood, and mitigation. Do not edit files. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "reasoning",
     capability: "security",
     permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow", "playwright_*": "allow" },
   },
   "orch-visual-reference": {
     description: "Internal visual-reference scout for UI patterns, layout, motion, and interaction examples.",
-    prompt: "Collect relevant visual references and explain which concrete layout, hierarchy, motion, and interaction ideas transfer to this product. Do not edit or delegate.",
+    prompt: "Collect relevant visual references and explain which concrete layout, hierarchy, motion, and interaction ideas transfer to this product. Do not edit files. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "vision",
     capability: "vision",
     permission: { ...READ_ONLY, webfetch: "allow", websearch: "allow", "playwright_*": "allow" },
@@ -93,7 +97,7 @@ const WORKERS: Record<string, WorkerSpec> = {
   },
   "orch-visual-review": {
     description: "Internal vision reviewer for screenshots, mockups, hierarchy, accessibility, and visual regressions.",
-    prompt: "Review the provided visual material against the task. Report observable issues, severity, and precise recommendations. Do not edit or delegate.",
+    prompt: "Review the provided visual material against the task. Report observable issues, severity, and precise recommendations. Do not edit files. Delegate only through orchestra_dispatch when the sealed TaskContract explicitly allows it, to at most one child, and never to yourself or an ancestor; pass a narrow child contract and return its decisions, assumptions, and blockers with provenance.",
     pool: "vision",
     capability: "vision",
     permission: { ...READ_ONLY, "playwright_*": "allow" },

@@ -53,6 +53,11 @@ export const modelCandidateSchema = z.union([
 
 const poolSchema = z.array(modelCandidateSchema).default([])
 
+const fallbackChainSchema = z
+  .array(modelIdSchema)
+  .max(5)
+  .refine((models) => new Set(models).size === models.length, "Fallback models must be unique")
+
 export const orchestraConfigSchema = z.object({
   $schema: z.string().optional(),
   budget: budgetModeSchema.default("balanced"),
@@ -78,8 +83,10 @@ export const orchestraConfigSchema = z.object({
           enabled: z.boolean().default(true),
           /** Maximum model switches per single request. */
           maxRetries: z.number().int().min(0).max(5).default(2),
+          /** Optional user-ordered fallback models for individual Orchestra agents. */
+          agents: z.record(z.string(), fallbackChainSchema).default({}),
         })
-        .default({ enabled: true, maxRetries: 2 }),
+        .default({ enabled: true, maxRetries: 2, agents: {} }),
     })
     .default({
       strategy: "auto",
@@ -87,32 +94,43 @@ export const orchestraConfigSchema = z.object({
       lead: [],
       worker: { code: [], reasoning: [], research: [], vision: [], image: [] },
       judge: [],
-      fallback: { enabled: true, maxRetries: 2 },
+      fallback: { enabled: true, maxRetries: 2, agents: {} },
     }),
   orchestration: z
     .object({
-      parallelWorkers: z.number().int().min(1).max(8).default(3),
+      parallelWorkers: z.number().int().min(1).max(8).default(8),
       /** Maximum isolated editor workers; 0 disables editor execution. */
       parallelEditors: z.number().int().min(0).max(8).default(0),
       /** Repository-relative or absolute root for experimental git worktrees. */
       worktreeRoot: z.string().min(1).optional(),
-      maxWorkers: z.number().int().min(1).max(12).default(5),
+      maxWorkers: z.number().int().min(1).max(8).default(8),
+      /** Maximum number of delegation levels in one Orchestra task tree. */
+      maxDelegationDepth: z.number().int().min(1).max(4).default(2),
       premiumEscalation: z.boolean().default(true),
       maxPremiumCallsPerTask: z.number().int().min(0).max(24).default(1),
       confidenceThreshold: z.number().min(0).max(1).default(0.72),
       exposeWorkers: z.boolean().default(false),
       profiles: z.partialRecord(profileNameSchema, z.boolean()).default({}),
+      loop: z.object({
+        enabled: z.boolean().default(false),
+        maxIterations: z.number().int().min(1).max(100).default(10),
+        maxMinutes: z.number().min(1).max(24 * 60).default(30),
+        verifyCommand: z.string().default(""),
+        noProgressLimit: z.number().int().min(1).max(20).default(3),
+      }).default({ enabled: false, maxIterations: 10, maxMinutes: 30, verifyCommand: "", noProgressLimit: 3 }),
     })
     .default({
-      parallelWorkers: 3,
+      parallelWorkers: 8,
       parallelEditors: 0,
       worktreeRoot: undefined,
-      maxWorkers: 5,
+      maxWorkers: 8,
+      maxDelegationDepth: 2,
       premiumEscalation: true,
       maxPremiumCallsPerTask: 1,
       confidenceThreshold: 0.72,
       exposeWorkers: false,
       profiles: {},
+      loop: { enabled: false, maxIterations: 10, maxMinutes: 30, verifyCommand: "", noProgressLimit: 3 },
     }),
   permissions: z
     .object({

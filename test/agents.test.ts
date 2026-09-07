@@ -26,18 +26,18 @@ test("builds a selectable primary lead and hidden workers", () => {
   assert.equal(agents["orch-repo"]?.permission.task, "deny")
 })
 
-test("lead can invoke Orchestra workers but workers cannot delegate", () => {
+test("evidence workers delegate only through the guarded dispatcher", () => {
   const config = orchestraConfigSchema.parse({})
   const agents = createAgentSet(config, prompts)
   const taskPermission = agents["orch-lead"]?.permission.task
 
   assert.equal(typeof taskPermission, "object")
   assert.equal((taskPermission as Record<string, string>)["*"], "deny")
-  assert.equal((taskPermission as Record<string, string>)["orch-repo"], "allow")
-  assert.equal((taskPermission as Record<string, string>)["orch-merge"], "allow")
+  assert.equal((taskPermission as Record<string, string>)["orch-repo"], "deny")
+  assert.equal((taskPermission as Record<string, string>)["orch-merge"], "deny")
   assert.equal((taskPermission as Record<string, string>)["orch-editor"], "allow")
   assert.equal((taskPermission as Record<string, string>)["orch-integrator"], "allow")
-  assert.equal((taskPermission as Record<string, string>)["orch-judge"], "allow")
+  assert.equal((taskPermission as Record<string, string>)["orch-judge"], "deny")
   assert.equal(agents["orch-lead"]?.permission.edit, "allow")
   assert.equal(typeof agents["orch-lead"]?.permission.bash, "object")
   assert.equal((agents["orch-lead"]?.permission.bash as Record<string, string>)["git reset --hard*"], "deny")
@@ -54,6 +54,14 @@ test("lead can invoke Orchestra workers but workers cannot delegate", () => {
   assert.equal(agents["orch-repo"]?.permission.git_git_log, "allow")
   assert.equal(agents["orch-repo"]?.permission.git_git_commit, undefined)
   assert.equal(agents["orch-repo"]?.permission.bash, undefined)
+  assert.equal(agents["orch-repo"]?.permission.task, "deny")
+  assert.equal(agents["orch-repo"]?.permission.orchestra_dispatch, "allow")
+  assert.equal(agents["orch-tests"]?.permission.orchestra_dispatch, "allow")
+  assert.equal(agents["orch-visual-generate"]?.permission.orchestra_dispatch, undefined)
+  assert.equal(agents["orch-editor"]?.permission.orchestra_dispatch, undefined)
+  assert.equal(agents["orch-integrator"]?.permission.orchestra_dispatch, undefined)
+  assert.equal(agents["orch-merge"]?.permission.orchestra_dispatch, undefined)
+  assert.equal(agents["orch-judge"]?.permission.orchestra_dispatch, undefined)
   assert.equal(agents["orch-editor"]?.permission["ast-grep_*"], "allow")
   assert.equal(agents["orch-editor"]?.permission["ast_grep_*"], "allow")
   assert.equal(agents["orch-integrator"]?.permission["git_*"], undefined)
@@ -143,7 +151,8 @@ test("loads external specialist prompts and safely falls back for missing names"
   assert.match(loaded.security ?? "", /Attack path/)
   assert.match(loaded.merge ?? "", /orchestration_report/)
   assert.match(loaded.editor ?? "", /ownership partition/)
-  assert.match(loaded.missing ?? "", /internal specialist agent/)
+  assert.match(loaded.missing ?? "", /internal read-only specialist/)
+  assert.match(loaded.missing ?? "", /orchestra_dispatch/)
 })
 
 test("agent constructions use external contracts without changing names or permissions", async () => {

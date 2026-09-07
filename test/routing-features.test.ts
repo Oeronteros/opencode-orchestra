@@ -5,6 +5,7 @@ import { createBudgetGuard, paidBudgetFor } from "../src/routing/budget-guard.js
 import { createStreamObserver, scoreFinalText } from "../src/routing/observer.js"
 import { createClassifierCache, fingerprint as cacheFingerprint } from "../src/routing/classifier-cache.js"
 import type { Classification } from "../src/routing/classifier.js"
+import { PROFILE_CATALOG } from "../src/profiles/catalog.js"
 
 test("planner builds a dependency-aware DAG with a synthesis level", () => {
   const plan = planTask("security", [], { maxNodes: 6, dependencyAware: true })
@@ -18,6 +19,9 @@ test("planner builds a dependency-aware DAG with a synthesis level", () => {
   assert.equal(plan.nodes.at(-1)?.worker, "orch-merge")
   assert.deepEqual(plan.levels.at(-1), [plan.mergerNodeId])
   assert.ok(plan.nodes.at(-1)?.dependsOn.length)
+  assert.ok(plan.nodes.every((node) => node.contract.objective && node.contract.deliverable && node.contract.acceptanceCriteria.length > 0))
+  assert.ok(plan.nodes.filter((node) => node.role === "specialist" || node.role === "reviewer").every((node) => node.contract.delegation.allowed && node.contract.delegation.maxChildren === 1))
+  assert.deepEqual(plan.nodes.at(-1)?.contract.delegation, { allowed: false, maxChildren: 0 })
 
   const ids = new Set(plan.nodes.map((n) => n.id))
   assert.equal(ids.size, plan.nodes.length)
@@ -34,6 +38,12 @@ test("planner flattens to a single level in greedy mode", () => {
 test("planner respects the maxNodes cap", () => {
   const plan = planTask("research", ["review", "security", "ops"], { maxNodes: 3 })
   assert.ok(plan.nodes.length <= 3)
+})
+
+test("planner uses the profile catalog as its complete worker roster", () => {
+  const plan = planTask("architecture", [], { maxNodes: 12 })
+  const plannedWorkers = plan.nodes.filter((node) => node.role !== "merger").map((node) => node.worker).sort()
+  assert.deepEqual(plannedWorkers, [...PROFILE_CATALOG.architecture.workers].sort())
 })
 
 test("budget guard terminates a branch once paid allowance is burned", () => {
@@ -126,13 +136,31 @@ test("fingerprints fold case and punctuation", () => {
 
 test("planner adds isolated editor wave and deterministic integrator", () => {
   const plan = planTask("architecture", [], { maxNodes: 8, editorPartitions: [
-    { id: "edit-api", description: "Implement API", ownership: ["src/api"] },
+    {
+      id: "edit-api",
+      description: "Implement API",
+      ownership: ["src/api"],
+      inputs: ["API design"],
+      acceptanceCriteria: ["API tests pass"],
+      exclusiveResources: ["api-test-database"],
+      delegationMaxChildren: 1,
+    },
     { id: "edit-ui", description: "Implement UI", ownership: ["src/ui"] },
   ] })
   assert.deepEqual(plan.levels.at(-2), ["edit-api", "edit-ui"])
   assert.equal(plan.nodes.find((node) => node.id === "edit-api")?.role, "editor")
+  assert.deepEqual(plan.nodes.find((node) => node.id === "edit-api")?.contract, {
+    objective: "Implement API",
+    inputs: ["API design"],
+    deliverable: "A committed implementation limited to the assigned ownership partition, with scoped verification evidence.",
+    acceptanceCriteria: ["API tests pass"],
+    allowedPaths: ["src/api"],
+    exclusiveResources: ["api-test-database"],
+    delegation: { allowed: true, maxChildren: 1 },
+  })
   assert.deepEqual(plan.nodes.at(-1)?.dependsOn, ["edit-api", "edit-ui"])
   assert.equal(plan.nodes.at(-1)?.role, "integrator")
+  assert.deepEqual(plan.nodes.at(-1)?.contract.delegation, { allowed: false, maxChildren: 0 })
   assert.deepEqual(validatePlan(plan), [])
 })
 
@@ -142,4 +170,38 @@ test("planner rejects overlapping editor ownership", () => {
     { id: "b", description: "B", ownership: ["src/api"] },
   ] })
   assert.ok(validatePlan(plan).some((problem) => problem.includes("ownership overlap")))
+})
+
+test("planner validates contract content, editor scope, and delegation bounds", () => {
+  const plan = planTask("architecture", [], { maxNodes: 8, editorPartitions: [
+    { id: "edit-api", description: "Implement API", ownership: ["src/api"] },
+  ] })
+  const specialist = plan.nodes.find((node) => node.role === "specialist")!
+  const editor = plan.nodes.find((node) => node.role === "editor")!
+  specialist.contract.objective = " "
+  specialist.contract.deliverable = ""
+  specialist.contract.acceptanceCriteria = []
+  specialist.contract.delegation.maxChildren = -1
+  editor.contract.allowedPaths = ["src/other"]
+
+  const problems = validatePlan(plan)
+  assert.ok(problems.some((problem) => problem.includes("empty contract objective")))
+  assert.ok(problems.some((problem) => problem.includes("empty contract deliverable")))
+  assert.ok(problems.some((problem) => problem.includes("empty contract acceptance criteria")))
+  assert.ok(problems.some((problem) => problem.includes("negative delegation maxChildren")))
+  assert.ok(problems.some((problem) => problem.includes("ownership does not match contract allowedPaths")))
+})
+
+test("planner rejects shared exclusive resources only for independent nodes", () => {
+  const independent = planTask("debug", [], { maxNodes: 4, dependencyAware: false, includeMerger: false })
+  independent.nodes[0]!.contract.exclusiveResources = ["shared-browser"]
+  independent.nodes[1]!.contract.exclusiveResources = ["shared-browser"]
+  assert.ok(validatePlan(independent).some((problem) => problem.includes("share exclusive resource shared-browser")))
+
+  const dependent = planTask("security", [], { maxNodes: 6, dependencyAware: true })
+  const specialist = dependent.nodes.find((node) => node.role === "specialist")!
+  const merger = dependent.nodes.find((node) => node.role === "merger")!
+  specialist.contract.exclusiveResources = ["shared-browser"]
+  merger.contract.exclusiveResources = ["shared-browser"]
+  assert.equal(validatePlan(dependent).some((problem) => problem.includes("share exclusive resource shared-browser")), false)
 })

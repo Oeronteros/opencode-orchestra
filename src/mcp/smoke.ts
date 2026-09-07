@@ -90,6 +90,11 @@ export async function smokeMcp(options: McpSmokeOptions): Promise<McpSmokeResult
       hardStop.unref?.()
     }
 
+    // When a server exits immediately, writing to its stdin surfaces an
+    // async EPIPE. Swallow it here: the exit handler below reports the
+    // crash with the captured stderr instead of surfacing a raw stream error.
+    child.stdin.on("error", () => undefined)
+
     const send = (message: Record<string, unknown>) => {
       child.stdin.write(`${JSON.stringify(message)}\n`)
     }

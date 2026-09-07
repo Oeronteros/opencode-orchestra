@@ -8,6 +8,9 @@ import {
   nextAfterFailure,
 } from "../src/routing/fallback.js"
 import { resolveModel } from "../src/routing/model-resolver.js"
+import { orchestraConfigSchema } from "../src/config/schema.js"
+import { fallbackModelsForAgent } from "../src/routing/agent-fallback.js"
+import { dispatchWithFallback } from "../src/routing/fallback-dispatch.js"
 
 const pool: ModelCandidateInput[] = [
   { id: "vendor/paid", cost: "paid", tier: "frontier", priority: 80, capabilities: ["code"], scores: { code: 10 }, priceInput: 3, priceOutput: 15 },
@@ -198,3 +201,51 @@ test("a fully incompatible pool yields no fallback chain", () => {
   const chain = buildFallbackChain(visionPool, "vision", "ebobo", true)
   assert.equal(chain, undefined)
 });
+
+test("manual per-agent fallback order wins and is bounded by maxRetries", () => {
+  const config = orchestraConfigSchema.parse({
+    models: {
+      agents: { "orch-repo": "vendor/primary" },
+      fallback: {
+        enabled: true,
+        maxRetries: 2,
+        agents: { "orch-repo": ["vendor/second", "vendor/third", "vendor/fourth"] },
+      },
+      worker: { code: ["vendor/automatic"] },
+    },
+  })
+  assert.deepEqual(fallbackModelsForAgent(config, "orch-repo"), ["vendor/primary", "vendor/second", "vendor/third"])
+})
+
+test("per-agent fallback removes a duplicate primary", () => {
+  const config = orchestraConfigSchema.parse({
+    models: {
+      agents: { "orch-repo": "vendor/primary" },
+      fallback: { agents: { "orch-repo": ["vendor/primary", "vendor/second"] } },
+    },
+  })
+  assert.deepEqual(fallbackModelsForAgent(config, "orch-repo"), ["vendor/primary", "vendor/second"])
+})
+
+test("dispatchWithFallback switches after retryable failures", async () => {
+  const called: string[] = []
+  const result = await dispatchWithFallback(["vendor/first", "vendor/second"], async (model) => {
+    called.push(model)
+    if (model === "vendor/first") throw Object.assign(new Error("overloaded"), { status: 503 })
+    return "done"
+  })
+  assert.equal(result.ok, true)
+  assert.deepEqual(called, ["vendor/first", "vendor/second"])
+  assert.equal(result.ok && result.model, "vendor/second")
+})
+
+test("dispatchWithFallback stops on terminal failures", async () => {
+  const called: string[] = []
+  const result = await dispatchWithFallback(["vendor/first", "vendor/second"], async (model) => {
+    called.push(model)
+    throw Object.assign(new Error("unauthorized"), { status: 401 })
+  })
+  assert.equal(result.ok, false)
+  assert.deepEqual(called, ["vendor/first"])
+  assert.equal(!result.ok && result.errorKind, "auth")
+})

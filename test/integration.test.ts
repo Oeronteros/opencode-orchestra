@@ -205,6 +205,10 @@ test("simulated git conflict rejects without destructive worktree cleanup", asyn
 
   // A feature branch edits the same line the main branch will later change.
   await systemGit.run(["checkout", "-b", "feature"], repo)
+  await writeFile(path.join(repo, "independent.txt"), "independent\n")
+  await systemGit.run(["add", "independent.txt"], repo)
+  await systemGit.run(["commit", "-m", "independent change"], repo)
+  const independent = (await systemGit.run(["rev-parse", "HEAD"], repo)).stdout.trim()
   await writeFile(shared, "feature\n")
   await systemGit.run(["add", "shared.txt"], repo)
   await systemGit.run(["commit", "-m", "feature change"], repo)
@@ -222,7 +226,7 @@ test("simulated git conflict rejects without destructive worktree cleanup", asyn
   await writeFile(worktreeMarker, "keep\n")
 
   await assert.rejects(
-    () => integrateValidatedCommits(systemGit, repo, [feature]),
+    () => integrateValidatedCommits(systemGit, repo, [independent, feature]),
     /cherry-pick conflict/,
   )
 
@@ -230,5 +234,6 @@ test("simulated git conflict rejects without destructive worktree cleanup", asyn
   // the pre-integration state, and the retained worktree artifact is untouched.
   await access(repo)
   assert.equal(await readFile(shared, "utf8"), "main\n")
+  await assert.rejects(access(path.join(repo, "independent.txt")))
   assert.equal(await readFile(worktreeMarker, "utf8"), "keep\n")
 })

@@ -31,6 +31,7 @@ import { api, subscribeLive, type ExportFormat, type ExportScope } from "./api"
 import { Button } from "./components/ui/button"
 import { Card } from "./components/ui/card"
 import { Switch } from "./components/ui/switch"
+import { ModelCombobox } from "./components/model-combobox"
 import { downloadExport } from "./export"
 import i18n, { nextLanguage, setLanguage } from "./i18n"
 import { cn } from "./lib/cn"
@@ -1597,7 +1598,7 @@ const BUDGET_LABEL_KEYS: Record<"eco" | "balanced" | "quality" | "ebobo", Transl
   ebobo: "budgetEbobo",
 }
 
-type OrchestrationNumberField = "parallelWorkers" | "parallelEditors" | "maxWorkers" | "maxPremiumCallsPerTask" | "confidenceThreshold"
+type OrchestrationNumberField = "parallelWorkers" | "parallelEditors" | "maxWorkers" | "maxDelegationDepth" | "maxPremiumCallsPerTask" | "confidenceThreshold"
 
 const ORCHESTRATION_FIELDS: Array<{
   name: OrchestrationNumberField
@@ -1609,7 +1610,8 @@ const ORCHESTRATION_FIELDS: Array<{
 }> = [
   { name: "parallelWorkers", labelKey: "fieldParallelWorkers", hintKey: "fieldParallelWorkersHint", min: 1, max: 8, step: 1 },
   { name: "parallelEditors", labelKey: "fieldParallelEditors", hintKey: "fieldParallelEditorsHint", min: 0, max: 8, step: 1 },
-  { name: "maxWorkers", labelKey: "fieldMaxWorkers", hintKey: "fieldMaxWorkersHint", min: 1, max: 12, step: 1 },
+  { name: "maxWorkers", labelKey: "fieldMaxWorkers", hintKey: "fieldMaxWorkersHint", min: 1, max: 8, step: 1 },
+  { name: "maxDelegationDepth", labelKey: "fieldMaxDelegationDepth", hintKey: "fieldMaxDelegationDepthHint", min: 1, max: 4, step: 1 },
   { name: "maxPremiumCallsPerTask", labelKey: "fieldMaxPremiumCalls", hintKey: "fieldMaxPremiumCallsHint", min: 0, max: 24, step: 1 },
   { name: "confidenceThreshold", labelKey: "fieldConfidenceThreshold", hintKey: "fieldConfidenceThresholdHint", min: 0, max: 1, step: 0.01 },
 ]
@@ -1625,9 +1627,17 @@ const SETTINGS_NAV_ITEMS: Array<{ id: string; labelKey: TranslationKey }> = [
 
 const settingsSchema = z.object({
   budget: z.enum(["eco", "balanced", "quality", "ebobo"]),
-  models: z.object({ strategy: z.enum(["auto", "manual"]), agents: z.record(z.string(), z.string()) }),
+  models: z.object({
+    strategy: z.enum(["auto", "manual"]),
+    agents: z.record(z.string(), z.string()),
+    fallback: z.object({
+      enabled: z.boolean(),
+      maxRetries: z.number().int().min(0).max(5),
+      agents: z.record(z.string(), z.array(z.string()).max(5)),
+    }),
+  }),
   telemetry: z.object({ enabled: z.boolean(), storeTexts: z.boolean(), anomalySigma: z.number().min(0.5).max(6) }),
-  orchestration: z.object({ parallelWorkers: z.number().int().min(1).max(8), parallelEditors: z.number().int().min(0).max(8), maxWorkers: z.number().int().min(1).max(12), premiumEscalation: z.boolean(), maxPremiumCallsPerTask: z.number().int().min(0).max(24), confidenceThreshold: z.number().min(0).max(1), exposeWorkers: z.boolean(), worktreeRoot: z.string().optional() }),
+  orchestration: z.object({ parallelWorkers: z.number().int().min(1).max(8), parallelEditors: z.number().int().min(0).max(8), maxWorkers: z.number().int().min(1).max(8), maxDelegationDepth: z.number().int().min(1).max(4), premiumEscalation: z.boolean(), maxPremiumCallsPerTask: z.number().int().min(0).max(24), confidenceThreshold: z.number().min(0).max(1), exposeWorkers: z.boolean(), worktreeRoot: z.string().optional() }),
   permissions: z.object({ autoAcceptAll: z.boolean() }),
   superpowers: z.object({ compatibility: z.boolean(), injectPrimaryHint: z.boolean() }),
   pricing: z.object({ endpoint: z.string().optional(), refreshIntervalHours: z.number().int().min(0).max(2160), estimate: z.boolean(), warnThresholdUSD: z.number().min(0), openrouter: z.object({ enabled: z.boolean(), ttlHours: z.number().int().min(1).max(720) }), aliases: z.array(z.object({ canonical: z.string(), aliases: z.array(z.string()) })) }),
@@ -1665,6 +1675,13 @@ function settingsFormDefaults(config: DashboardConfig): DashboardConfig {
         ...Object.fromEntries(AGENTS.map((agent) => [agent.id, ""])),
         ...config.models.agents,
       },
+      fallback: {
+        ...config.models.fallback,
+        agents: {
+          ...Object.fromEntries(AGENTS.map((agent) => [agent.id, [] as string[]])),
+          ...config.models.fallback.agents,
+        },
+      },
     },
   }
 }
@@ -1693,6 +1710,9 @@ function SettingsPage() {
     },
   })
   const modelStrategy = useWatch({ control: form.control, name: "models.strategy" })
+  const modelAgents = useWatch({ control: form.control, name: "models.agents" })
+  const fallbackEnabled = useWatch({ control: form.control, name: "models.fallback.enabled" })
+  const fallbackAgents = useWatch({ control: form.control, name: "models.fallback.agents" })
   const premiumEscalation = useWatch({ control: form.control, name: "orchestration.premiumEscalation" })
   const openRouterEnabled = useWatch({ control: form.control, name: "pricing.openrouter.enabled" })
   const telemetryEnabled = useWatch({ control: form.control, name: "telemetry.enabled" })
@@ -1782,6 +1802,28 @@ function SettingsPage() {
                 <span>{t("modelsAutoNotice")}</span>
               </div>
             )}
+            <div className="fallback-policy">
+              <label className="check-setting">
+                <span><strong>{t("modelFallbackEnabled")}</strong><small>{t("modelFallbackEnabledHint")}</small></span>
+                <Controller
+                  name="models.fallback.enabled"
+                  control={form.control}
+                  render={({ field }) => <Switch aria-label={t("modelFallbackEnabled")} checked={field.value} onCheckedChange={field.onChange} />}
+                />
+              </label>
+              <label className={cn(!fallbackEnabled && "disabled-setting")}>
+                <span>{t("modelFallbackRetries")}</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="5"
+                  aria-describedby="model-fallback-retries-hint"
+                  {...form.register("models.fallback.maxRetries", { valueAsNumber: true })}
+                  disabled={!fallbackEnabled}
+                />
+                <SettingsFieldHint id="model-fallback-retries-hint" text={t("modelFallbackRetriesHint")} error={form.formState.errors.models?.fallback?.maxRetries} />
+              </label>
+            </div>
               <div className="agent-model-groups" hidden={modelStrategy === "auto"}>
                 {(["groupCore", "groupDevelopment", "groupResearch", "groupVisual"] as TranslationKey[]).map((groupKey) => {
                   const agents = AGENTS.filter((agent) => agent.groupKey === groupKey)
@@ -1805,15 +1847,101 @@ function SettingsPage() {
                               <span>{t(agent.roleKey)}</span>
                               <small>{agent.id}</small>
                             </div>
-                            <select
-                              aria-label={t("modelForAgent", { name: agent.name })}
-                              {...form.register(`models.agents.${agent.id}`)}
-                            >
-                              <option value="">{t("modelAutomatic")}</option>
-                              {query.data.availableModels.map((model) => (
-                                <option key={model} value={model}>{model}</option>
-                              ))}
-                            </select>
+                            <div className="agent-model-controls">
+                              <Controller
+                                name={`models.agents.${agent.id}`}
+                                control={form.control}
+                                render={({ field }) => (
+                                  <ModelCombobox
+                                    value={field.value ?? ""}
+                                    options={query.data.availableModels}
+                                    onChange={field.onChange}
+                                    ariaLabel={t("modelForAgent", { name: agent.name })}
+                                    automaticLabel={t("modelAutomatic")}
+                                    placeholder={t("modelSearchPlaceholder")}
+                                    noResultsLabel={t("modelSearchEmpty")}
+                                    unavailableLabel={t("modelUnavailable")}
+                                    allowAutomatic
+                                    excluded={fallbackAgents?.[agent.id] ?? []}
+                                  />
+                                )}
+                              />
+                              {fallbackEnabled && (() => {
+                                const chain = fallbackAgents?.[agent.id] ?? []
+                                const primary = modelAgents?.[agent.id] ?? ""
+                                return (
+                                  <div className="fallback-chain">
+                                    <span className="fallback-chain-label">{t("modelFallbackChain")}</span>
+                                    {chain.map((model, fallbackIndex) => (
+                                      <div className="fallback-model-row" key={`${agent.id}-${fallbackIndex}`}>
+                                        <span className="fallback-position">{fallbackIndex + 1}</span>
+                                        <ModelCombobox
+                                          value={model}
+                                          options={query.data.availableModels}
+                                          onChange={(next) => {
+                                            const updated = [...chain]
+                                            updated[fallbackIndex] = next
+                                            form.setValue(`models.fallback.agents.${agent.id}`, updated, { shouldDirty: true, shouldValidate: true })
+                                          }}
+                                          ariaLabel={t("modelFallbackForAgent", { name: agent.name, position: fallbackIndex + 1 })}
+                                          automaticLabel={t("modelFallbackAdd")}
+                                          placeholder={t("modelSearchPlaceholder")}
+                                          noResultsLabel={t("modelSearchEmpty")}
+                                          unavailableLabel={t("modelUnavailable")}
+                                          excluded={[primary, ...chain.filter((_, index) => index !== fallbackIndex)]}
+                                        />
+                                        <div className="fallback-actions">
+                                          <button
+                                            type="button"
+                                            className="fallback-icon-button"
+                                            aria-label={t("modelFallbackMoveUp")}
+                                            disabled={fallbackIndex === 0}
+                                            onClick={() => {
+                                              const updated = [...chain]
+                                              ;[updated[fallbackIndex - 1], updated[fallbackIndex]] = [updated[fallbackIndex], updated[fallbackIndex - 1]]
+                                              form.setValue(`models.fallback.agents.${agent.id}`, updated, { shouldDirty: true, shouldValidate: true })
+                                            }}
+                                          >↑</button>
+                                          <button
+                                            type="button"
+                                            className="fallback-icon-button"
+                                            aria-label={t("modelFallbackMoveDown")}
+                                            disabled={fallbackIndex === chain.length - 1}
+                                            onClick={() => {
+                                              const updated = [...chain]
+                                              ;[updated[fallbackIndex], updated[fallbackIndex + 1]] = [updated[fallbackIndex + 1], updated[fallbackIndex]]
+                                              form.setValue(`models.fallback.agents.${agent.id}`, updated, { shouldDirty: true, shouldValidate: true })
+                                            }}
+                                          >↓</button>
+                                          <button
+                                            type="button"
+                                            className="fallback-icon-button"
+                                            aria-label={t("modelFallbackRemove")}
+                                            onClick={() => form.setValue(`models.fallback.agents.${agent.id}`, chain.filter((_, index) => index !== fallbackIndex), { shouldDirty: true, shouldValidate: true })}
+                                          >×</button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                    {chain.length < 5 && (
+                                      <div className="fallback-model-row fallback-new">
+                                        <span className="fallback-position">+</span>
+                                        <ModelCombobox
+                                          value=""
+                                          options={query.data.availableModels}
+                                          onChange={(model) => form.setValue(`models.fallback.agents.${agent.id}`, [...chain, model], { shouldDirty: true, shouldValidate: true })}
+                                          ariaLabel={t("modelFallbackAddForAgent", { name: agent.name })}
+                                          automaticLabel={t("modelFallbackAdd")}
+                                          placeholder={t("modelSearchPlaceholder")}
+                                          noResultsLabel={t("modelSearchEmpty")}
+                                          unavailableLabel={t("modelUnavailable")}
+                                          excluded={[primary, ...chain]}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })()}
+                            </div>
                           </motion.div>
                         ))}
                       </div>

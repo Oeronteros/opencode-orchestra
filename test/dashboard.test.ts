@@ -316,6 +316,41 @@ test("dashboard validate treats empty optional string fields as valid", async ()
     await dashboard.close()
   }
 })
+
+test("dashboard saves and returns per-agent model fallback chains", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-fallback-"))
+  const project = path.join(root, "project")
+  const config = path.join(root, "config")
+  const assets = path.join(root, "assets")
+  await mkdir(path.join(project, ".orchestra"), { recursive: true })
+  await mkdir(config, { recursive: true })
+  await mkdir(assets, { recursive: true })
+  await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
+  const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
+  try {
+    const url = new URL(dashboard.url)
+    const headers = { "Content-Type": "application/json", "X-Orchestra-Token": url.searchParams.get("token") ?? "" } as const
+    const save = await fetch(new URL("/api/config", url), {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ models: {
+        strategy: "manual",
+        agents: { "orch-repo": "anthropic/primary" },
+        fallback: { enabled: true, maxRetries: 2, agents: { "orch-repo": ["openai/second", "google/third"] } },
+      } }),
+    })
+    assert.equal(save.status, 200)
+    const data = await (await fetch(new URL("/api/snapshot", url), { headers })).json() as {
+      config: { models: { fallback: { agents: Record<string, string[]> } } }
+      availableModels: string[]
+    }
+    assert.deepEqual(data.config.models.fallback.agents["orch-repo"], ["openai/second", "google/third"])
+    assert.ok(data.availableModels.includes("openai/second"))
+    assert.ok(data.availableModels.includes("google/third"))
+  } finally {
+    await dashboard.close()
+  }
+})
 /**
  * Open the /api/live SSE stream and return the first `snapshot` frame, then
  * close the connection. Mirrors the reader loop used by the streaming test so
