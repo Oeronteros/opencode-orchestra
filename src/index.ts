@@ -154,6 +154,22 @@ const livePartKinds = new Map<string, string>()
 const finishedLiveMessages = new Set<string>()
 const recoveryNotices = new Set<string>()
 
+const MCP_TOOL_PREFIXES: Array<[prefix: string, server: string]> = [
+  ["codebase-memory-mcp_", "codebaseMemory"],
+  ["codebase-memory_", "codebaseMemory"],
+  ["codebase_memory_", "codebaseMemory"],
+  ["ast-grep_", "astGrep"],
+  ["ast_grep_", "astGrep"],
+  ["memorygraph_", "memoryGraph"],
+  ["playwright_", "playwright"],
+  ["context7_", "context7"],
+  ["git_", "git"],
+]
+
+export function mcpServerForTool(tool: string): string | undefined {
+  return MCP_TOOL_PREFIXES.find(([prefix]) => tool.startsWith(prefix))?.[1]
+}
+
 function pruneOldest(map: Map<string, string>): void {
   while (map.size > MAX_TEXT_BUFFERS) {
     const oldest = map.keys().next().value
@@ -336,6 +352,36 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       ...(modelID ? { modelID } : {}),
     }, pricingConfig())
   const ledger = new Ledger(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, pools, orchestra.telemetry.storeTexts, resolveModelPricing)
+  const mcpCalls = new Map<string, { sessionID: string; tool: string; server: string; startedAt: number; retry: boolean }>()
+  const completedMcpCalls = new Set<string>()
+  const pendingMcpFailures = new Set<string>()
+  const recordMcpCompletion = async (
+    callID: string,
+    success: boolean,
+    outputChars = 0,
+    timing?: { start?: number; end?: number },
+  ): Promise<void> => {
+    if (completedMcpCalls.has(callID)) return
+    const active = mcpCalls.get(callID)
+    if (!active) return
+    completedMcpCalls.add(callID)
+    mcpCalls.delete(callID)
+    const failureKey = `${active.sessionID}:${active.tool}`
+    if (success) pendingMcpFailures.delete(failureKey)
+    else pendingMcpFailures.add(failureKey)
+    const durationMs = timing?.start !== undefined && timing.end !== undefined
+      ? Math.max(0, timing.end - timing.start)
+      : Math.max(0, Date.now() - active.startedAt)
+    await ledger.recordMcpCall(active.sessionID, {
+      server: active.server,
+      tool: active.tool,
+      durationMs,
+      success,
+      outputChars,
+      retry: active.retry,
+    })
+    if (completedMcpCalls.size > 2_048) completedMcpCalls.clear()
+  }
   // Warm the OpenRouter catalog in the background so live/ledger can price
   // gateway ids (anymodel/am/kimi-k3) from the in-memory cache without waiting.
   void openRouter?.getModels().catch(() => undefined)
@@ -477,6 +523,9 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       livePartKinds.clear()
       finishedLiveMessages.clear()
       recoveryNotices.clear()
+      mcpCalls.clear()
+      completedMcpCalls.clear()
+      pendingMcpFailures.clear()
       sessionAgent.clear()
       sessionModel.clear()
       streamObservers.clear()
@@ -504,6 +553,15 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (agent) sessionAgent.set(sessionID, agent)
       if (model) sessionModel.set(sessionID, { providerID: model.providerID, modelID: (model as { modelID?: string }).modelID ?? model.id })
     },
+    "tool.execute.before": async ({ tool, sessionID, callID }) => {
+      const server = mcpServerForTool(tool)
+      if (!server) return
+      const failureKey = `${sessionID}:${tool}`
+      mcpCalls.set(callID, { sessionID, tool, server, startedAt: Date.now(), retry: pendingMcpFailures.has(failureKey) })
+    },
+    "tool.execute.after": async ({ callID }, output) => {
+      await recordMcpCompletion(callID, true, output.output.length)
+    },
     event: async ({ event }) => {
       const eventRecord = event as unknown as { type?: string; properties?: { sessionID?: string; error?: unknown } }
       if (eventRecord.type === "session.error" || eventRecord.type === "session.idle") {
@@ -527,6 +585,9 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       }
       if (event.type === "message.part.updated") {
         const part = event.properties.part
+        if (part.type === "tool" && part.state.status === "error") {
+          await recordMcpCompletion(part.callID, false, 0, part.state.time)
+        }
         const delta = event.properties.delta ?? ""
         // Remember the part type: reasoning deltas arrive through the channel
         // below with field "text" and can only be split off via this record.

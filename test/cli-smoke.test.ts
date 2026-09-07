@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
@@ -60,4 +60,19 @@ test("built CLI runs offline doctor JSON against a temporary config directory", 
     assert.ok(["error", "warning", "ok", "info"].includes(check.status ?? ""))
     assert.match(check.detail ?? "", /\w+/)
   }
+})
+
+test("built CLI runs configured MCP smoke and returns JSON", async () => {
+  const configDirectory = await mkdtemp(path.join(os.tmpdir(), "orchestra-cli-mcp-smoke-"))
+  const fixture = path.resolve("test", "fixtures", "mcp-smoke-server.mjs")
+  await writeFile(path.join(configDirectory, "opencode.json"), JSON.stringify({
+    mcp: { fixture: { type: "local", command: [process.execPath, fixture], enabled: true } },
+  }))
+  const result = runCli("mcp-smoke", "--json", "--config-dir", configDirectory, "--directory", configDirectory)
+  assert.equal(result.status, 0, result.stderr)
+  const report = JSON.parse(result.stdout) as { ok?: boolean; results?: Array<{ name?: string; status?: string; tools?: string[] }> }
+  assert.equal(report.ok, true)
+  assert.equal(report.results?.[0]?.name, "fixture")
+  assert.equal(report.results?.[0]?.status, "ok")
+  assert.ok(report.results?.[0]?.tools?.includes("ping"))
 })

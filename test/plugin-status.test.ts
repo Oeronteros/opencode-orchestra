@@ -35,12 +35,12 @@ test("detectMcpPresence maps git and ast-grep keys", async () => {
   const { writeFile } = await import("node:fs/promises")
   await writeFile(
     path.join(directory, "opencode.json"),
-    JSON.stringify({ mcp: { git: { type: "local", command: ["uvx", "mcp-server-git"] }, "ast-grep": { type: "local", command: ["uvx"] } } }),
+    JSON.stringify({ mcp: { git: { type: "local", command: ["uvx", "mcp-server-git"] }, "ast-grep": { type: "local", command: ["uvx"], enabled: false } } }),
     "utf8",
   )
   const presence = await detectMcpPresence(directory)
   assert.equal(presence.git, true)
-  assert.equal(presence.astGrep, true)
+  assert.equal(presence.astGrep, false)
   assert.equal(presence.context7, false)
 })
 

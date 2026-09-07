@@ -646,10 +646,10 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   )
   push({
     id: "ast-grep",
-    label: "ast-grep engine",
+    label: "standalone ast-grep engine",
     status: astGrepEngine.executable ? "ok" : "info",
     detail: astGrepEngine.executable ? `${astGrepEngine.executable} — ${astGrepEngine.version ?? "unknown"}` : "not installed",
-    ...(astGrepEngine.executable ? {} : { hint: "Install ast-grep (ast-grep.github.io) for local Tree-Sitter parsing; MCP server still starts without it." }),
+    ...(astGrepEngine.executable ? {} : { hint: "Optional: Orchestra's pinned uvx command injects ast-grep-cli into the MCP environment automatically." }),
   })
 
   // --- Routing preflight (non-mutating) ---

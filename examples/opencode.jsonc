@@ -12,15 +12,17 @@
   "mcp": {
     "git": {
       "type": "local",
-      "command": ["uvx", "mcp-server-git"],
+      "command": ["uvx", "mcp-server-git==2026.8.18", "--repository", "."],
+      "cwd": ".",
       "enabled": true,
-      "timeout": 30000
+      "timeout": 120000
     },
     "ast-grep": {
       "type": "local",
-      "command": ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"],
+      "command": ["uvx", "--with", "ast-grep-cli==0.45.1", "--from", "git+https://github.com/ast-grep/ast-grep-mcp@149e20d47bb7125fb0c1451feea2f48a98742034", "ast-grep-server"],
+      "cwd": ".",
       "enabled": true,
-      "timeout": 30000
+      "timeout": 120000
     }
   }
 }

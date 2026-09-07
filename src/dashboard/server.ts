@@ -141,14 +141,33 @@ async function mcpStatus(configDirectory: string): Promise<Record<string, boolea
   const mcp = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
     ? (root.mcp as Record<string, unknown>)
     : {}
-  return {
-    context7: "context7" in mcp,
-    codebaseMemory: "codebase-memory" in mcp,
-    memoryGraph: "memorygraph" in mcp,
-    playwright: "playwright" in mcp,
-    git: "git" in mcp,
-    astGrep: "ast-grep" in mcp,
+  const enabled = (name: string) => {
+    const entry = mcp[name]
+    return typeof entry === "object" && entry !== null && !Array.isArray(entry)
+      ? (entry as Record<string, unknown>).enabled !== false
+      : entry !== undefined
   }
+  return {
+    context7: enabled("context7"),
+    codebaseMemory: enabled("codebase-memory"),
+    memoryGraph: enabled("memorygraph"),
+    playwright: enabled("playwright"),
+    git: enabled("git"),
+    astGrep: enabled("ast-grep"),
+  }
+}
+
+interface McpUsageRow {
+  server: string
+  calls: number
+  successes: number
+  failures: number
+  retries: number
+  averageLatencyMs: number
+  maxLatencyMs: number
+  estimatedOutputTokens: number
+  lastUsedAt: number
+  lastOutcome: "success" | "failure"
 }
 
 interface SnapshotData {
@@ -181,6 +200,7 @@ interface SnapshotData {
   projection: MonthProjection
   anomalies: DailyAnomaly[]
   mcp: Record<string, boolean>
+  mcpUsage: McpUsageRow[]
   availableModels: string[]
 }
 
@@ -238,9 +258,34 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   const config = (await loadConfigForDirectory(directory, configDirectory)).config
   const ledger = await readLedgerState(path.resolve(directory, config.telemetry.directory, "state.json"))
   const activity: ActivityRow[] = []
+  const mcpUsageMap = new Map<string, McpUsageRow & { totalLatencyMs: number; outputChars: number }>()
   for (const [sessionID, session] of Object.entries(ledger.sessions)) {
     for (const [id, message] of Object.entries(session.messages)) activity.push({ id, sessionID, ...message })
+    for (const [server, usage] of Object.entries(session.mcp)) {
+      const aggregate = mcpUsageMap.get(server) ?? {
+        server, calls: 0, successes: 0, failures: 0, retries: 0, averageLatencyMs: 0,
+        maxLatencyMs: 0, estimatedOutputTokens: 0, lastUsedAt: 0, lastOutcome: "success" as const,
+        totalLatencyMs: 0, outputChars: 0,
+      }
+      aggregate.calls += usage.calls
+      aggregate.successes += usage.successes
+      aggregate.failures += usage.failures
+      aggregate.retries += usage.retries
+      aggregate.totalLatencyMs += usage.totalLatencyMs
+      aggregate.outputChars += usage.outputChars
+      aggregate.maxLatencyMs = Math.max(aggregate.maxLatencyMs, usage.maxLatencyMs)
+      if (usage.lastUsedAt >= aggregate.lastUsedAt) {
+        aggregate.lastUsedAt = usage.lastUsedAt
+        aggregate.lastOutcome = usage.lastOutcome
+      }
+      mcpUsageMap.set(server, aggregate)
+    }
   }
+  const mcpUsage = [...mcpUsageMap.values()].map(({ totalLatencyMs, outputChars, ...usage }) => ({
+    ...usage,
+    averageLatencyMs: usage.calls > 0 ? Math.round(totalLatencyMs / usage.calls) : 0,
+    estimatedOutputTokens: Math.ceil(outputChars / 4),
+  })).sort((a, b) => a.server.localeCompare(b.server))
   activity.sort((a, b) => (b.completedAt ?? b.createdAt ?? 0) - (a.completedAt ?? a.createdAt ?? 0))
   const totalTokens = emptyTokens()
   let totalCost = 0
@@ -302,6 +347,7 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     projection: analytics.projection,
     anomalies: analytics.anomalies,
     mcp: await mcpStatus(configDirectory),
+    mcpUsage,
     availableModels: [...new Set([
       ...(includeModels ? connectedModels(directory) : []),
       ...Object.values(config.models.agents),

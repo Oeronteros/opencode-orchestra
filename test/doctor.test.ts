@@ -33,7 +33,7 @@ test("formatUpdateResult reports newer, current, and unknown", () => {
 test("completionFor emits each shell family", () => {
   const bash = completionFor("bash")
   assert.match(bash, /complete -F _opencode_orchestra_completion opencode-orchestra/)
-  assert.match(bash, /install\|dashboard\|doctor\|update\|completion/)
+  assert.match(bash, /install\|dashboard\|doctor\|mcp-smoke\|update\|completion/)
   for (const word of ["install", "dashboard", "doctor", "update", "completion", "--help"]) {
     assert.ok(bash.includes(word), `bash completion mentions ${word}`)
   }

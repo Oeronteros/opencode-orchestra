@@ -7,6 +7,31 @@ import { Ledger } from "../src/telemetry/ledger.js"
 import { isRetryable, type ErrorKind } from "../src/routing/fallback.js"
 import type { ModelCandidateInput } from "../src/config/schema.js"
 
+test("records aggregate MCP success, latency, output, and retry metrics", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-mcp-"))
+  const ledger = new Ledger(root, ".orchestra", true, [])
+  try {
+    await ledger.recordMcpCall("session-mcp", { server: "git", tool: "git_git_status", durationMs: 40, success: false })
+    await ledger.recordMcpCall("session-mcp", { server: "git", tool: "git_git_status", durationMs: 20, success: true, outputChars: 80, retry: true })
+    const session = await ledger.getSession("session-mcp")
+    assert.deepEqual(session.mcp.git, {
+      calls: 2,
+      successes: 1,
+      failures: 1,
+      retries: 1,
+      totalLatencyMs: 60,
+      maxLatencyMs: 40,
+      outputChars: 80,
+      lastUsedAt: session.mcp.git?.lastUsedAt,
+      lastOutcome: "success",
+    })
+    const status = await ledger.formatStatus("session-mcp")
+    assert.match(status, /git\s+2 calls, 50% ok, 30ms avg, ~20 output tokens, 1 retries/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("records assistant responses outside the orchestra subagent modes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
   const ledger = new Ledger(root, ".orchestra", true, [])

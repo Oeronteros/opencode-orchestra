@@ -88,11 +88,12 @@ CLI использует Bun напрямую, поэтому отдельный
 - добавит `@oeronteros-1/opencode-orchestra@latest` в OpenCode config (`opencode.json` или `opencode.jsonc`);
 - добавит плагин Superpowers (`superpowers@git+https://github.com/obra/superpowers.git`) в массив `plugin`;
 - подключит удалённый Context7 MCP (`https://mcp.context7.com/mcp`);
-- подключит Playwright MCP для браузерной автоматизации;
+- подключит Playwright MCP для браузерной автоматизации и даст доступ к нему `orch-lead`, `orch-tests`, `orch-security` и visual-агентам;
 - установит статический `codebase-memory-mcp`, включит автоматическую индексацию и подключит его к OpenCode;
 - установит MemoryGraph (`memorygraphMCP`) в изолированное окружение через `uv` и подключит локальную SQLite-память;
-- подключит официальный Git MCP (`uvx mcp-server-git` без `--repository`; путь передаётся динамически через `repo_path`, относительные пути резолвятся от cwd проекта) и прогреет его кэш;
-- подключит ast-grep MCP (`uvx --from git+https://github.com/ast-grep/ast-grep-mcp ast-grep-server`) и прогреет его кэш, чтобы холодный старт 10–25с не ронял MCP-хендшейк (~10с);
+- подключит официальный Git MCP (`mcp-server-git==2026.8.18`) с ограничением текущим workspace (`--repository .`);
+- подключит ast-grep MCP на закреплённой ревизии вместе с `ast-grep-cli==0.45.1` в одном изолированном `uvx`-окружении;
+- установит `uv/uvx`, если он нужен Git или ast-grep MCP, и проверит оба сервера реальным MCP handshake; это одинаково работает через официальный PowerShell-инсталлятор на Windows и shell-инсталлятор на Linux/macOS;
 - сохранит все пользовательские MCP и плагины без удаления или переименования;
 - создаст `~/.config/opencode/orchestra.jsonc` с автоматическим выбором моделей;
 - сделает резервную копию существующего конфига перед изменением;
@@ -119,6 +120,14 @@ bunx @oeronteros-1/opencode-orchestra@latest doctor
 ```
 
 Проверяет конфиг OpenCode и `orchestra.jsonc`, регистрацию плагина, доступность настроенных MCP-серверов, пути и версии `uv`, `uvx`, `git`, MemoryGraph, Codebase Memory и движка `ast-grep`/`sg` (строго офлайн, без сетевых проб). Флаг `--config-dir DIR` переопределяет каталог конфигурации, а `--json` выводит результат в машиночитаемом виде.
+
+Для фактической проверки процессов и MCP-протокола используйте:
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest mcp-smoke --directory .
+```
+
+Команда параллельно запускает все включённые локальные MCP из OpenCode config, выполняет `initialize` и `tools/list`, а для Git и ast-grep также безопасный пробный вызов. Удалённые и отключённые MCP помечаются как `skipped`; `--json` возвращает машиночитаемый отчёт и ненулевой exit code при сбое локального сервера.
 
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest update
@@ -179,6 +188,8 @@ bunx @oeronteros-1/opencode-orchestra@latest completion zsh > ~/.zsh/completions
 ```
 
 Доступные имена: `orch-lead`, `orch-repo`, `orch-docs`, `orch-tests`, `orch-research`, `orch-critic`, `orch-security`, `orch-visual-reference`, `orch-visual-generate`, `orch-visual-review`, `orch-editor`, `orch-integrator`, `orch-merge`, `orch-judge`.
+
+`orch-repo` — read-only разведчик репозитория. Он собирает карту символов, зависимостей, истории Git, diff и blast radius для lead/editor, но не редактирует файлы и не выполняет Git-мутации. Разрешения на Git задаются по точным MCP tool names: чтение разрешено, операции записи принудительно запрещены движком.
 
 ### Ручные пулы
 
@@ -373,9 +384,9 @@ Codebase Memory отвечает за знания, которые можно в
 
 MemoryGraph отвечает за знания, которых нет непосредственно в коде: принятые архитектурные решения, проверенные исправления и повторно используемые паттерны. Используется core-профиль с локальным SQLite в `~/.memorygraph/`. Lead вызывает `recall_memories` не более одного раза в начале релевантной задачи и сохраняет только проверенные устойчивые знания.
 
-Git MCP — официальный `mcp-server-git` через `uvx` без флага `--repository`: сервер наследует cwd проекта, агент передаёт путь динамически через `repo_path`. Используется для `blame`/`log`/`diff` перед рефакторингом и для гейтованного коммита после зелёных тестов.
+Git MCP — официальный `mcp-server-git==2026.8.18` через `uvx`, запущенный с `--repository .` и `cwd` проекта. Такое ограничение не даёт серверу незаметно уйти за пределы workspace. `orch-repo` получает только read-only tools; операции записи у lead требуют подтверждения, а опасные reset запрещены.
 
-ast-grep MCP — `uvx --from git+https://github.com/ast-grep/ast-grep-mcp ast-grep-server` для структурного поиска и AST-рефакторинга. Первый холодный старт занимает 10–25с, поэтому инсталлер прогревает кэш (`--help`, таймаут 60с); `--no-deps` пропускает прогрев. Отдельный Ripgrep MCP не нужен: поиск по YAML/Dockerfile/логам идёт через `rg` во встроенном `bash`.
+ast-grep MCP используется для read-only структурного поиска и проверки AST-правил, а изменения выполняются обычным editor-инструментом и затем повторно проверяются. Команда закрепляет ревизию сервера и добавляет `ast-grep-cli==0.45.1` через `uvx --with`, поэтому отдельная системная установка `ast-grep` не нужна. Инсталлер выполняет реальный `dump_syntax_tree`, а не условный `--help`; `--no-deps` пропускает прогрев и smoke-проверку. Отдельный Ripgrep MCP не нужен: поиск по YAML/Dockerfile/логам идёт через `rg` во встроенном `bash`.
 
 Пакет ставится с PyPI (`memorygraphMCP`, Python ≥3.10, SQLite работает без настройки). GitHub-ветка `main` того же репозитория переписана на TypeScript/Bun и не совместима с PyPI-пакетом, поэтому установщик опирается именно на PyPI-дистрибутив. Если persistent-установка через `uv tool install` не удалась, используется фолбэк `uvx memorygraph`; при полном провале MCP-запись в конфиг не пишется — причина сбоя видна в выводе установщика и doctor.
 
@@ -402,6 +413,7 @@ ast-grep MCP — `uvx --from git+https://github.com/ast-grep/ast-grep-mcp ast-gr
 ```bash
 npm ci
 npm run check
+npm run test:mcp-live          # одинаково на Windows, Linux и macOS
 npm run build
 npm pack --dry-run
 ```
@@ -434,7 +446,8 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
 - расходы и нагрузку по моделям и агентам;
 - виртуализированный журнал activity; тексты промптов и ответов отключены по умолчанию и сохраняются только при явном `telemetry.storeTexts: true`;
 - live-панель: какие агенты генерируют прямо сейчас, сниппет их вывода, оценочная стоимость и токены;
-- статус Context7, Codebase Memory, MemoryGraph;
+- статус Context7, Codebase Memory, MemoryGraph, Git и ast-grep с учётом `enabled: false`;
+- агрегаты эффективности MCP: число вызовов, success rate, средняя задержка, retry и оценочный объём результата без сохранения аргументов или сырого вывода;
 - настройку режимов `eco`, `balanced`, `quality`, `ebobo` и моделей отдельных агентов;
 - месячный прогноз, детектирование аномалий и экспорт activity/models/agents/daily/summary в CSV или JSON.
 

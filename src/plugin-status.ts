@@ -78,13 +78,19 @@ export async function detectMcpPresence(configDirectory: string = openCodeConfig
   const mcp = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
     ? (root.mcp as Record<string, unknown>)
     : {}
+  const enabled = (name: string) => {
+    const entry = mcp[name]
+    return typeof entry === "object" && entry !== null && !Array.isArray(entry)
+      ? (entry as Record<string, unknown>).enabled !== false
+      : entry !== undefined
+  }
   return {
-    context7: "context7" in mcp,
-    codebaseMemory: "codebase-memory" in mcp,
-    memoryGraph: "memorygraph" in mcp,
-    playwright: "playwright" in mcp,
-    git: "git" in mcp,
-    astGrep: "ast-grep" in mcp,
+    context7: enabled("context7"),
+    codebaseMemory: enabled("codebase-memory"),
+    memoryGraph: enabled("memorygraph"),
+    playwright: enabled("playwright"),
+    git: enabled("git"),
+    astGrep: enabled("ast-grep"),
   }
 }
 
@@ -94,7 +100,7 @@ export async function detectMcpPresence(configDirectory: string = openCodeConfig
 export async function formatPluginStatus(status: PluginStatus): Promise<string> {
   const mcp = Object.entries({ ...status.mcp })
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, present]) => `  ${name.padEnd(24)} ${present ? "configured" : "not configured"}`)
+    .map(([name, present]) => `  ${name.padEnd(24)} ${present ? "configured and enabled" : "disabled or not configured"}`)
     .join("\n")
   return [
     "OpenCode Orchestra plugin status",

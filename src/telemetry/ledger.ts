@@ -56,6 +56,29 @@ export interface ReliabilityEvent {
   at: number
 }
 
+/** Aggregate MCP effectiveness metrics; raw arguments and outputs are never persisted. */
+export interface McpUsage {
+  calls: number
+  successes: number
+  failures: number
+  retries: number
+  totalLatencyMs: number
+  maxLatencyMs: number
+  outputChars: number
+  lastUsedAt: number
+  lastOutcome: "success" | "failure"
+}
+
+export interface McpCallMetric {
+  server: string
+  tool: string
+  durationMs: number
+  success: boolean
+  outputChars?: number
+  retry?: boolean
+  at?: number
+}
+
 export interface SessionLedger {
   profile?: ProfileName
   agents: Record<string, number>
@@ -70,6 +93,7 @@ export interface SessionLedger {
   consensusNotes?: string
   messages: Record<string, MessageUsage>
   reliability?: ReliabilityEvent[]
+  mcp: Record<string, McpUsage>
 }
 
 export interface LedgerState {
@@ -110,6 +134,7 @@ function emptySession(): SessionLedger {
     unknownPriceCalls: 0,
     paidCallsUsed: 0,
     messages: {},
+    mcp: {},
   }
 }
 
@@ -226,6 +251,7 @@ function upgradeState(input: unknown): LedgerState {
   const sessions = candidate.sessions ?? {}
   for (const session of Object.values(sessions)) {
     session.messages ??= {}
+    session.mcp ??= {}
     session.agents ??= {}
     session.premiumEscalations ??= 0
     session.estimatedPaidUsage ??= 0
@@ -467,6 +493,37 @@ export class Ledger {
     })
   }
 
+  /** Record one completed MCP call without retaining tool arguments or output. */
+  async recordMcpCall(sessionID: string, metric: McpCallMetric): Promise<void> {
+    const server = boundedString(metric.server)
+    if (!server) return
+    const durationMs = Math.max(0, Math.round(Number.isFinite(metric.durationMs) ? metric.durationMs : 0))
+    const outputChars = Math.max(0, Math.round(Number.isFinite(metric.outputChars) ? (metric.outputChars ?? 0) : 0))
+    await this.mutate((state) => {
+      const session = (state.sessions[sessionID] ??= emptySession())
+      const usage = (session.mcp[server] ??= {
+        calls: 0,
+        successes: 0,
+        failures: 0,
+        retries: 0,
+        totalLatencyMs: 0,
+        maxLatencyMs: 0,
+        outputChars: 0,
+        lastUsedAt: 0,
+        lastOutcome: "success",
+      })
+      usage.calls += 1
+      if (metric.success) usage.successes += 1
+      else usage.failures += 1
+      if (metric.retry) usage.retries += 1
+      usage.totalLatencyMs += durationMs
+      usage.maxLatencyMs = Math.max(usage.maxLatencyMs, durationMs)
+      usage.outputChars += outputChars
+      usage.lastUsedAt = metric.at ?? Date.now()
+      usage.lastOutcome = metric.success ? "success" : "failure"
+    })
+  }
+
   /**
    * Opt-in debug text. No-op unless the ledger was constructed with
    * `storeTexts`, so prompts and replies are never persisted by default.
@@ -501,6 +558,15 @@ export class Ledger {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([name, calls]) => `  ${name.padEnd(24)} ${calls}`)
       .join("\n")
+    const mcp = Object.entries(session.mcp)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, usage]) => {
+        const successRate = usage.calls > 0 ? Math.round((usage.successes / usage.calls) * 100) : 0
+        const averageLatency = usage.calls > 0 ? Math.round(usage.totalLatencyMs / usage.calls) : 0
+        const estimatedOutputTokens = Math.ceil(usage.outputChars / 4)
+        return `  ${name.padEnd(20)} ${usage.calls} calls, ${successRate}% ok, ${averageLatency}ms avg, ~${estimatedOutputTokens} output tokens, ${usage.retries} retries`
+      })
+      .join("\n")
     return [
       "OpenCode Orchestra status",
       "",
@@ -508,6 +574,9 @@ export class Ledger {
       "",
       "agents:",
       agents || "  no recorded calls",
+      "",
+      "MCP:",
+      mcp || "  no recorded calls",
       "",
       `premium escalations: ${session.premiumEscalations}`,
       `estimated paid usage: $${session.estimatedPaidUsage.toFixed(4)}`,

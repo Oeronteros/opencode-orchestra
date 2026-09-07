@@ -13,6 +13,9 @@ import { startDashboard, type DashboardOptions } from "./dashboard/server.js"
 import { completionFor, SHELL_NAMES } from "./diagnostics/completion.js"
 import { formatDoctorReport, runDoctor } from "./diagnostics/doctor.js"
 import { checkForUpdates, formatUpdateResult } from "./diagnostics/update.js"
+import { astGrepMcpCommand, gitMcpCommand } from "./mcp/commands.js"
+import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/config-smoke.js"
+import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 
@@ -332,18 +335,28 @@ async function provisionMemoryGraph(enabled: boolean): Promise<ProvisionedDepend
  * Best-effort: failures are reported but never block config writes because
  * `uvx` remains a valid autonomous runtime that retries at launch.
  */
-async function warmGitMcp(enabled: boolean, shouldWarm: boolean): Promise<ProvisionedDependency> {
-  const command = ["uvx", "mcp-server-git"]
+async function warmGitMcp(enabled: boolean, shouldWarm: boolean, uvx = "uvx"): Promise<ProvisionedDependency> {
+  const command = gitMcpCommand(uvx)
   if (!enabled) return { command, status: "skipped" }
   if (!shouldWarm) return { command, status: "skipped", reason: "warmup skipped (--no-deps or dry-run)" }
+  let smokeRepository: string | undefined
   try {
-    const result = spawnWithCmdFallback("uvx", ["mcp-server-git", "--help"], { stdio: "ignore", timeout: 60_000 })
-    if (result.error) throw result.error
-    if (result.status !== 0) throw new Error(`uvx mcp-server-git --help exited with ${result.status ?? "unknown"}`)
+    if (!executable(["git"])) throw new Error("git is required by Git MCP but was not found in PATH")
+    smokeRepository = await mkdtemp(path.join(os.tmpdir(), "opencode-orchestra-git-smoke-"))
+    run("git", ["init", "--quiet", smokeRepository])
+    const result = await smokeMcp({
+      command,
+      cwd: smokeRepository,
+      timeoutMs: 120_000,
+      call: { tool: "git_status", arguments: { repo_path: smokeRepository } },
+    })
+    if (!result.ok) throw new Error(result.error ?? "Git MCP handshake failed")
     return { command, status: "installed" }
   } catch (error: unknown) {
     const reason = failureReason(error)
     return { command, status: "failed" as const, ...(reason ? { reason } : {}) }
+  } finally {
+    if (smokeRepository) await rm(smokeRepository, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   }
 }
 
@@ -352,18 +365,17 @@ async function warmGitMcp(enabled: boolean, shouldWarm: boolean): Promise<Provis
  * Cold clone + env build takes 10–25s; without warmup the first MCP
  * handshake (~10s timeout) almost certainly fails.
  */
-async function warmAstGrepMcp(enabled: boolean, shouldWarm: boolean): Promise<ProvisionedDependency> {
-  const command = ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"]
+async function warmAstGrepMcp(enabled: boolean, shouldWarm: boolean, uvx = "uvx"): Promise<ProvisionedDependency> {
+  const command = astGrepMcpCommand(uvx)
   if (!enabled) return { command, status: "skipped" }
   if (!shouldWarm) return { command, status: "skipped", reason: "warmup skipped (--no-deps or dry-run)" }
   try {
-    const result = spawnWithCmdFallback(
-      "uvx",
-      ["--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server", "--help"],
-      { stdio: "ignore", timeout: 60_000 },
-    )
-    if (result.error) throw result.error
-    if (result.status !== 0) throw new Error(`ast-grep warmup exited with ${result.status ?? "unknown"}`)
+    const result = await smokeMcp({
+      command,
+      timeoutMs: 120_000,
+      call: { tool: "dump_syntax_tree", arguments: { code: "const value = 1", language: "typescript", format: "pattern" } },
+    })
+    if (!result.ok) throw new Error(result.error ?? "ast-grep MCP smoke call failed")
     return { command, status: "installed" }
   } catch (error: unknown) {
     const reason = failureReason(error)
@@ -386,11 +398,23 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
         return { command: "memorygraph", status: "failed" as const, ...(reason ? { reason } : {}) }
       })
     : { command: "memorygraph", status: "skipped" as const }
-  // Git + ast-grep warmup is best-effort cache pre-heating (60s timeout each).
-  // A failed warmup still writes the MCP config: uvx retries at runtime.
+  // Git + ast-grep use one managed uv/uvx installation on Windows and Unix.
+  // Their real MCP handshakes run concurrently so successful installation is
+  // proven without doubling cold-start latency.
   // Undefined means enabled (backward compatible with callers that predate the flags).
-  const git = await warmGitMcp(options.git !== false, shouldProvision)
-  const astGrep = await warmAstGrepMcp(options.astGrep !== false, shouldProvision)
+  let mcpUvx = "uvx"
+  if (shouldProvision && (options.git !== false || options.astGrep !== false)) {
+    try {
+      const uv = await ensureUv()
+      mcpUvx = executable([...siblingExecutables(path.dirname(uv.command), "uvx"), ...localBinCandidates("uvx"), "uvx"]) ?? "uvx"
+    } catch {
+      // Each smoke result below reports the bounded, server-specific failure.
+    }
+  }
+  const [git, astGrep] = await Promise.all([
+    warmGitMcp(options.git !== false, shouldProvision, mcpUvx),
+    warmAstGrepMcp(options.astGrep !== false, shouldProvision, mcpUvx),
+  ])
 
   const configDirectory = path.resolve(options.configDirectory ?? openCodeConfigDirectory())
   const openCodeConfig = await existingMainConfig(configDirectory)
@@ -536,17 +560,19 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   if (options.git !== false) {
     addMcp("git", {
       type: "local",
-      command: ["uvx", "mcp-server-git"],
+      command: Array.isArray(git.command) ? git.command : [git.command],
+      cwd: ".",
       enabled: true,
-      timeout: 30_000,
+      timeout: 120_000,
     })
   }
   if (options.astGrep !== false) {
     addMcp("ast-grep", {
       type: "local",
-      command: ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"],
+      command: Array.isArray(astGrep.command) ? astGrep.command : [astGrep.command],
+      cwd: ".",
       enabled: true,
-      timeout: 30_000,
+      timeout: 120_000,
     })
   }
 
@@ -616,6 +642,7 @@ function usage(): string {
     "  install     Configure OpenCode and provision companion MCPs",
     "  dashboard   Start the local telemetry dashboard",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
+    "  mcp-smoke   Launch configured local MCPs and test their protocol",
     "  update      Check for a newer published version",
     "  completion  Print shell completion (zsh | bash | pwsh)",
     "",
@@ -638,6 +665,11 @@ function usage(): string {
     "  --host HOST          Bind address (default: 127.0.0.1)",
     "  --port PORT          Bind port (default: automatic)",
     "  --no-open            Do not open the browser automatically",
+    "",
+    "MCP smoke options:",
+    "  --directory DIR      Project used as cwd and Git repository",
+    "  --config-dir DIR     Override the OpenCode config directory",
+    "  --json               Print a machine-readable report",
   ].join("\n")
 }
 
@@ -645,6 +677,7 @@ type ParsedCommand =
   | { command: "install"; options: InstallOptions }
   | { command: "dashboard"; options: DashboardOptions }
   | { command: "doctor"; options: { configDirectory?: string; json?: boolean } }
+  | { command: "mcp-smoke"; options: { configDirectory?: string; projectDirectory?: string; json?: boolean } }
   | { command: "update" }
   | { command: "completion"; options: { shell: string; program: string } }
 
@@ -688,6 +721,24 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
       } else throw new Error(`Unknown doctor option: ${argument}`)
     }
     return { command: "doctor", options }
+  }
+  if (argv[0] === "mcp-smoke") {
+    const options: { configDirectory?: string; projectDirectory?: string; json?: boolean } = {}
+    for (let index = 1; index < argv.length; index += 1) {
+      const argument = argv[index]
+      if (argument === "--config-dir") {
+        const directory = argv[++index]
+        if (!directory) throw new Error("--config-dir requires a directory")
+        options.configDirectory = directory
+      } else if (argument === "--directory") {
+        const directory = argv[++index]
+        if (!directory) throw new Error("--directory requires a path")
+        options.projectDirectory = directory
+      } else if (argument === "--json") {
+        options.json = true
+      } else throw new Error(`Unknown mcp-smoke option: ${argument}`)
+    }
+    return { command: "mcp-smoke", options }
   }
   if (argv[0] === "update") {
     for (let index = 1; index < argv.length; index += 1) throw new Error(`Unknown update option: ${argv[index]}`)
@@ -755,6 +806,15 @@ async function main(): Promise<void> {
       } else {
         console.log(formatDoctorReport(report))
       }
+      return
+    }
+    if (parsed.command === "mcp-smoke") {
+      const report = await smokeConfiguredMcps({
+        ...(parsed.options.configDirectory ? { configDirectory: parsed.options.configDirectory } : {}),
+        ...(parsed.options.projectDirectory ? { projectDirectory: parsed.options.projectDirectory } : {}),
+      })
+      console.log(parsed.options.json ? JSON.stringify(report, null, 2) : formatConfiguredMcpSmokeReport(report))
+      if (!report.ok) process.exitCode = 1
       return
     }
     if (parsed.command === "update") {

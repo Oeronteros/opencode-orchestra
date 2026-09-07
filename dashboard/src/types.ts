@@ -68,6 +68,19 @@ export interface MonthProjection {
   isAheadOfPace: boolean
 }
 
+export interface McpUsageRow {
+  server: string
+  calls: number
+  successes: number
+  failures: number
+  retries: number
+  averageLatencyMs: number
+  maxLatencyMs: number
+  estimatedOutputTokens: number
+  lastUsedAt: number
+  lastOutcome: "success" | "failure"
+}
+
 /** Event kinds emitted by the live orchestration stream. */
 export type LiveEventKind = "start" | "delta" | "finish"
 
@@ -137,7 +150,8 @@ export interface Snapshot {
   daily: Array<DailyPoint>
   projection: MonthProjection
   anomalies: DailyAnomaly[]
-  mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "playwright", boolean>
+  mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "playwright" | "git" | "astGrep", boolean>
+  mcpUsage: McpUsageRow[]
   availableModels: string[]
 }
 

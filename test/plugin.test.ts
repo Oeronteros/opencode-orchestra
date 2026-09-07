@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import pluginModule, { OrchestraPlugin, server } from "../src/index.js"
+import pluginModule, { mcpServerForTool, OrchestraPlugin, server } from "../src/index.js"
 import { DEFAULT_CONFIG, withDefaults } from "../src/config/defaults.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
 import type { Ledger } from "../src/telemetry/ledger.js"
@@ -14,6 +14,62 @@ test("entrypoint exposes a stable id and server", () => {
   assert.equal(pluginModule.id, "opencode-orchestra")
   assert.equal(pluginModule.server, OrchestraPlugin)
   assert.equal(server, OrchestraPlugin)
+})
+
+test("MCP tool prefixes map to stable telemetry server names", () => {
+  assert.equal(mcpServerForTool("git_git_status"), "git")
+  assert.equal(mcpServerForTool("ast-grep_find_code"), "astGrep")
+  assert.equal(mcpServerForTool("playwright_browser_navigate"), "playwright")
+  assert.equal(mcpServerForTool("bash"), undefined)
+})
+
+test("MCP execution hooks persist successful usage metrics", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-mcp-hook-"))
+  const initialize = OrchestraPlugin as unknown as (
+    input: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+  const hooks = await initialize(
+    { directory: project, client: { app: { log: async () => undefined } } },
+    { telemetry: { enabled: true, directory: ".orchestra-mcp-hook" } },
+  )
+  const before = hooks["tool.execute.before"] as (input: { tool: string; sessionID: string; callID: string }) => Promise<void>
+  const after = hooks["tool.execute.after"] as (
+    input: { tool: string; sessionID: string; callID: string; args: Record<string, unknown> },
+    output: { title: string; output: string; metadata: Record<string, unknown> },
+  ) => Promise<void>
+
+  await before({ tool: "git_git_status", sessionID: "mcp-session", callID: "mcp-call" })
+  await after(
+    { tool: "git_git_status", sessionID: "mcp-session", callID: "mcp-call", args: {} },
+    { title: "status", output: "clean", metadata: {} },
+  )
+  await (hooks.dispose as () => Promise<void>)()
+
+  const state = JSON.parse(await readFile(path.join(project, ".orchestra-mcp-hook", "state.json"), "utf8")) as {
+    sessions: Record<string, { mcp: Record<string, {
+      calls: number
+      successes: number
+      failures: number
+      retries: number
+      totalLatencyMs: number
+      maxLatencyMs: number
+      outputChars: number
+      lastUsedAt: number
+      lastOutcome: "success" | "failure"
+    }> }>
+  }
+  assert.deepEqual(state.sessions["mcp-session"]?.mcp.git, {
+    calls: 1,
+    successes: 1,
+    failures: 0,
+    retries: 0,
+    totalLatencyMs: state.sessions["mcp-session"]?.mcp.git?.totalLatencyMs,
+    maxLatencyMs: state.sessions["mcp-session"]?.mcp.git?.maxLatencyMs,
+    outputChars: 5,
+    lastUsedAt: state.sessions["mcp-session"]?.mcp.git?.lastUsedAt,
+    lastOutcome: "success",
+  })
 })
 
 test("plugin initializes and injects additive agents, tools, and commands", async () => {

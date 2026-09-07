@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 import { parse } from "jsonc-parser"
 import { failureReason, install } from "../src/cli.js"
+import { astGrepMcpCommand, gitMcpCommand } from "../src/mcp/commands.js"
 
 const SUPER_POWERS_ENTRY = "superpowers@git+https://github.com/obra/superpowers.git"
 
@@ -445,12 +446,13 @@ test("installer writes git and ast-grep MCPs by default and respects --no-git/--
     pluginCacheDirectory: path.join(directory, "packages"),
   })
   const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { mcp: Record<string, { command: string[] }> }
-  assert.deepEqual(config.mcp.git, { type: "local", command: ["uvx", "mcp-server-git"], enabled: true, timeout: 30_000 })
+  assert.deepEqual(config.mcp.git, { type: "local", command: gitMcpCommand(), cwd: ".", enabled: true, timeout: 120_000 })
   assert.deepEqual(config.mcp["ast-grep"], {
     type: "local",
-    command: ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"],
+    command: astGrepMcpCommand(),
+    cwd: ".",
     enabled: true,
-    timeout: 30_000,
+    timeout: 120_000,
   })
   assert.equal(result.dependencies.git.status, "skipped")
   assert.equal(result.dependencies.astGrep.status, "skipped")

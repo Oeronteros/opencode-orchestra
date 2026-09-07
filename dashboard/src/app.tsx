@@ -22,7 +22,7 @@ import { columnSizingFeature, createColumnHelper, tableFeatures, useTable } from
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { motion, AnimatePresence, useReducedMotion } from "motion/react"
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 import type { TFunction } from "i18next"
 import { useTranslation } from "react-i18next"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
@@ -63,15 +63,6 @@ const tokenRateFormatter = new Intl.NumberFormat(undefined, {
 
 function formatCost(value: number): string {
   return value > 0 ? `$${value.toFixed(value < 1 ? 4 : 2)}` : "—"
-}
-
-function pricingLabel(status?: "paid" | "free" | "subscription" | "unknown"): string {
-  switch (status) {
-    case "free": return "free · $0"
-    case "subscription": return "subscription · $0"
-    case "unknown": return "unknown price"
-    default: return "—"
-  }
 }
 
 function totalTokens(row: AggregateRow): number {
@@ -790,18 +781,24 @@ function OverviewPage() {
               <span className="eyebrow">{t("memoryLayer")}</span>
               <h2>{t("mcpTitle")}</h2>
               <div className="mcp-list">
-                {Object.entries({ context7: "Context7", codebaseMemory: "Codebase Memory", memoryGraph: "MemoryGraph", playwright: "Playwright" }).map(([key, label], index) => (
-                  <motion.div
-                    key={key}
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.5 + index * 0.05 }}
-                  >
-                    <span className={cn("status-dot", !data.mcp[key as keyof Snapshot["mcp"]] && "off")} />
-                    <span>{label}</span>
-                    <small>{data.mcp[key as keyof Snapshot["mcp"]] ? t("mcpConnected") : t("mcpMissing")}</small>
-                  </motion.div>
-                ))}
+                {Object.entries({ context7: "Context7", codebaseMemory: "Codebase Memory", memoryGraph: "MemoryGraph", git: "Git", astGrep: "ast-grep", playwright: "Playwright" }).map(([key, label], index) => {
+                  const usage = data.mcpUsage.find((row) => row.server === key)
+                  return (
+                    <motion.div
+                      key={key}
+                      initial={{ opacity: 0, x: 10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.5 + index * 0.05 }}
+                    >
+                      <span className={cn("status-dot", (!data.mcp[key as keyof Snapshot["mcp"]] || usage?.lastOutcome === "failure") && "off")} />
+                      <span>{label}</span>
+                      <small>
+                        {data.mcp[key as keyof Snapshot["mcp"]] ? t("mcpConnected") : t("mcpMissing")}
+                        {usage ? ` · ${usage.calls}× · ${Math.round((usage.successes / Math.max(1, usage.calls)) * 100)}% · ${usage.averageLatencyMs}ms` : ""}
+                      </small>
+                    </motion.div>
+                  )
+                })}
               </div>
             </Card>
           ) : (
@@ -1047,6 +1044,58 @@ function LiveAgentRow({ row }: { row: LiveActiveAgent }) {
 const tableFeatureSet = tableFeatures({ columnSizingFeature })
 const activityHelper = createColumnHelper<typeof tableFeatureSet, ActivityRow>()
 
+type ActivityRange = "1" | "7" | "30" | "90" | "all"
+type ActivitySortKey = "time" | "cost" | "tokens" | "duration"
+type ActivityStatusGroup = "completed" | "tools" | "warning" | "error" | "unknown"
+
+function activityTimestamp(row: ActivityRow): number {
+  return row.completedAt ?? row.createdAt ?? 0
+}
+
+function activityDuration(row: ActivityRow): number {
+  return row.createdAt && row.completedAt ? Math.max(0, row.completedAt - row.createdAt) : 0
+}
+
+function formatActivityDuration(value: number, t: TFunction): string {
+  if (!value) return "—"
+  if (value < 1_000) return `${Math.round(value)} ${t("activityMilliseconds")}`
+  if (value < 60_000) return `${Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value / 1_000)} ${t("activitySeconds")}`
+  return `${Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value / 60_000)} ${t("activityMinutes")}`
+}
+
+function activityStatusGroup(finish?: string): ActivityStatusGroup {
+  const value = finish?.toLocaleLowerCase()
+  if (!value) return "unknown"
+  if (["stop", "end_turn", "completed", "success"].includes(value)) return "completed"
+  if (["tool-calls", "tool_calls", "tool_use"].includes(value)) return "tools"
+  if (["length", "max_tokens", "content-filter", "content_filter"].includes(value)) return "warning"
+  if (["error", "failed", "cancelled", "canceled", "aborted"].includes(value)) return "error"
+  return "unknown"
+}
+
+function activityStatusLabel(finish: string | undefined, t: TFunction): string {
+  switch (activityStatusGroup(finish)) {
+    case "completed": return t("activityStatusCompleted")
+    case "tools": return t("activityStatusTools")
+    case "warning": return finish === "length" || finish === "max_tokens" ? t("activityStatusLimit") : t("activityStatusFiltered")
+    case "error": return t("activityStatusError")
+    default: return finish || t("activityStatusUnknown")
+  }
+}
+
+function activityPricingLabel(status: ActivityRow["pricingStatus"], t: TFunction): string {
+  switch (status) {
+    case "paid": return t("activityPricePaid")
+    case "free": return t("activityPriceFree")
+    case "subscription": return t("activityPriceSubscription")
+    default: return t("activityPriceUnknown")
+  }
+}
+
+function activityRowKey(row: ActivityRow): string {
+  return `${row.sessionID}:${row.id}`
+}
+
 /**
  * Columns are built per language rather than once at module scope, so headers
  * follow a language switch. Callers memoize on the active language to keep the
@@ -1054,13 +1103,50 @@ const activityHelper = createColumnHelper<typeof tableFeatureSet, ActivityRow>()
  */
 function buildActivityColumns(t: TFunction) {
   return activityHelper.columns([
-    activityHelper.accessor("completedAt", { header: t("colTime"), cell: ({ getValue }) => getValue() ? new Date(getValue()!).toLocaleString() : "—", size: 180 }),
-    activityHelper.accessor("agent", { header: t("colAgent"), cell: ({ getValue }) => getValue()?.replace("orch-", "") ?? "unknown", size: 130 }),
-    activityHelper.accessor((row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown", { id: "model", header: t("colModel"), size: 300 }),
-    activityHelper.accessor((row) => splitTokens(row.tokens).total, { id: "tokens", header: t("colTokens"), cell: ({ row }) => formatTokensInOutCompact(row.original.tokens), size: 170 }),
-    activityHelper.accessor("cost", { header: t("colCost"), cell: ({ getValue }) => formatCost(getValue()), size: 100 }),
-    activityHelper.accessor("pricingStatus", { header: t("colPricingSource"), cell: ({ row }) => pricingLabel(row.original.pricingStatus), size: 120 }),
-    activityHelper.accessor("finish", { header: t("colStatus"), cell: ({ getValue }) => getValue() ?? "—", size: 110 }),
+    activityHelper.accessor((row) => activityTimestamp(row), {
+      id: "time",
+      header: t("colTime"),
+      cell: ({ row }) => {
+        const timestamp = activityTimestamp(row.original)
+        if (!timestamp) return "—"
+        const date = new Date(timestamp)
+        return <span className="activity-time"><strong>{date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</strong><small>{date.toLocaleDateString()}</small></span>
+      },
+      size: 150,
+    }),
+    activityHelper.accessor("agent", {
+      header: t("colAgent"),
+      cell: ({ getValue }) => <span className="activity-agent">{getValue()?.replace("orch-", "") ?? t("rankingUnknown")}</span>,
+      size: 125,
+    }),
+    activityHelper.accessor((row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown", {
+      id: "model",
+      header: t("colModel"),
+      cell: ({ row }) => <span className="activity-model"><strong>{row.original.model ?? t("rankingUnknown")}</strong><small>{row.original.provider ?? t("activityProviderUnknown")}</small></span>,
+      size: 235,
+    }),
+    activityHelper.accessor((row) => splitTokens(row.tokens).total, {
+      id: "tokens",
+      header: t("colTokens"),
+      cell: ({ row }) => {
+        const tokens = splitTokens(row.original.tokens)
+        return <span className="activity-tokens" title={`${t("activityInputTokens")}: ${formatNumber(tokens.input)} · ${t("activityOutputTokens")}: ${formatNumber(tokens.output)}`}><b>{formatNumber(tokens.input)} ↓</b><b>{formatNumber(tokens.output)} ↑</b></span>
+      },
+      size: 170,
+    }),
+    activityHelper.accessor("cost", {
+      header: t("colCost"),
+      cell: ({ row }) => <span className="activity-price"><strong>{formatCost(row.original.cost)}</strong><small className={cn(row.original.pricingStatus ? `price-${row.original.pricingStatus}` : "price-unknown")}>{activityPricingLabel(row.original.pricingStatus, t)}</small></span>,
+      size: 145,
+    }),
+    activityHelper.accessor("finish", {
+      header: t("colStatus"),
+      cell: ({ row }) => {
+        const group = activityStatusGroup(row.original.finish)
+        return <span className={`activity-status status-${group}`} title={row.original.finish}>{activityStatusLabel(row.original.finish, t)}</span>
+      },
+      size: 150,
+    }),
   ])
 }
 
@@ -1082,52 +1168,210 @@ function ActivityPage() {
           {t("activityTruncated", { shown: formatNumber(query.data.activity.length), total: formatNumber(query.data.activityTotal) })}
         </div>
       )}
-      <Card className="table-card">
-        <VirtualActivityTable data={query.data.activity} />
-      </Card>
+      <ActivityExplorer data={query.data.activity} total={query.data.activityTotal} />
     </motion.div>
   )
 }
 
-function VirtualActivityTable({ data }: { data: ActivityRow[] }) {
+function ActivityExplorer({ data, total }: { data: ActivityRow[]; total: number }) {
+  const { t } = useTranslation()
+  const [range, setRange] = useState<ActivityRange>("7")
+  const [search, setSearch] = useState("")
+  const [agent, setAgent] = useState("all")
+  const [model, setModel] = useState("all")
+  const [status, setStatus] = useState<ActivityStatusGroup | "all">("all")
+  const [pricing, setPricing] = useState<"all" | "known" | "unknown">("all")
+  const [sort, setSort] = useState<ActivitySortKey>("time")
+  const [direction, setDirection] = useState<"asc" | "desc">("desc")
+  const [selectedKey, setSelectedKey] = useState<string>()
+
+  const agents = useMemo(() => [...new Set(data.map((row) => row.agent ?? "unknown"))].sort(), [data])
+  const models = useMemo(() => [...new Set(data.map((row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown"))].sort(), [data])
+  const selectedRow = useMemo(() => data.find((row) => activityRowKey(row) === selectedKey), [data, selectedKey])
+
+  const rows = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase()
+    const cutoff = range === "all" ? 0 : Date.now() - Number(range) * 24 * 60 * 60 * 1_000
+    const filtered = data.filter((row) => {
+      const rowModel = row.provider && row.model ? `${row.provider}/${row.model}` : "unknown"
+      const pricingKnown = row.pricingStatus !== undefined && row.pricingStatus !== "unknown"
+      if (cutoff && activityTimestamp(row) < cutoff) return false
+      if (agent !== "all" && (row.agent ?? "unknown") !== agent) return false
+      if (model !== "all" && rowModel !== model) return false
+      if (status !== "all" && activityStatusGroup(row.finish) !== status) return false
+      if (pricing === "known" && !pricingKnown) return false
+      if (pricing === "unknown" && pricingKnown) return false
+      if (!needle) return true
+      return `${row.sessionID} ${row.id} ${row.agent ?? ""} ${row.provider ?? ""} ${row.model ?? ""} ${row.finish ?? ""}`.toLocaleLowerCase().includes(needle)
+    })
+    return filtered.sort((a, b) => {
+      const metric = (row: ActivityRow) => sort === "time" ? activityTimestamp(row) : sort === "cost" ? row.cost : sort === "tokens" ? splitTokens(row.tokens).total : activityDuration(row)
+      const delta = metric(a) - metric(b)
+      if (delta !== 0) return direction === "asc" ? delta : -delta
+      return activityTimestamp(b) - activityTimestamp(a)
+    })
+  }, [agent, data, direction, model, pricing, range, search, sort, status])
+
+  const summary = useMemo(() => rows.reduce((result, row) => ({
+    cost: result.cost + row.cost,
+    unknown: result.unknown + (!row.pricingStatus || row.pricingStatus === "unknown" ? 1 : 0),
+    sessions: result.sessions.add(row.sessionID),
+  }), { cost: 0, unknown: 0, sessions: new Set<string>() }), [rows])
+  const filtersActive = Boolean(search || agent !== "all" || model !== "all" || status !== "all" || pricing !== "all" || range !== "7")
+
+  const resetFilters = () => {
+    setSearch("")
+    setAgent("all")
+    setModel("all")
+    setStatus("all")
+    setPricing("all")
+    setRange("7")
+    setSort("time")
+    setDirection("desc")
+  }
+
+  return (
+    <>
+      <div className="activity-toolbar">
+        <label className="ranking-search activity-search">
+          <HugeiconsIcon icon={Search01Icon} size={17} aria-hidden="true" />
+          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("activitySearch")} />
+        </label>
+        <div className="ranking-range" role="group" aria-label={t("activityPeriod")}>
+          {(["1", "7", "30", "90", "all"] as ActivityRange[]).map((value) => (
+            <button type="button" key={value} className={cn(range === value && "active")} aria-pressed={range === value} onClick={() => setRange(value)}>
+              {value === "1" ? t("activityToday") : value === "all" ? t("rankingAllTime") : t("rangeDays", { count: Number(value) })}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="activity-filters">
+        <label><span>{t("colAgent")}</span><select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="all">{t("activityAllAgents")}</option>{agents.map((value) => <option value={value} key={value}>{value.replace("orch-", "")}</option>)}</select></label>
+        <label><span>{t("colModel")}</span><select value={model} onChange={(event) => setModel(event.target.value)}><option value="all">{t("activityAllModels")}</option>{models.map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
+        <label><span>{t("colStatus")}</span><select value={status} onChange={(event) => setStatus(event.target.value as ActivityStatusGroup | "all")}><option value="all">{t("activityAllStatuses")}</option><option value="completed">{t("activityStatusCompleted")}</option><option value="tools">{t("activityStatusTools")}</option><option value="warning">{t("activityStatusWarning")}</option><option value="error">{t("activityStatusError")}</option><option value="unknown">{t("activityStatusUnknown")}</option></select></label>
+        <label><span>{t("activityPricing")}</span><select value={pricing} onChange={(event) => setPricing(event.target.value as "all" | "known" | "unknown")}><option value="all">{t("activityAllPrices")}</option><option value="known">{t("activityKnownPrice")}</option><option value="unknown">{t("activityUnknownPrice")}</option></select></label>
+        <label><span>{t("activitySort")}</span><select value={sort} onChange={(event) => setSort(event.target.value as ActivitySortKey)}><option value="time">{t("colTime")}</option><option value="cost">{t("colCost")}</option><option value="tokens">{t("colTokens")}</option><option value="duration">{t("activityDuration")}</option></select></label>
+        <button type="button" className="activity-direction" onClick={() => setDirection((value) => value === "desc" ? "asc" : "desc")} aria-label={direction === "desc" ? t("activitySortDescending") : t("activitySortAscending")} title={direction === "desc" ? t("activitySortDescending") : t("activitySortAscending")}>
+          <HugeiconsIcon icon={ArrowUpDownIcon} size={16} aria-hidden="true" /><span>{direction === "desc" ? "↓" : "↑"}</span>
+        </button>
+      </div>
+      <div className="activity-summary">
+        <div><span>{t("calls")}</span><strong>{formatNumber(rows.length)}</strong><small>{t("activityOfTotal", { total: formatNumber(total) })}</small></div>
+        <div><span>{t("sessions")}</span><strong>{formatNumber(summary.sessions.size)}</strong><small>{t("activityInSelection")}</small></div>
+        <div><span>{t("cost")}</span><strong>{formatCost(summary.cost)}</strong><small>{rows.length ? t("activityAverageCost", { value: formatCost(summary.cost / rows.length) }) : t("activityInSelection")}</small></div>
+        <div className={cn(summary.unknown > 0 && "has-warning")}><span>{t("activityUnknownPrice")}</span><strong>{formatNumber(summary.unknown)}</strong><small>{t("activityNeedsAttention")}</small></div>
+      </div>
+      <div className="activity-results-line">
+        <span>{t("activityResults", { count: formatNumber(rows.length) })}</span>
+        {filtersActive && <button type="button" onClick={resetFilters}>{t("activityResetFilters")}</button>}
+      </div>
+      <Card className="table-card activity-table-card">
+        {rows.length || !data.length ? (
+          <VirtualActivityTable data={rows} selectedKey={selectedKey} onSelect={(row) => setSelectedKey(activityRowKey(row))} />
+        ) : (
+          <div className="ranking-empty-search activity-empty-search">
+            <HugeiconsIcon icon={Search01Icon} size={22} />
+            <span>{t("activityNoMatches")}</span>
+            <button type="button" onClick={resetFilters}>{t("activityResetFilters")}</button>
+          </div>
+        )}
+      </Card>
+      <AnimatePresence>
+        {selectedRow && <ActivityDetail row={selectedRow} onClose={() => setSelectedKey(undefined)} />}
+      </AnimatePresence>
+    </>
+  )
+}
+
+function ActivityDetail({ row, onClose }: { row: ActivityRow; onClose: () => void }) {
+  const { t } = useTranslation()
+  const tokens = splitTokens(row.tokens)
+  const status = activityStatusGroup(row.finish)
+  return (
+    <motion.div className="activity-detail-backdrop" role="presentation" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose}>
+      <motion.aside className="activity-detail" role="dialog" aria-modal="true" aria-labelledby="activity-detail-title" initial={{ x: 48, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 48, opacity: 0 }} transition={{ type: "spring", stiffness: 340, damping: 32 }} onClick={(event) => event.stopPropagation()}>
+        <div className="activity-detail-head">
+          <div><span>{t("activityCallDetails")}</span><h2 id="activity-detail-title">{row.model ?? t("rankingUnknown")}</h2></div>
+          <button type="button" onClick={onClose} aria-label={t("close")}>×</button>
+        </div>
+        <div className="activity-detail-hero">
+          <span className={`activity-status status-${status}`}>{activityStatusLabel(row.finish, t)}</span>
+          <strong>{formatCost(row.cost)}</strong>
+          <small>{activityPricingLabel(row.pricingStatus, t)}</small>
+        </div>
+        <dl className="activity-detail-grid">
+          <div><dt>{t("colAgent")}</dt><dd>{row.agent?.replace("orch-", "") ?? t("rankingUnknown")}</dd></div>
+          <div><dt>{t("activityProvider")}</dt><dd>{row.provider ?? t("rankingUnknown")}</dd></div>
+          <div><dt>{t("activityStarted")}</dt><dd>{row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}</dd></div>
+          <div><dt>{t("activityCompleted")}</dt><dd>{row.completedAt ? new Date(row.completedAt).toLocaleString() : "—"}</dd></div>
+          <div><dt>{t("activityDuration")}</dt><dd>{formatActivityDuration(activityDuration(row), t)}</dd></div>
+          <div><dt>{t("activityFinishReason")}</dt><dd><code>{row.finish ?? "—"}</code></dd></div>
+        </dl>
+        <section className="activity-token-detail">
+          <h3>{t("activityTokenBreakdown")}</h3>
+          <div><span>{t("activityInputTokens")}</span><strong>{formatNumber(tokens.input)}</strong></div>
+          <div><span>{t("activityOutputTokens")}</span><strong>{formatNumber(tokens.output)}</strong></div>
+          <div><span>{t("activityReasoningTokens")}</span><strong>{formatNumber(row.tokens.reasoning)}</strong></div>
+          <div><span>{t("activityCacheRead")}</span><strong>{formatNumber(row.tokens.cache.read)}</strong></div>
+          <div><span>{t("activityCacheWrite")}</span><strong>{formatNumber(row.tokens.cache.write)}</strong></div>
+        </section>
+        <dl className="activity-identifiers">
+          <div><dt>{t("activitySessionId")}</dt><dd><code>{row.sessionID}</code></dd></div>
+          <div><dt>{t("activityCallId")}</dt><dd><code>{row.id}</code></dd></div>
+        </dl>
+        <p className="activity-privacy">{t("activityPrivacyNote")}</p>
+      </motion.aside>
+    </motion.div>
+  )
+}
+
+function VirtualActivityTable({ data, selectedKey, onSelect }: { data: ActivityRow[]; selectedKey?: string; onSelect: (row: ActivityRow) => void }) {
   const { t, i18n: instance } = useTranslation()
   // Rebuild only when the language changes, not on every render.
   const columns = useMemo(() => buildActivityColumns(t), [instance.language, t])
   const table = useTable({ features: tableFeatureSet, columns, data })
   const rows = table.getRowModel().rows
   const parent = useRef<HTMLDivElement>(null)
-  const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => parent.current, estimateSize: () => 46, overscan: 8 })
+  const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => parent.current, estimateSize: () => 64, overscan: 8 })
   if (!rows.length) return <EmptyState />
   return (
     <div className="virtual-table">
-      <div className="table-head">
-        {table.getHeaderGroups()[0]?.headers.map((header) => (
-          <div key={header.id} style={{ width: header.getSize() }}>
-            {header.isPlaceholder ? null : <table.FlexRender header={header} />}
-          </div>
-        ))}
-      </div>
       <div ref={parent} className="table-scroll">
-        <div style={{ height: virtualizer.getTotalSize(), position: "relative", minWidth: 940 }}>
-          {virtualizer.getVirtualItems().map((item) => {
-            const row = rows[item.index]
-            if (!row) return null
-            return (
-              <div
-                className="table-row"
-                key={row.id}
-                data-index={item.index}
-                ref={virtualizer.measureElement}
-                style={{ transform: `translateY(${item.start}px)` }}
-              >
-                {row.getAllCells().map((cell) => (
-                  <div key={cell.id} style={{ width: cell.column.getSize() }}>
-                    <table.FlexRender cell={cell} />
-                  </div>
-                ))}
+        <div className="table-inner">
+          <div className="table-head">
+            {table.getHeaderGroups()[0]?.headers.map((header) => (
+              <div key={header.id} style={{ width: header.getSize() }}>
+                {header.isPlaceholder ? null : <table.FlexRender header={header} />}
               </div>
-            )
-          })}
+            ))}
+          </div>
+          <div className="table-body" style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+            {virtualizer.getVirtualItems().map((item) => {
+              const row = rows[item.index]
+              if (!row) return null
+              const key = activityRowKey(row.original)
+              return (
+                <div
+                  className={cn("table-row", selectedKey === key && "selected")}
+                  key={key}
+                  data-index={item.index}
+                  ref={virtualizer.measureElement}
+                  style={{ transform: `translateY(${item.start}px)` }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t("activityOpenCall", { model: row.original.model ?? t("rankingUnknown") })}
+                  onClick={() => onSelect(row.original)}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(row.original) } }}
+                >
+                  {row.getAllCells().map((cell) => (
+                    <div key={cell.id} data-column={cell.column.id} data-label={typeof cell.column.columnDef.header === "string" ? cell.column.columnDef.header : ""} style={{ width: cell.column.getSize() }}>
+                      <table.FlexRender cell={cell} />
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
         </div>
       </div>
     </div>
@@ -1353,15 +1597,30 @@ const BUDGET_LABEL_KEYS: Record<"eco" | "balanced" | "quality" | "ebobo", Transl
   ebobo: "budgetEbobo",
 }
 
-const ORCHESTRATION_FIELD_KEYS: Array<[
-  "parallelWorkers" | "parallelEditors" | "maxWorkers" | "maxPremiumCallsPerTask" | "confidenceThreshold",
-  TranslationKey,
-]> = [
-  ["parallelWorkers", "fieldParallelWorkers"],
-  ["parallelEditors", "fieldParallelEditors"],
-  ["maxWorkers", "fieldMaxWorkers"],
-  ["maxPremiumCallsPerTask", "fieldMaxPremiumCalls"],
-  ["confidenceThreshold", "fieldConfidenceThreshold"],
+type OrchestrationNumberField = "parallelWorkers" | "parallelEditors" | "maxWorkers" | "maxPremiumCallsPerTask" | "confidenceThreshold"
+
+const ORCHESTRATION_FIELDS: Array<{
+  name: OrchestrationNumberField
+  labelKey: TranslationKey
+  hintKey: TranslationKey
+  min: number
+  max: number
+  step: number
+}> = [
+  { name: "parallelWorkers", labelKey: "fieldParallelWorkers", hintKey: "fieldParallelWorkersHint", min: 1, max: 8, step: 1 },
+  { name: "parallelEditors", labelKey: "fieldParallelEditors", hintKey: "fieldParallelEditorsHint", min: 0, max: 8, step: 1 },
+  { name: "maxWorkers", labelKey: "fieldMaxWorkers", hintKey: "fieldMaxWorkersHint", min: 1, max: 12, step: 1 },
+  { name: "maxPremiumCallsPerTask", labelKey: "fieldMaxPremiumCalls", hintKey: "fieldMaxPremiumCallsHint", min: 0, max: 24, step: 1 },
+  { name: "confidenceThreshold", labelKey: "fieldConfidenceThreshold", hintKey: "fieldConfidenceThresholdHint", min: 0, max: 1, step: 0.01 },
+]
+
+const SETTINGS_NAV_ITEMS: Array<{ id: string; labelKey: TranslationKey }> = [
+  { id: "settings-budget", labelKey: "budgetTitle" },
+  { id: "settings-models", labelKey: "modelsAssignTitle" },
+  { id: "settings-orchestration", labelKey: "orchestrationTitle" },
+  { id: "settings-pricing", labelKey: "pricingTitle" },
+  { id: "settings-telemetry", labelKey: "telemetryTitle" },
+  { id: "settings-danger", labelKey: "dangerZoneTitle" },
 ]
 
 const settingsSchema = z.object({
@@ -1390,12 +1649,32 @@ function flattenErrors(errors: Record<string, unknown>, prefix = ""): string[] {
   return lines
 }
 
+function SettingsFieldHint({ id, text, error }: { id: string; text: string; error?: unknown }) {
+  const message = typeof (error as { message?: unknown } | undefined)?.message === "string"
+    ? (error as { message: string }).message
+    : undefined
+  return <small id={id} className={cn("settings-field-hint", message && "error")}>{message ?? text}</small>
+}
+
+function settingsFormDefaults(config: DashboardConfig): DashboardConfig {
+  return {
+    ...config,
+    models: {
+      ...config.models,
+      agents: {
+        ...Object.fromEntries(AGENTS.map((agent) => [agent.id, ""])),
+        ...config.models.agents,
+      },
+    },
+  }
+}
+
 function SettingsPage() {
   const { t } = useTranslation()
   const query = useSnapshot()
   const selected = useUiStore((state) => state.selectedProject)
   const client = useQueryClient()
-  const form = useForm<DashboardConfig>({ resolver: zodResolver(settingsSchema), defaultValues: query.data?.config })
+  const form = useForm<DashboardConfig>({ resolver: zodResolver(settingsSchema), defaultValues: query.data ? settingsFormDefaults(query.data.config) : undefined })
   const resetState = useRef<SnapshotResetState>({ initialized: false, appliedEpoch: 0 })
   const saveEpoch = useRef(0)
   useEffect(() => {
@@ -1403,7 +1682,7 @@ function SettingsPage() {
     const decision = snapshotResetDecision(resetState.current, saveEpoch.current)
     if (decision.reset) {
       resetState.current = decision.next
-      form.reset(query.data.config)
+      form.reset(settingsFormDefaults(query.data.config))
     }
   }, [query.data, form])
   const save = useMutation({
@@ -1413,7 +1692,11 @@ function SettingsPage() {
       await client.invalidateQueries({ queryKey: ["snapshot"] })
     },
   })
-  const isDirty = form.formState.isDirty
+  const modelStrategy = useWatch({ control: form.control, name: "models.strategy" })
+  const premiumEscalation = useWatch({ control: form.control, name: "orchestration.premiumEscalation" })
+  const openRouterEnabled = useWatch({ control: form.control, name: "pricing.openrouter.enabled" })
+  const telemetryEnabled = useWatch({ control: form.control, name: "telemetry.enabled" })
+  const isDirty = Object.keys(form.formState.dirtyFields).length > 0
   const fieldErrors = flattenErrors(form.formState.errors)
   if (selected === "global") return <ProjectRequired title={t("settingsTitle")} />
   if (!query.data) return query.isLoading ? <Loading /> : <ErrorState error={query.error} />
@@ -1424,13 +1707,16 @@ function SettingsPage() {
       transition={{ duration: 0.4 }}
     >
       <PageIntro kicker={t("settingsKicker")} title={t("settingsTitle")} text={t("settingsText")} />
+      <nav className="settings-nav" aria-label={t("settingsNavLabel")}>
+        {SETTINGS_NAV_ITEMS.map((item) => <a href={`#${item.id}`} key={item.id}>{t(item.labelKey)}</a>)}
+      </nav>
       <form onSubmit={form.handleSubmit((value) => save.mutate(value))} className="settings-stack">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
         >
-          <Card className="settings-card">
+          <Card className="settings-card settings-section" id="settings-budget">
             <div className="setting-title">
               <div>
                 <h2>{t("budgetTitle")}</h2>
@@ -1441,10 +1727,12 @@ function SettingsPage() {
               name="budget"
               control={form.control}
               render={({ field }) => (
-                <div className="budget-grid">
+                <div className="budget-grid" role="radiogroup" aria-label={t("budgetTitle")}>
                   {(["eco", "balanced", "quality", "ebobo"] as const).map((mode, index) => (
                     <motion.button
                       type="button"
+                      role="radio"
+                      aria-checked={field.value === mode}
                       key={mode}
                       className={cn("budget-option", field.value === mode && "selected")}
                       onClick={() => field.onChange(mode)}
@@ -1469,48 +1757,70 @@ function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
         >
-          <Card className="settings-card model-settings">
+          <Card className="settings-card model-settings settings-section" id="settings-models">
             <div className="setting-title">
               <div>
                 <h2>{t("modelsAssignTitle")}</h2>
                 <p>{t("modelsAssignText")}</p>
               </div>
-              <select {...form.register("models.strategy")}>
-                <option value="auto">{t("strategyAuto")}</option>
-                <option value="manual">{t("strategyManual")}</option>
-              </select>
+              <label className="strategy-select">
+                <span>{t("strategyLabel")}</span>
+                <select aria-label={t("strategyLabel")} {...form.register("models.strategy")}>
+                  <option value="auto">{t("strategyAuto")}</option>
+                  <option value="manual">{t("strategyManual")}</option>
+                </select>
+              </label>
             </div>
             {query.data.availableModels.length === 0 && (
               <div className="model-empty">
                 {t("modelsEmpty")} <code>opencode models</code>.
               </div>
             )}
-            <div className="agent-model-list">
-              {AGENTS.map((agent, index) => (
-                <motion.div
-                  className="agent-model-row"
-                  key={agent.id}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.2 + index * 0.03 }}
-                >
-                  <div className="agent-identity">
-                    <strong>{agent.name}</strong>
-                    <span>{t(agent.roleKey)}</span>
-                    <small>{agent.id}</small>
-                  </div>
-                  <select
-                    aria-label={t("modelForAgent", { name: agent.name })}
-                    {...form.register(`models.agents.${agent.id}`)}
-                  >
-                    <option value="">{t("modelAutomatic")}</option>
-                    {query.data.availableModels.map((model) => (
-                      <option key={model} value={model}>{model}</option>
-                    ))}
-                  </select>
-                </motion.div>
-              ))}
-            </div>
+            {modelStrategy === "auto" && (
+              <div className="settings-notice" role="status">
+                <strong>{t("strategyAuto")}</strong>
+                <span>{t("modelsAutoNotice")}</span>
+              </div>
+            )}
+              <div className="agent-model-groups" hidden={modelStrategy === "auto"}>
+                {(["groupCore", "groupDevelopment", "groupResearch", "groupVisual"] as TranslationKey[]).map((groupKey) => {
+                  const agents = AGENTS.filter((agent) => agent.groupKey === groupKey)
+                  return (
+                    <details className="agent-model-group" key={groupKey}>
+                      <summary>
+                        <span>{t(groupKey)}</span>
+                        <small>{t("modelsGroupCount", { count: agents.length })}</small>
+                      </summary>
+                      <div className="agent-model-list">
+                        {agents.map((agent, index) => (
+                          <motion.div
+                            className="agent-model-row"
+                            key={agent.id}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: index * 0.03 }}
+                          >
+                            <div className="agent-identity">
+                              <strong>{agent.name}</strong>
+                              <span>{t(agent.roleKey)}</span>
+                              <small>{agent.id}</small>
+                            </div>
+                            <select
+                              aria-label={t("modelForAgent", { name: agent.name })}
+                              {...form.register(`models.agents.${agent.id}`)}
+                            >
+                              <option value="">{t("modelAutomatic")}</option>
+                              {query.data.availableModels.map((model) => (
+                                <option key={model} value={model}>{model}</option>
+                              ))}
+                            </select>
+                          </motion.div>
+                        ))}
+                      </div>
+                    </details>
+                  )
+                })}
+              </div>
           </Card>
         </motion.div>
 
@@ -1519,7 +1829,7 @@ function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
         >
-          <Card className="settings-card">
+          <Card className="settings-card settings-section" id="settings-orchestration">
             <div className="setting-title">
               <div>
                 <h2>{t("orchestrationTitle")}</h2>
@@ -1527,55 +1837,51 @@ function SettingsPage() {
               </div>
             </div>
             <div className="settings-fields">
-              {ORCHESTRATION_FIELD_KEYS.map(([name, labelKey]) => (
-                <label key={name}>
-                  {t(labelKey)}
+              {ORCHESTRATION_FIELDS.map(({ name, labelKey, hintKey, min, max, step }) => {
+                const hintId = `orchestration-${name}-hint`
+                const error = form.formState.errors.orchestration?.[name]
+                const disabled = name === "maxPremiumCallsPerTask" && !premiumEscalation
+                return (
+                <label key={name} className={cn(disabled && "disabled-setting")}>
+                  <span>{t(labelKey)}</span>
                   <input
                     type="number"
-                    step={name === "confidenceThreshold" ? "0.01" : "1"}
+                    min={min}
+                    max={max}
+                    step={step}
                     {...form.register(`orchestration.${name}`, { valueAsNumber: true })}
+                    disabled={disabled}
+                    aria-invalid={Boolean(error)}
+                    aria-describedby={hintId}
                   />
+                  <SettingsFieldHint id={hintId} text={t(hintKey)} error={error} />
                 </label>
-              ))}
+                )
+              })}
               <label>
-                {t("fieldWorktreeRoot")}
-                <input {...form.register("orchestration.worktreeRoot")} placeholder={t("placeholderUnset")} />
+                <span>{t("fieldWorktreeRoot")}</span>
+                <input aria-describedby="worktree-root-hint" {...form.register("orchestration.worktreeRoot")} placeholder={t("placeholderUnset")} />
+                <SettingsFieldHint id="worktree-root-hint" text={t("fieldWorktreeRootHint")} />
               </label>
               <label className="check-setting">
-                {t("fieldPremiumEscalation")}
+                <span><strong>{t("fieldPremiumEscalation")}</strong><small>{t("fieldPremiumEscalationHint")}</small></span>
                 <Controller
                   name="orchestration.premiumEscalation"
                   control={form.control}
-                  render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
+                  defaultValue={query.data.config.orchestration.premiumEscalation}
+                  render={({ field }) => <Switch aria-label={t("fieldPremiumEscalation")} checked={field.value} onCheckedChange={field.onChange} />}
                 />
               </label>
               <label className="check-setting">
-                {t("fieldExposeWorkers")}
+                <span><strong>{t("fieldExposeWorkers")}</strong><small>{t("fieldExposeWorkersHint")}</small></span>
                 <Controller
                   name="orchestration.exposeWorkers"
                   control={form.control}
-                  render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
+                  defaultValue={query.data.config.orchestration.exposeWorkers}
+                  render={({ field }) => <Switch aria-label={t("fieldExposeWorkers")} checked={field.value} onCheckedChange={field.onChange} />}
                 />
               </label>
             </div>
-          </Card>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.35 }}
-        >
-          <Card className="settings-card inline-setting">
-            <div>
-              <h2>{t("autoAcceptTitle")}</h2>
-              <p>{t("autoAcceptText")}</p>
-            </div>
-            <Controller
-              name="permissions.autoAcceptAll"
-              control={form.control}
-              render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
-            />
           </Card>
         </motion.div>
 
@@ -1584,7 +1890,7 @@ function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
         >
-          <Card className="settings-card">
+          <Card className="settings-card settings-section" id="settings-pricing">
             <div className="setting-title">
               <div>
                 <h2>{t("pricingTitle")}</h2>
@@ -1593,36 +1899,42 @@ function SettingsPage() {
             </div>
             <div className="settings-fields">
               <label>
-                {t("fieldEndpoint")}
-                <input {...form.register("pricing.endpoint")} placeholder={t("placeholderUnset")} />
+                <span>{t("fieldEndpoint")}</span>
+                <input aria-describedby="pricing-endpoint-hint" {...form.register("pricing.endpoint")} placeholder={t("placeholderUnset")} />
+                <SettingsFieldHint id="pricing-endpoint-hint" text={t("fieldEndpointHint")} />
               </label>
               <label>
-                {t("fieldWarnAboveUsd")}
-                <input type="number" step="0.01" {...form.register("pricing.warnThresholdUSD", { valueAsNumber: true })} />
+                <span>{t("fieldWarnAboveUsd")}</span>
+                <input type="number" min="0" step="0.01" aria-describedby="pricing-warning-hint" {...form.register("pricing.warnThresholdUSD", { valueAsNumber: true })} />
+                <SettingsFieldHint id="pricing-warning-hint" text={t("fieldWarnAboveUsdHint")} error={form.formState.errors.pricing?.warnThresholdUSD} />
               </label>
               <label>
-                {t("fieldPriceRefreshHours")}
-                <input type="number" {...form.register("pricing.refreshIntervalHours", { valueAsNumber: true })} />
+                <span>{t("fieldPriceRefreshHours")}</span>
+                <input type="number" min="0" max="2160" aria-describedby="pricing-refresh-hint" {...form.register("pricing.refreshIntervalHours", { valueAsNumber: true })} />
+                <SettingsFieldHint id="pricing-refresh-hint" text={t("fieldPriceRefreshHoursHint")} error={form.formState.errors.pricing?.refreshIntervalHours} />
               </label>
               <label className="check-setting">
-                {t("fieldEstimateCost")}
+                <span><strong>{t("fieldEstimateCost")}</strong><small>{t("fieldEstimateCostHint")}</small></span>
                 <Controller
                   name="pricing.estimate"
                   control={form.control}
-                  render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
+                  defaultValue={query.data.config.pricing.estimate}
+                  render={({ field }) => <Switch aria-label={t("fieldEstimateCost")} checked={field.value} onCheckedChange={field.onChange} />}
                 />
               </label>
               <label className="check-setting">
-                {t("fieldOpenRouterFallback")}
+                <span><strong>{t("fieldOpenRouterFallback")}</strong><small>{t("fieldOpenRouterFallbackHint")}</small></span>
                 <Controller
                   name="pricing.openrouter.enabled"
                   control={form.control}
-                  render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
+                  defaultValue={query.data.config.pricing.openrouter.enabled}
+                  render={({ field }) => <Switch aria-label={t("fieldOpenRouterFallback")} checked={field.value} onCheckedChange={field.onChange} />}
                 />
               </label>
-              <label>
-                {t("fieldOpenRouterTtl")}
-                <input type="number" {...form.register("pricing.openrouter.ttlHours", { valueAsNumber: true })} />
+              <label className={cn(!openRouterEnabled && "disabled-setting")}>
+                <span>{t("fieldOpenRouterTtl")}</span>
+                <input type="number" min="1" max="720" aria-describedby="openrouter-ttl-hint" {...form.register("pricing.openrouter.ttlHours", { valueAsNumber: true })} disabled={!openRouterEnabled} />
+                <SettingsFieldHint id="openrouter-ttl-hint" text={t("fieldOpenRouterTtlHint")} error={form.formState.errors.pricing?.openrouter?.ttlHours} />
               </label>
             </div>
           </Card>
@@ -1641,8 +1953,9 @@ function SettingsPage() {
               </div>
             </div>
             <label className="settings-field">
-              {t("fieldSigma")}
-              <input type="number" min="0.5" max="6" step="0.1" {...form.register("telemetry.anomalySigma", { valueAsNumber: true })} />
+              <span>{t("fieldSigma")}</span>
+              <input type="number" min="0.5" max="6" step="0.1" aria-describedby="anomaly-sigma-hint" {...form.register("telemetry.anomalySigma", { valueAsNumber: true })} />
+              <SettingsFieldHint id="anomaly-sigma-hint" text={t("fieldSigmaHint")} error={form.formState.errors.telemetry?.anomalySigma} />
             </label>
           </Card>
         </motion.div>
@@ -1652,7 +1965,7 @@ function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5 }}
         >
-          <Card className="settings-card inline-setting">
+          <Card className="settings-card inline-setting settings-section" id="settings-telemetry">
             <div>
               <h2>{t("telemetryTitle")}</h2>
               <p>{t("telemetryText")}</p>
@@ -1660,7 +1973,8 @@ function SettingsPage() {
             <Controller
               name="telemetry.enabled"
               control={form.control}
-              render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
+              defaultValue={query.data.config.telemetry.enabled}
+              render={({ field }) => <Switch aria-label={t("telemetryTitle")} checked={field.value} onCheckedChange={field.onChange} />}
             />
           </Card>
         </motion.div>
@@ -1670,15 +1984,45 @@ function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.55 }}
         >
-          <Card className="settings-card inline-setting">
+          <Card className={cn("settings-card inline-setting", !telemetryEnabled && "disabled-setting")}>
             <div>
               <h2>{t("storeTexts")}</h2>
-              <p>{t("storeTextsHint")}</p>
+              <p>{telemetryEnabled ? t("storeTextsHint") : t("storeTextsDisabledHint")}</p>
             </div>
             <Controller
               name="telemetry.storeTexts"
               control={form.control}
-              render={({ field }) => <Switch checked={field.value} onCheckedChange={field.onChange} />}
+              defaultValue={query.data.config.telemetry.storeTexts}
+              render={({ field }) => <Switch aria-label={t("storeTexts")} disabled={!telemetryEnabled} checked={field.value} onCheckedChange={field.onChange} />}
+            />
+          </Card>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.58 }}
+        >
+          <Card className="settings-card danger-setting settings-section" id="settings-danger">
+            <div className="danger-setting-copy">
+              <span className="danger-label">{t("dangerZoneTitle")}</span>
+              <h2>{t("autoAcceptTitle")}</h2>
+              <p>{t("autoAcceptText")}</p>
+              <small>{t("appliesAfterSave")}</small>
+            </div>
+            <Controller
+              name="permissions.autoAcceptAll"
+              control={form.control}
+              defaultValue={query.data.config.permissions.autoAcceptAll}
+              render={({ field }) => (
+                <Switch
+                  aria-label={t("autoAcceptTitle")}
+                  checked={field.value}
+                  onCheckedChange={(checked) => {
+                    if (!checked || globalThis.confirm(t("autoAcceptConfirm"))) field.onChange(checked)
+                  }}
+                />
+              )}
             />
           </Card>
         </motion.div>
@@ -1689,10 +2033,18 @@ function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6 }}
         >
-          <span>{save.isError ? (save.error as Error).message : save.isSuccess ? t("settingsSaved") : query.data.configPath}</span>
-          <Button type="submit" disabled={save.isPending || !isDirty}>
-            {save.isPending ? t("saving") : t("saveSettings")}
-          </Button>
+          <div className="form-status">
+            <strong>{save.isError ? (save.error as Error).message : save.isSuccess ? t("settingsSaved") : isDirty ? t("settingsUnsaved") : t("settingsNoChanges")}</strong>
+            <code title={query.data.configPath}>{query.data.configPath}</code>
+          </div>
+          <div className="form-action-buttons">
+            <Button type="button" variant="outline" disabled={save.isPending || !isDirty} onClick={() => form.reset()}>
+              {t("discardChanges")}
+            </Button>
+            <Button type="submit" disabled={save.isPending || !isDirty}>
+              {save.isPending ? t("saving") : t("saveSettings")}
+            </Button>
+          </div>
           {fieldErrors.length > 0 && (
             <div className="form-errors" role="alert">
               {fieldErrors.map((line) => <span key={line}>{line}</span>)}
