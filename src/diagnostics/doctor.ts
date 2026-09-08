@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises"
+import { accessSync, constants as fsConstants } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser"
@@ -9,6 +10,7 @@ import { resolvePricingSync } from "../pricing/resolver.js"
 import { isCapabilityIncompatible, leadResolveRequest, normalizeCandidate, resolveModel, type ModelCandidate, type ResolveModelRequest } from "../routing/model-resolver.js"
 import { emptyPriceSnapshot, type PriceSnapshot } from "../routing/pricing/prices.js"
 import { resolvePluginVersion } from "../plugin-status.js"
+import { voiceBinaryName, voiceManagedDir } from "../voice.js"
 import { homeDirectory, spawnWithCmdFallback } from "../spawn.js"
 
 export const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
@@ -650,6 +652,32 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     status: astGrepEngine.executable ? "ok" : "info",
     detail: astGrepEngine.executable ? `${astGrepEngine.executable} — ${astGrepEngine.version ?? "unknown"}` : "not installed",
     ...(astGrepEngine.executable ? {} : { hint: "Optional: Orchestra's pinned uvx command injects ast-grep-cli into the MCP environment automatically." }),
+  })
+
+  // --- Voice overlay button (prebuilt Tauri binary; unknown flags open its
+  // window, so only file existence is checked — never spawned) ---
+  // localBinCandidates adds the platform suffix itself, so it takes the bare name.
+  const voiceManaged = voiceManagedDir(process.platform, process.env)
+  const voiceCandidates = [
+    ...(voiceManaged === null ? [] : [path.join(voiceManaged, voiceBinaryName(process.platform))]),
+    ...localBinCandidates("voice-overlay"),
+  ]
+  const voiceExecutable = voiceCandidates.find((candidate) => {
+    try {
+      accessSync(candidate, fsConstants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+  push({
+    id: "voice-overlay",
+    label: "Voice overlay button",
+    status: voiceExecutable === undefined ? "info" : "ok",
+    detail: voiceExecutable ?? "not installed",
+    ...(voiceExecutable === undefined
+      ? { hint: "Run `opencode-orchestra install` to provision it (needs a display to show the window)." }
+      : {}),
   })
 
   // --- Routing preflight (non-mutating) ---

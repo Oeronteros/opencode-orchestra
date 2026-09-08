@@ -1,7 +1,7 @@
 # Voice Overlay for OpenCode — Design (Tauri v2, offline)
 
 **Date:** 2026-09-07
-**Status:** Sections 1–5 presented in chat; Section 1 approved («согласовано» → build); v1 TUI implemented in `feat/voice-overlay` (TS green 15/15, Rust E2E pending on toolchain machines). Section 6 (Web target) — written supplement, awaiting review.
+**Status:** Sections 1–5 presented in chat; Section 1 approved («согласовано» → build); v1 TUI implemented in `feat/voice-overlay` (TS green 15/15, Rust E2E pending on toolchain machines). Section 6 (Web target) — written supplement, awaiting review. Section 7 (delivery via plugin install, approach A) — design approved in chat 2026-09-08 («да»), awaiting written-spec review.
 **Path:** Architectural (new out-of-TUI subsystem + new repo node + Rust toolchain + OS-level audio)
 
 ## Goal
@@ -161,7 +161,48 @@ voice-overlay/
 2. `tsc --noEmit` + `cargo test` (новые тесты: `session_url`, `message_url`, `parseSessionList`, allowlist таргета) — green; старые 7 Rust-тестов и 15 TS-тестов без регрессий.
 3. Ручной чеклист Web: открыть `opencode web --port 4096`, создать сессию, в оверлее target=web + выбрать сессию, 5 с русской речи → сообщение появляется в выбранной сессии только после нажатия «Отправить»; негативы: список пуст (`no-session`), неверный пароль (`unauthorized`), сервер выключен (clipboard-fallback), удалённая сессия (`session-not-found`); регрессия TUI-матрицы Section 5 полностью зелёная.
 
+## Section 7/5+2 — Delivery: кнопка из `bunx install` (approach A, approved 2026-09-08)
+
+### Задача
+
+Пользователь ставит плагин (`bunx @oeronteros-1/opencode-orchestra@latest install`) — и вместе с плагином получает голосовую кнопку. Ограничения, зафиксированные ранее и здесь: в TUI/веб самого OpenCode кнопку средствами плагина добавить нельзя (plugin API = хуки/события/tools/команды, UI-инъекций нет — проверено по `https://opencode.ai/docs/plugins/` 2026-09-08); в дашборд не ставим по требованию пользователя. Значит, доставляется внешний оверлей (одна кнопка на оба кейса: TUI + Web через переключатель target из Section 6).
+
+### Пакетная схема
+
+Три новых пакета (старт — только `linux-x64` + `win32-x64`; `linux-arm64` следом; macOS нет — спек Windows+Linux, YAGNI):
+
+- `@oeronteros-1/voice-overlay-linux-x64`, `@oeronteros-1/voice-overlay-linux-arm64`, `@oeronteros-1/voice-overlay-win32-x64`.
+- Содержимое каждого: `voice-overlay[.exe]` (Tauri release-бинарник) + `ffmpeg-<triple>` + `whisper-<triple>` (триплеты — те же, что конструирует `sidecar_file` в `main.rs`: `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc.exe`, `aarch64-unknown-linux-gnu`). Модели ggml НЕ в пакетах — докачка при install (см. CLI).
+- В каждом пакете `package.json` — поля `os`/`cpu` (паттерн уже в репо: так возится `lightningcss`). npm ставит только подходящий под платформу юзера. Корневой `package.json` — только 3 строки в `optionalDependencies` с точными пинами; поле `files` не трогаем.
+- Версионирование — lockstep с плагином (2.x.y).
+
+### CI-сборка (`.github/workflows/` в репо нет — создаётся)
+
+- `voice-overlay.yml`, matrix: `ubuntu-22.04 x64`, `windows-2022 x64` (arm64 — вторым этапом). Шаги: Rust stable, Node 22, `npm ci` в `voice-overlay/`, вендоринг sidecars (ffmpeg static + whisper.cpp release, URL пинятся в workflow), `tauri build`. Артефакты `deb`/`nsis` — в artifacts релиза для ручного скачивания; в npm-пакеты едет raw-бинарник из `target/release/` + sidecars.
+- Налог Tauri-на-Linux: раннеру нужны `webkit2gtk` dev-пакеты (`apt`) — стандартно, фиксируем в workflow.
+- Публикация sidecar-пакетов в npm — только по тегу через `NPM_TOKEN`. Локально ничего не публикуется.
+
+### CLI `install` (ложится на паттерн `ensureX` в `src/cli.ts`)
+
+- Новый `ensureVoiceOverlay()` рядом с `ensureCodebaseMemory`/`ensureUv`: детект `process.platform/arch` → `require.resolve` нужного optional-пакета → пакета нет (unsupported platform) → статус `skipped` с понятным текстом, не ошибка.
+- Раскладка: копия бинарника + sidecars в поддиректорию `voice-overlay/` внутри packages root, который уже резолвит installer (`openCodePackagesRoot()`, переопределяется как остальное provisioned); `ggml-base.bin` качаем в app-data `models/` (сеть при install — разрешённое исключение спека; URL те же, что в `voice-overlay/README.md`).
+- Проверки: дисплей (Linux: `$DISPLAY`/`$WAYLAND_DISPLAY`/WSLg; нет — warn «окно не покажется без дисплея», но ставим); `doctor` расширяем проверкой оверлея (бинарник/модель/дисплей).
+- Флаги: `--no-voice` (новый, дефолт устанавливать); уважает `--dry-run` (только печатает) и `--no-deps` (как остальной provisioning). Строка отчёта — однострочная bounded (в репо есть тест на формат installer output — обновить).
+- Финальные строки install (точные копии, русский):
+  - `Голосовая кнопка установлена: запусти voice-overlay.`
+  - `TUI — вставка в промпт, Web — отправка в сессию (переключатель — кнопка ⚙ в окне).`
+
+### Верификация (Section 7)
+
+1. CI green (сборка обеих платформ + `npm publish --dry-run` sidecar-пакетов).
+2. `install --dry-run` — печатает план без изменений; unit-тесты маппинга платформа→пакет (чистые функции, без сети).
+3. Свежий `bunx install` на linux-x64 и win-x64 → бинарник на месте → окно появилось → 5 с речи → обе E2E-матрицы (TUI §5 + Web §6) зелёные.
+
 ## Risks
+
+- Доставка: юзеру на Linux может понадобиться системный webkit (raw-бинарник, в отличие от `.deb`, зависимости не тянет) — лечится проверкой `doctor` + строкой в README.
+- Доставка: WSL без WSLg/дисплея — окно не показать; только честный warn при install, не ошибка.
+- Доставка: вес npm sidecar-пакетов и первая докачка модели (~140 МБ) — показать прогресс/размер в выводе install.
 
 - Web: семантика `POST /session/:id/message` vs `prompt_async` (черновик vs сразу модели) различается между версиями сервера — лечится обязательной сверкой с `/doc` (Section 6, п.1) и явной кнопкой подтверждения в окне.
 - Web: отправка не в ту сессию при устаревшем `sessionId` — лечится `error(session-not-found)` + ручным обновлением списка, авторетраи в другую сессию запрещены.
@@ -178,3 +219,4 @@ voice-overlay/
 4. `append_to_prompt` + `health_check` + экран настроек.
 5. Sidecars, бандлы deb/appimage/nsis, README (порт, модели, устройства), ручной чеклист Section 5.
 6. Web-таргет (Section 6, отдельным Task 6 плана): сверка с `/doc` → `list_sessions/send_to_session` (TS+ Rust + тесты) → target-переключатель и селектор сессии в настройках → ветвление App.tsx → README (web-раздел) → ручной чеклист Section 6 + регрессия TUI-матрицы.
+7. Доставка кнопкой из install (Section 7, отдельным Task 7 плана): sidecar npm-пакеты + CI `voice-overlay.yml` → `ensureVoiceOverlay()` + `--no-voice` + `doctor` → README (install-раздел) → свежий `bunx install` на linux-x64/win-x64 + обе E2E-матрицы.

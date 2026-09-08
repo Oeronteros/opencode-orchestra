@@ -1,0 +1,84 @@
+name: voice-overlay
+
+on:
+  push:
+    tags:
+      - "voice-overlay-v*"
+  workflow_dispatch:
+
+env:
+  FFMPEG_LINUX_URL: https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+  FFMPEG_WINDOWS_URL: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+  WHISPER_URL: https://github.com/ggerganov/whisper.cpp/releases/download/b1/whisper-b1-bin-ubuntu-x64.zip
+
+jobs:
+  build:
+    # linux-arm64 follows (spec Section 7): add an `ubuntu-*-arm` runner row here.
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: windows-2022
+            platform: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux webkit deps
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend deps
+        run: npm ci --prefix voice-overlay
+
+      - name: Vendor ffmpeg + whisper sidecars (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          curl -sL "$FFMPEG_LINUX_URL" -o /tmp/ffmpeg.tar.xz
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
+          cp /tmp/ffmpeg-*-amd64-static/ffmpeg "voice-overlay/src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu"
+          curl -sL "$WHISPER_URL" -o /tmp/whisper.zip
+          unzip -o /tmp/whisper.zip -d /tmp/whisper
+          cp /tmp/whisper/build/bin/whisper-cli "voice-overlay/src-tauri/binaries/whisper-x86_64-unknown-linux-gnu"
+          chmod +x voice-overlay/src-tauri/binaries/*
+
+      - name: Vendor ffmpeg + whisper sidecars (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:FFMPEG_WINDOWS_URL -OutFile C:\Windows\Temp\ffmpeg.zip
+          Expand-Archive C:\Windows\Temp\ffmpeg.zip -DestinationPath C:\Windows\Temp\ffmpeg
+          Copy-Item C:\Windows\Temp\ffmpeg\ffmpeg-*-essentials_build\bin\ffmpeg.exe voice-overlay\src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe
+          Invoke-WebRequest -Uri $env:WHISPER_URL -OutFile C:\Windows\Temp\whisper.zip
+          Expand-Archive C:\Windows\Temp\whisper.zip -DestinationPath C:\Windows\Temp\whisper
+          Copy-Item C:\Windows\Temp\whisper\build\bin\Release\whisper-cli.exe voice-overlay\src-tauri\binaries\whisper-x86_64-pc-windows-msvc.exe
+
+      - name: Build Tauri app
+        run: npm --prefix voice-overlay run build
+
+      - name: Stage sidecar npm package
+        shell: bash
+        run: >
+          node scripts/pack-voice-overlay.mjs
+          --platform ${{ matrix.platform }}
+          --version "$(node -p "require('./package.json').version")"
+          --src voice-overlay/src-tauri/target/release
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-overlay-${{ matrix.platform }}
+          path: voice-overlay/src-tauri/target/release/bundle
+
+      - name: Publish sidecar package
+        if: startsWith(github.ref, 'refs/tags/voice-overlay-v')
+        run: npm publish --access public ./voice-overlay/packaging/${{ matrix.platform }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

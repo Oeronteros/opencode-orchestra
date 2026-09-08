@@ -2,10 +2,10 @@
 
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
-import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { pathToFileURL } from "node:url"
+import { pathToFileURL, fileURLToPath } from "node:url"
 import { applyEdits, modify, parse, printParseErrorCode, type ParseError } from "jsonc-parser"
 import { formatPluginCacheReport, openCodePackagesRoot, refreshPluginCache, type PluginCacheReport } from "./cache-refresh.js"
 import { openCodeConfigDirectory } from "./config/paths.js"
@@ -18,6 +18,7 @@ import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/confi
 import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
+import { voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_URL } from "./voice.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -48,6 +49,8 @@ export interface InstallOptions {
   playwright?: boolean
   /** Add the Superpowers plugin (obra/superpowers) to the plugin array by default; false explicitly disables it. */
   superpowers?: boolean
+  /** Provision the prebuilt voice-overlay button binary by default; false explicitly disables it. */
+  voice?: boolean
   provisionDependencies: boolean
   force: boolean
   dryRun: boolean
@@ -73,6 +76,7 @@ export interface InstallResult {
     memoryGraph: ProvisionedDependency
     git: ProvisionedDependency
     astGrep: ProvisionedDependency
+    voice: ProvisionedDependency
   }
 }
 
@@ -273,6 +277,62 @@ async function provisionCodebaseMemory(enabled: boolean): Promise<ProvisionedDep
   return { command: installed, status: "installed" }
 }
 
+function isExecutableFile(file: string): boolean {
+  try {
+    fs.accessSync(file, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function ensureVoiceModel(): Promise<void> {
+  const dir = voiceModelDir(process.platform, process.env)
+  if (dir === null) return
+  const target = path.join(dir, VOICE_MODEL_FILE)
+  if (fs.existsSync(target)) return
+  const response = await fetch(VOICE_MODEL_URL, { redirect: "follow", signal: AbortSignal.timeout(600_000) })
+  if (!response.ok) throw new Error(`Failed to download ${VOICE_MODEL_URL}: HTTP ${response.status}`)
+  await mkdir(dir, { recursive: true })
+  await writeFile(target, Buffer.from(await response.arrayBuffer()))
+}
+
+async function provisionVoiceOverlay(shouldProvision: boolean): Promise<ProvisionedDependency> {
+  const platform = process.platform
+  const dep = voiceOverlayPackageFor(platform, process.arch)
+  if (dep === null) return { command: "voice-overlay", status: "skipped" }
+  if (!shouldProvision) return { command: "voice-overlay", status: "skipped" }
+  const managedDir = voiceManagedDir(platform, process.env)
+  const binary = voiceBinaryName(platform)
+  const managedBinary = managedDir === null ? null : path.join(managedDir, binary)
+  if (managedBinary !== null && isExecutableFile(managedBinary)) {
+    await ensureVoiceModel().catch(() => undefined)
+    return { command: managedBinary, status: "existing" }
+  }
+  let packageDir: string
+  try {
+    packageDir = path.dirname(fileURLToPath(import.meta.resolve(`${dep}/package.json`)))
+  } catch {
+    return { command: "voice-overlay", status: "failed", reason: `optional package ${dep} is not installed` }
+  }
+  if (managedDir === null) {
+    return { command: "voice-overlay", status: "failed", reason: "no managed install directory on this platform" }
+  }
+  const sidecars = voiceSidecarNames(platform, process.arch) ?? []
+  try {
+    await mkdir(managedDir, { recursive: true })
+    for (const file of [binary, ...sidecars]) {
+      await copyFile(path.join(packageDir, file), path.join(managedDir, file))
+    }
+    if (platform !== "win32") await chmod(path.join(managedDir, binary), 0o755)
+  } catch (error) {
+    const reason = failureReason(error)
+    return { command: "voice-overlay", status: "failed", ...(reason ? { reason } : {}) }
+  }
+  await ensureVoiceModel().catch(() => undefined)
+  return { command: path.join(managedDir, binary), status: "installed" }
+}
+
 async function ensureUv(): Promise<ProvisionedDependency & { command: string }> {
   const current = executable(["uv", ...localBinCandidates("uv")])
   if (current) return { command: current, status: "existing" }
@@ -398,6 +458,12 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
         return { command: "memorygraph", status: "failed" as const, ...(reason ? { reason } : {}) }
       })
     : { command: "memorygraph", status: "skipped" as const }
+  const voice = options.voice !== false
+    ? await provisionVoiceOverlay(shouldProvision).catch((error: unknown) => {
+        const reason = failureReason(error)
+        return { command: "voice-overlay", status: "failed" as const, ...(reason ? { reason } : {}) }
+      })
+    : { command: "voice-overlay", status: "skipped" as const }
   // Git + ast-grep use one managed uv/uvx installation on Windows and Unix.
   // Their real MCP handshakes run concurrently so successful installation is
   // proven without doubling cold-start latency.
@@ -627,6 +693,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
       memoryGraph: memoryGraph,
       git,
       astGrep,
+      voice,
     },
   }
 }
@@ -654,6 +721,7 @@ function usage(): string {
     "  --no-ast-grep        Do not configure ast-grep MCP",
     "  --no-playwright      Do not configure Playwright MCP",
     "  --no-superpowers     Do not add the Superpowers plugin",
+    "  --no-voice             Do not provision the voice overlay button",
     "  --no-deps            Only write config; do not install local MCP executables",
     "  --force              Replace existing MCP entries with Orchestra defaults",
     "  --dry-run            Show intended changes without writing files or downloading",
@@ -761,6 +829,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     astGrep: true,
     playwright: true,
     superpowers: true,
+    voice: true,
     provisionDependencies: true,
     force: false,
     dryRun: false,
@@ -774,6 +843,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     else if (argument === "--no-ast-grep") options.astGrep = false
     else if (argument === "--no-playwright") options.playwright = false
     else if (argument === "--no-superpowers") options.superpowers = false
+    else if (argument === "--no-voice") options.voice = false
     else if (argument === "--no-deps") options.provisionDependencies = false
     else if (argument === "--force") options.force = true
     else if (argument === "--dry-run") options.dryRun = true
@@ -835,6 +905,11 @@ async function main(): Promise<void> {
     console.log(`MemoryGraph: ${dependencyLine(result.dependencies.memoryGraph)}`)
     console.log(`Git: ${dependencyLine(result.dependencies.git)}`)
     console.log(`ast-grep: ${dependencyLine(result.dependencies.astGrep)}`)
+    console.log(`Voice overlay: ${dependencyLine(result.dependencies.voice)}`)
+    if (result.dependencies.voice.status === "installed" || result.dependencies.voice.status === "existing") {
+      console.log("Голосовая кнопка установлена: запусти voice-overlay.")
+      console.log("TUI — вставка в промпт, Web — отправка в сессию (переключатель — кнопка ⚙ в окне).")
+    }
     if (result.changed.length > 0) console.log(`Changed: ${result.changed.join(", ")}`)
     if (result.preserved.length > 0) console.log(`Preserved: ${result.preserved.join(", ")}`)
     if (result.backup) console.log(`Backup: ${result.backup}`)

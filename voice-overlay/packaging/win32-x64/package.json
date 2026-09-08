@@ -1,0 +1,9 @@
+{
+  "name": "@oeronteros-1/voice-overlay-win32-x64",
+  "version": "0.0.0-dev",
+  "private": false,
+  "description": "Prebuilt voice-overlay button binary for Windows x64 (stamped to the plugin version by CI)",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["voice-overlay.exe", "ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe"]
+}

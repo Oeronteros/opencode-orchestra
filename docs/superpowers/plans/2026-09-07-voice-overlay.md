@@ -1743,3 +1743,208 @@ Append to `voice-overlay/README.md` a `## Web-таргет (opencode web)` secti
 Run: `npm --prefix voice-overlay run typecheck` (clean) + `npm --prefix voice-overlay test` (all PASS incl. new `web.test.ts`, updated `errors.test.ts` with 12 codes).
 Run (Rust machine): `cargo test` — all PASS (9 tests: 7 old + 2 new).
 Verify + report (no commit without explicit request).
+
+---
+
+### Task 7: Delivery — кнопка из `bunx install` (Section 7)
+
+**Spec:** `docs/superpowers/specs/2026-09-07-voice-overlay-design.md`, Section 7. Read it before touching code.
+
+**Precedents (verified in repo, follow them):** per-platform `optionalDependencies` with `os`/`cpu` (see `lightningcss-*` in root `package.json`); `ensureX()` provisioning in `src/cli.ts` (`ensureCodebaseMemory`, `ensureUv`) with `{ command, status }` + `failureReason` catch wrapper; optional install flags (`git?`, `astGrep?`, `superpowers?` — undefined means enabled, `options.X !== false` check); installer report lines via `dependencyLine()` in `main()`; doctor `Check` shape `{ id, label, status, detail, hint? }` pushed in `runDoctor` (`src/diagnostics/doctor.ts`).
+
+**Files:**
+- Create: `.github/workflows/voice-overlay.yml`, `voice-overlay/packaging/linux-x64/package.json`, `voice-overlay/packaging/linux-arm64/package.json`, `voice-overlay/packaging/win32-x64/package.json`, `scripts/pack-voice-overlay.mjs`, `test/voice.test.ts`
+- Modify: root `package.json` (3 `optionalDependencies`, exact pins), `src/cli.ts`, `src/diagnostics/doctor.ts`, `test/cli.test.ts`, `test/doctor.test.ts`, `README.md` (install section)
+
+**Interfaces:**
+- Consumes: `ProvisionedDependency`, `failureReason`, `localBinCandidates` (all existing in `src/cli.ts`); `openCodePackagesRoot()`; root `package.json` `version` (now `2.0.1`) as the lockstep pin source; `node:fs` existence checks (never spawn the Tauri binary for probing — unknown flags open its window).
+- Produces: `voiceOverlayPackageFor(platform: string, arch: string): string | null`, `voiceBinaryName(platform)`, `voiceOverlayTriple(platform, arch): string | null` (identical to Rust `sidecar_file`), `voiceSidecarNames(platform, arch)`, `voiceManagedDir(platform, env): string | null` (`~/.local/bin` on Linux, `%LOCALAPPDATA%\Programs\voice-overlay` on Windows — sidecars must sit next to the binary because Tauri resolves them exe-adjacent), `VOICE_MODEL_URL`, `VOICE_MODEL_FILE`, `provisionVoiceOverlay(shouldProvision: boolean)`, `InstallOptions.voice?: boolean`, `InstallResult["dependencies"]["voice"]`, doctor check `id: "voice-overlay"`, CLI flag `--no-voice`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `test/voice.test.ts`:
+```ts
+import { describe, it } from "node:test"
+import assert from "node:assert/strict"
+import { voiceOverlayPackageFor, VOICE_MODEL_URL } from "../src/voice.js"
+
+describe("voiceOverlayPackageFor", () => {
+  it("maps supported platforms to sidecar package names", () => {
+    assert.equal(voiceOverlayPackageFor("linux", "x64"), "@oeronteros-1/voice-overlay-linux-x64")
+    assert.equal(voiceOverlayPackageFor("linux", "arm64"), "@oeronteros-1/voice-overlay-linux-arm64")
+    assert.equal(voiceOverlayPackageFor("win32", "x64"), "@oeronteros-1/voice-overlay-win32-x64")
+  })
+  it("returns null for unsupported platforms", () => {
+    assert.equal(voiceOverlayPackageFor("darwin", "arm64"), null)
+    assert.equal(voiceOverlayPackageFor("win32", "arm64"), null)
+    assert.equal(voiceOverlayPackageFor("freebsd", "x64"), null)
+  })
+})
+
+describe("VOICE_MODEL_URL", () => {
+  it("points at the whisper.cpp ggml base model", () => {
+    assert.equal(VOICE_MODEL_URL, "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin")
+  })
+})
+```
+Append to `test/cli.test.ts` (next to the other `install()` cases):
+```ts
+test("installer skips voice overlay with voice:false", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-voice-"))
+  const result = await install({ configDirectory: directory, context7: false, codebaseMemory: false, memoryGraph: false, git: false, astGrep: false, playwright: false, superpowers: false, voice: false, provisionDependencies: true, force: false, dryRun: false, pluginCacheDirectory: path.join(directory, "packages") })
+  assert.equal(result.dependencies.voice.status, "skipped")
+})
+```
+(`mkdtemp`, `os`, `path` already imported in `test/cli.test.ts`; place the case next to the other `install()` cases.)
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `npx tsc -p tsconfig.test.json` (from repo root)
+Expected: FAIL with `TS2307: Cannot find module '../src/voice.js'` (feature missing, not a typo). Correct red state.
+
+- [ ] **Step 3: Implement `src/voice.ts` (new, pure logic only)**
+
+```ts
+const SCOPE = "@oeronteros-1/voice-overlay"
+
+export const VOICE_MODEL_URL =
+  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+
+export const VOICE_MODEL_FILE = "ggml-base.bin"
+
+export function voiceOverlayPackageFor(platform: string, arch: string): string | null {
+  if (platform === "linux" && arch === "x64") return `${SCOPE}-linux-x64`
+  if (platform === "linux" && arch === "arm64") return `${SCOPE}-linux-arm64`
+  if (platform === "win32" && arch === "x64") return `${SCOPE}-win32-x64`
+  return null
+}
+
+export function voiceBinaryName(platform: string): string {
+  return platform === "win32" ? "voice-overlay.exe" : "voice-overlay"
+}
+```
+(No fs/network here — resolution + download live in `provisionVoiceOverlay` in `src/cli.ts`, next step.)
+
+- [ ] **Step 4: Wire CLI (`src/cli.ts`)**
+
+1. `InstallOptions`: add `/** Provision the prebuilt voice-overlay button binary; false explicitly disables it. */ voice?: boolean` after the `superpowers?` line.
+2. `InstallResult["dependencies"]`: add `voice: ProvisionedDependency` after `astGrep`.
+3. `parseArguments` install defaults: add `voice: true`, and flag branch `else if (argument === "--no-voice") options.voice = false` next to `--no-superpowers`.
+4. New `provisionVoiceOverlay(shouldProvision: boolean): Promise<ProvisionedDependency>` placed next to the other provision functions. Never spawn the Tauri binary for probing (unknown flags open its window) — existence only, via `node:fs` checks:
+```ts
+async function provisionVoiceOverlay(shouldProvision: boolean): Promise<ProvisionedDependency> {
+  const platform = process.platform
+  const dep = voiceOverlayPackageFor(platform, process.arch)
+  if (dep === null) return { command: "voice-overlay", status: "skipped" }
+  if (!shouldProvision) return { command: "voice-overlay", status: "skipped" }
+  const managedDir = voiceManagedDir(platform, process.env)
+  const binary = voiceBinaryName(platform)
+  const managedBinary = managedDir === null ? null : path.join(managedDir, binary)
+  if (managedBinary !== null && isExecutableFile(managedBinary)) {
+    await ensureVoiceModel().catch(() => undefined)
+    return { command: managedBinary, status: "existing" }
+  }
+  let packageDir: string
+  try {
+    packageDir = path.dirname(fileURLToPath(import.meta.resolve(`${dep}/package.json`)))
+  } catch {
+    return { command: "voice-overlay", status: "failed", reason: `optional package ${dep} is not installed` }
+  }
+  if (managedDir === null) {
+    return { command: "voice-overlay", status: "failed", reason: "no managed install directory on this platform" }
+  }
+  const sidecars = voiceSidecarNames(platform, process.arch) ?? []
+  try {
+    await mkdir(managedDir, { recursive: true })
+    for (const file of [binary, ...sidecars]) {
+      await copyFile(path.join(packageDir, file), path.join(managedDir, file))
+    }
+    if (platform !== "win32") await chmod(path.join(managedDir, binary), 0o755)
+  } catch (error) {
+    const reason = failureReason(error)
+    return { command: "voice-overlay", status: "failed", ...(reason ? { reason } : {}) }
+  }
+  await ensureVoiceModel().catch(() => undefined)
+  return { command: path.join(managedDir, binary), status: "installed" }
+}
+```
+(`fileURLToPath` from `node:url` — extend the existing `pathToFileURL` import on line 8; `copyFile`, `mkdir`, `chmod` already imported. `isExecutableFile` = tiny local `accessSync(X_OK)` wrapper next to the provision function. `ensureVoiceModel()`: downloads `VOICE_MODEL_URL` to the platform app-data `models/` dir only when `ggml-base.bin` is absent (bounded fetch like `downloadScript` but with `arrayBuffer()` + 10 min timeout for ~140 MB); all failures swallowed — a missing model is a runtime `model-missing` UI error, never an install failure.)
+5. In `install()`: after the `memoryGraph` block, add the `voice` block mirroring it exactly:
+```ts
+const voice = options.voice !== false
+  ? await provisionVoiceOverlay(shouldProvision).catch((error: unknown) => {
+      const reason = failureReason(error)
+      return { command: "voice-overlay", status: "failed" as const, ...(reason ? { reason } : {}) }
+    })
+  : { command: "voice-overlay", status: "skipped" as const }
+```
+and include `voice` in the returned `dependencies` object.
+6. In `main()` report: after the `ast-grep` line add `console.log(`Voice overlay: ${dependencyLine(result.dependencies.voice)}`)`, then the two final hint lines (only when `result.dependencies.voice.status !== "skipped"`):
+```ts
+console.log("Голосовая кнопка установлена: запусти voice-overlay.")
+console.log("TUI — вставка в промпт, Web — отправка в сессию (переключатель — кнопка ⚙ в окне).")
+```
+(Exact copy from spec Section 7. If `main()` prints hints conditionally on dry-run, follow that same condition.)
+7. Model download: inside `provisionVoiceOverlay`, after resolving the binary (status `existing` path), skip — model download happens on first overlay run per spec Sections 3–5, NOT in CLI (spec Section 7 says CLI downloads `ggml-base.bin`; implement it here: download `VOICE_MODEL_URL` to the app-data `models/` dir only when the file is absent; failure → still return the binary result with `status: "existing"` — a missing model is a runtime `model-missing` error with its own UI, never an install failure. Bound the download: reuse the bounded-fetch helper used by the other installers.)
+
+- [ ] **Step 5: Doctor check (`src/diagnostics/doctor.ts`)**
+
+Append in `runDoctor` after the `ast-grep` block. Never probe with `--version` (it would open the Tauri window) — existence only, via `node:fs` `accessSync(X_OK)` over absolute candidates (extend the existing `node:fs/promises` import with a `node:fs` import for `accessSync`/`constants`):
+```ts
+// --- Voice overlay button (prebuilt Tauri binary; unknown flags open its
+// window, so only file existence is checked — never spawned) ---
+const voiceManaged = voiceManagedDir(process.platform, process.env)
+const voiceCandidates = [
+  ...(voiceManaged === null ? [] : [path.join(voiceManaged, voiceBinaryName(process.platform))]),
+  ...localBinCandidates(voiceBinaryName(process.platform)),
+]
+const voiceExecutable = voiceCandidates.find((candidate) => {
+  try {
+    accessSync(candidate, fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+})
+push({
+  id: "voice-overlay",
+  label: "Voice overlay button",
+  status: voiceExecutable === undefined ? "info" : "ok",
+  detail: voiceExecutable ?? "not installed",
+  ...(voiceExecutable === undefined
+    ? { hint: "Run `opencode-orchestra install` to provision it (needs a display to show the window)." }
+    : {}),
+})
+```
+(`localBinCandidates` + `path` already exist in `doctor.ts`; import `{ voiceBinaryName, voiceManagedDir }` from `"../voice.js"`.)
+Add cases to `test/doctor.test.ts`: voice binary present (fake executable file in a temp HOME) → `ok`; absent → `info` (mirror the existing `ast-grep` doctor cases; read them first and reuse their temp-dir/env pattern).
+
+- [ ] **Step 6: Packaging scaffolding + CI**
+
+Create the three `voice-overlay/packaging/<platform>/package.json` files (exact content pattern):
+```json
+{
+  "name": "@oeronteros-1/voice-overlay-linux-x64",
+  "version": "0.0.0-PLACEHOLDER",
+  "private": false,
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["voice-overlay", "ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu"]
+}
+```
+(`win32-x64`: `os: ["win32"]`, files with `.exe` names per `sidecar_file` triples. `version` is stamped by CI to the root `package.json` version — never hand-edited.)
+Create `scripts/pack-voice-overlay.mjs`: args `--platform <linux-x64|linux-arm64|win32-x64> --version <x.y.z> --src <dir-with-built-artifacts>`; copies the three binaries into the packaging dir, stamps `version`, prints the publish command. Keep it dependency-free (node builtins only).
+Create `.github/workflows/voice-overlay.yml`: matrix `ubuntu-22.04 x64` + `windows-2022 x64` (plus a comment marking where the `linux-arm64` runner row goes, per spec Section 7); steps: Rust stable, Node 22, `npm ci` in `voice-overlay/`, `apt` webkit2gtk dev packages (linux), vendor ffmpeg static + whisper.cpp release (URLs pinned as env vars at the top of the file), `npm run build:voice`, `node scripts/pack-voice-overlay.mjs --platform … --version $(node -p require('./package.json').version) --src voice-overlay/src-tauri/target/release`, `npm publish` of the staged dir on tags (needs `NPM_TOKEN` secret — no secret invention in-repo, reference only).
+Root `package.json`: add the two v1 pins to `optionalDependencies` (exact versions, lockstep `2.0.1`):
+```json
+"@oeronteros-1/voice-overlay-linux-x64": "2.0.1",
+"@oeronteros-1/voice-overlay-win32-x64": "2.0.1",
+```
+(arm64 intentionally absent until its runner lands — spec Section 7.)
+
+- [ ] **Step 7: README + verify**
+
+`README.md` install section: voice lines (what `install` provisions, `--no-voice`, model auto-download, WSL/display warn, Linux webkit note via `doctor`), exact final hint copy.
+Run: `npm run typecheck` (clean) + `npm test` (full suite green, incl. new `test/voice.test.ts` + new cli/doctor cases, no regressions).
+Run: `node scripts/pack-voice-overlay.mjs --help` (exits 0, prints usage) — the real pack/publish path runs only in CI (no Rust/npm-publish here).
+Verify + report (no commit without explicit request).

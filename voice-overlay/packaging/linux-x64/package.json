@@ -1,0 +1,9 @@
+{
+  "name": "@oeronteros-1/voice-overlay-linux-x64",
+  "version": "0.0.0-dev",
+  "private": false,
+  "description": "Prebuilt voice-overlay button binary for Linux x64 (stamped to the plugin version by CI)",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["voice-overlay", "ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu"]
+}

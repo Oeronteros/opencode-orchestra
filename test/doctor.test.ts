@@ -256,6 +256,57 @@ test("runDoctor probes duplicate tool candidates once and honors HOME for ~/.loc
   }
 })
 
+test("runDoctor reports voice overlay ok when the managed binary exists", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-voice-"))
+  const home = path.join(directory, "home")
+  const homeBin = path.join(home, ".local", "bin")
+  await mkdir(homeBin, { recursive: true })
+  const binary = process.platform === "win32" ? "voice-overlay.exe" : "voice-overlay"
+  await writeFile(path.join(homeBin, binary), "fake", "utf8")
+  await chmod(path.join(homeBin, binary), 0o755)
+  const configDirectory = path.join(directory, "config")
+  await mkdir(configDirectory, { recursive: true })
+  await writeFile(
+    path.join(configDirectory, "opencode.json"),
+    JSON.stringify({ plugin: ["@oeronteros-1/opencode-orchestra@latest"] }),
+    "utf8",
+  )
+  const originalHome = process.env.HOME
+  process.env.HOME = home
+  try {
+    const report = await runDoctor({ configDirectory })
+    const byId = new Map(report.checks.map((c: Check) => [c.id, c]))
+    assert.equal(byId.get("voice-overlay")?.status, "ok")
+    assert.match(byId.get("voice-overlay")?.detail ?? "", /voice-overlay/)
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+  }
+})
+
+test("runDoctor reports voice overlay info when the binary is absent", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-voice-missing-"))
+  const home = path.join(directory, "home")
+  await mkdir(path.join(home, ".local", "bin"), { recursive: true })
+  const configDirectory = path.join(directory, "config")
+  await mkdir(configDirectory, { recursive: true })
+  await writeFile(
+    path.join(configDirectory, "opencode.json"),
+    JSON.stringify({ plugin: ["@oeronteros-1/opencode-orchestra@latest"] }),
+    "utf8",
+  )
+  const originalHome = process.env.HOME
+  process.env.HOME = home
+  try {
+    const report = await runDoctor({ configDirectory })
+    const byId = new Map(report.checks.map((c: Check) => [c.id, c]))
+    assert.equal(byId.get("voice-overlay")?.status, "info")
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+  }
+})
+
 /** Run the doctor against a temp config directory seeded with the given orchestra config. */
 async function doctorWithOrchestra(orchestraConfig: unknown): Promise<DoctorReport> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-routing-"))

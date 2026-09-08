@@ -477,6 +477,26 @@ test("installer writes git and ast-grep MCPs by default and respects --no-git/--
   assert.equal(off.mcp?.["ast-grep"], undefined)
 })
 
+test("installer skips voice overlay with voice:false", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-voice-"))
+  const result = await install({
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    git: false,
+    astGrep: false,
+    playwright: false,
+    superpowers: false,
+    voice: false,
+    provisionDependencies: true,
+    force: false,
+    dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
+  })
+  assert.equal(result.dependencies.voice.status, "skipped")
+})
+
 test("git and ast-grep warmup failure still writes config", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-warmup-fail-"))
   const { bin, home } = await fakeToolchain(directory)

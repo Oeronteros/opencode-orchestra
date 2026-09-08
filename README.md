@@ -109,6 +109,7 @@ CLI использует Bun напрямую, поэтому отдельный
 - подключит ast-grep MCP на закреплённой ревизии вместе с `ast-grep-cli==0.45.1` в одном изолированном `uvx`-окружении;
 - установит `uv/uvx`, если он нужен Git или ast-grep MCP, и проверит оба сервера реальным MCP handshake; это одинаково работает через официальный PowerShell-инсталлятор на Windows и shell-инсталлятор на Linux/macOS;
 - сохранит все пользовательские MCP и плагины без удаления или переименования;
+- установит голосовую кнопку (предсобранный оверлей под твою платформу: Linux x64 / Windows x64) и скачает модель распознавания `ggml-base.bin` (~140 МБ);
 - создаст `~/.config/opencode/orchestra.jsonc` с автоматическим выбором моделей;
 - сделает резервную копию существующего конфига перед изменением;
 - не потребует API-ключей, Docker или административных прав для стандартной локальной конфигурации.
@@ -123,7 +124,9 @@ Superpowers — фреймворк навыков для агентов (obra/su
 bunx @oeronteros-1/opencode-orchestra@latest install --help
 ```
 
-Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-git`, `--no-ast-grep`, `--no-playwright`, `--no-superpowers`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
+Полезные флаги: `--no-context7`, `--no-codebase-memory`, `--no-memorygraph`, `--no-git`, `--no-ast-grep`, `--no-playwright`, `--no-superpowers`, `--no-voice`, `--no-deps`, `--force`, `--dry-run`, `--config-dir DIR`.
+
+Голосовая кнопка: после install запусти `voice-overlay` — появится плавающее окно с Record. Для TUI текст вставится в промпт открытого `opencode --port 4096`, для веба — отправится в выбранную сессию (переключатель — кнопка ⚙ в окне). Кнопке нужен дисплей: в WSL без WSLg/X-сервера окно не покажется (установщик предупредит, но поставит). На Linux для бинарника может понадобиться системный webkit — проверь выводом `doctor`. Детали: `voice-overlay/README.md`.
 
 ## Диагностика, обновление и автодополнение
 
