@@ -6,6 +6,12 @@ on:
       - "voice-overlay-v*"
   workflow_dispatch:
 
+# Trusted publishing to npm via OIDC: no NPM_TOKEN secret needed.
+# The npm packages list this repo + workflow as trusted publisher.
+permissions:
+  contents: read
+  id-token: write
+
 env:
   FFMPEG_LINUX_URL: https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
   FFMPEG_WINDOWS_URL: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
@@ -77,8 +83,10 @@ jobs:
           name: voice-overlay-${{ matrix.platform }}
           path: voice-overlay/src-tauri/target/release/bundle
 
+      - name: Upgrade npm for OIDC trusted publishing
+        if: startsWith(github.ref, 'refs/tags/voice-overlay-v')
+        run: npm install -g npm@latest
+
       - name: Publish sidecar package
         if: startsWith(github.ref, 'refs/tags/voice-overlay-v')
         run: npm publish --access public ./voice-overlay/packaging/${{ matrix.platform }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -180,7 +180,7 @@ voice-overlay/
 
 - `voice-overlay.yml`, matrix: `ubuntu-22.04 x64`, `windows-2022 x64` (arm64 — вторым этапом). Шаги: Rust stable, Node 22, `npm ci` в `voice-overlay/`, вендоринг sidecars (ffmpeg static + whisper.cpp release, URL пинятся в workflow), `tauri build`. Артефакты `deb`/`nsis` — в artifacts релиза для ручного скачивания; в npm-пакеты едет raw-бинарник из `target/release/` + sidecars.
 - Налог Tauri-на-Linux: раннеру нужны `webkit2gtk` dev-пакеты (`apt`) — стандартно, фиксируем в workflow.
-- Публикация sidecar-пакетов в npm — только по тегу через `NPM_TOKEN`. Локально ничего не публикуется.
+- Публикация sidecar-пакетов в npm — только по тегу через Trusted Publisher (OIDC, секреты не нужны; пакеты заранее привязаны к репо + workflow). Локально ничего не публикуется.
 
 ### CLI `install` (ложится на паттерн `ensureX` в `src/cli.ts`)
 
