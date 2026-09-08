@@ -18,7 +18,7 @@ import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/confi
 import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
-import { voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_URL } from "./voice.js"
+import { voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, VOICE_MODEL_FILE, VOICE_MODEL_URL } from "./voice.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -318,10 +318,14 @@ async function provisionVoiceOverlay(shouldProvision: boolean): Promise<Provisio
   if (managedDir === null) {
     return { command: "voice-overlay", status: "failed", reason: "no managed install directory on this platform" }
   }
-  const sidecars = voiceSidecarNames(platform, process.arch) ?? []
+  // Copy everything the sidecar package ships (binary + sidecars + runtime
+  // libs) except npm metadata: whisper-cli needs its .so/.dll co-located
+  // (RUNPATH=$ORIGIN), and the exact lib set varies per release.
+  const skipNames = new Set(["package.json", "package-lock.json", "README.md", "LICENSE"])
   try {
     await mkdir(managedDir, { recursive: true })
-    for (const file of [binary, ...sidecars]) {
+    for (const file of await readdir(packageDir)) {
+      if (skipNames.has(file) || file.startsWith(".")) continue
       await copyFile(path.join(packageDir, file), path.join(managedDir, file))
     }
     if (platform !== "win32") await chmod(path.join(managedDir, binary), 0o755)

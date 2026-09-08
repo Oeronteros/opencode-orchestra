@@ -1853,10 +1853,14 @@ async function provisionVoiceOverlay(shouldProvision: boolean): Promise<Provisio
   if (managedDir === null) {
     return { command: "voice-overlay", status: "failed", reason: "no managed install directory on this platform" }
   }
-  const sidecars = voiceSidecarNames(platform, process.arch) ?? []
+  // Copy everything the sidecar package ships (binary + sidecars + runtime
+  // libs) except npm metadata: whisper-cli needs its .so/.dll co-located
+  // (RUNPATH=$ORIGIN), and the exact lib set varies per whisper release.
+  const skipNames = new Set(["package.json", "package-lock.json", "README.md", "LICENSE"])
   try {
     await mkdir(managedDir, { recursive: true })
-    for (const file of [binary, ...sidecars]) {
+    for (const file of await readdir(packageDir)) {
+      if (skipNames.has(file) || file.startsWith(".")) continue
       await copyFile(path.join(packageDir, file), path.join(managedDir, file))
     }
     if (platform !== "win32") await chmod(path.join(managedDir, binary), 0o755)
@@ -1934,7 +1938,7 @@ Create the three `voice-overlay/packaging/<platform>/package.json` files (exact 
 ```
 (`win32-x64`: `os: ["win32"]`, files with `.exe` names per `sidecar_file` triples. `version` is stamped by CI to the root `package.json` version — never hand-edited.)
 Create `scripts/pack-voice-overlay.mjs`: args `--platform <linux-x64|linux-arm64|win32-x64> --version <x.y.z> --src <dir-with-built-artifacts>`; copies the three binaries into the packaging dir, stamps `version`, prints the publish command. Keep it dependency-free (node builtins only).
-Create `.github/workflows/voice-overlay.yml`: matrix `ubuntu-22.04 x64` + `windows-2022 x64` (plus a comment marking where the `linux-arm64` runner row goes, per spec Section 7); steps: Rust stable, Node 22, `npm ci` in `voice-overlay/`, `apt` webkit2gtk dev packages (linux), vendor ffmpeg static + whisper.cpp release (URLs pinned as env vars at the top of the file), `npm run build:voice`, `node scripts/pack-voice-overlay.mjs --platform … --version $(node -p require('./package.json').version) --src voice-overlay/src-tauri/target/release`, `npm publish` of the staged dir on tags (Trusted Publisher OIDC: workflow needs `permissions: id-token: write`, npm upgraded to latest before publish, no secrets in-repo).
+Create `.github/workflows/voice-overlay.yml`: matrix `ubuntu-22.04 x64` + `windows-2022 x64` (plus a comment marking where the `linux-arm64` runner row goes, per spec Section 7); steps: Rust stable, Node 22, `npm ci` in `voice-overlay/`, `apt` webkit2gtk dev packages (linux), vendor ffmpeg static + whisper.cpp release **pinned URLs** (`WHISPER_LINUX_URL` = `ggml-org/whisper.cpp .../whisper-bin-ubuntu-x64.tar.gz`, `WHISPER_WINDOWS_URL` = `.../whisper-bin-x64.zip` — verified against the release API 2026-09-08; tag `b1` does not exist, and the org moved `ggerganov` → `ggml-org`) **plus whisper runtime libs** (`lib*.so*` on Linux, `Release/*.dll` on Windows — `whisper-cli` needs them co-located, RUNPATH=$ORIGIN, verified via `ldd`), `npm run build:voice`, `node scripts/pack-voice-overlay.mjs --platform … --version $(node -p require('./package.json').version) --src voice-overlay/src-tauri/target/release` (copies binary + sidecars + libs, fails loudly on missing files), `npm publish` of the staged dir on tags (Trusted Publisher OIDC: workflow needs `permissions: id-token: write`, npm upgraded to latest before publish, no secrets in-repo).
 Root `package.json`: add the two v1 pins to `optionalDependencies` (exact versions, lockstep `2.0.1`):
 ```json
 "@oeronteros-1/voice-overlay-linux-x64": "2.0.1",

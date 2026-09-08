@@ -179,6 +179,7 @@ voice-overlay/
 ### CI-сборка (`.github/workflows/` в репо нет — создаётся)
 
 - `voice-overlay.yml`, matrix: `ubuntu-22.04 x64`, `windows-2022 x64` (arm64 — вторым этапом). Шаги: Rust stable, Node 22, `npm ci` в `voice-overlay/`, вендоринг sidecars (ffmpeg static + whisper.cpp release, URL пинятся в workflow), `tauri build`. Артефакты `deb`/`nsis` — в artifacts релиза для ручного скачивания; в npm-пакеты едет raw-бинарник из `target/release/` + sidecars.
+- whisper.cpp: вендорятся не только `whisper-cli`, но и рантайм-библиотеки (`lib*.so*` / `*.dll` — проверено `ldd` 2026-09-08: `libwhisper`, `libggml*`, RUNPATH=$ORIGIN, т.е. работают только co-located); в бандл — через `bundle.resources`, в npm-пакеты — через `files`.
 - Налог Tauri-на-Linux: раннеру нужны `webkit2gtk` dev-пакеты (`apt`) — стандартно, фиксируем в workflow.
 - Публикация sidecar-пакетов в npm — только по тегу через Trusted Publisher (OIDC, секреты не нужны; пакеты заранее привязаны к репо + workflow). Локально ничего не публикуется.
 

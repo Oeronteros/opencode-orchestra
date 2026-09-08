@@ -5,5 +5,5 @@
   "description": "Prebuilt voice-overlay button binary for Windows x64 (stamped to the plugin version by CI)",
   "os": ["win32"],
   "cpu": ["x64"],
-  "files": ["voice-overlay.exe", "ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe"]
+  "files": ["voice-overlay.exe", "ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe", "*.dll"]
 }

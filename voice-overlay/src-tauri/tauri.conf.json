@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "appimage", "nsis"],
-    "externalBin": ["binaries/ffmpeg", "binaries/whisper"]
+    "externalBin": ["binaries/ffmpeg", "binaries/whisper"],
+    "resources": ["binaries/*.so", "binaries/*.so.*", "binaries/*.dll"]
   }
 }

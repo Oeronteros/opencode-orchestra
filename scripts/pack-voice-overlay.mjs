@@ -3,21 +3,25 @@
 // ffmpeg/whisper sidecars into voice-overlay/packaging/<platform>/, stamp the
 // version from the root package.json (lockstep), print the publish command.
 // Runs in CI only (needs a real `tauri build` output in --src).
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 const PLATFORMS = {
   "linux-x64": {
     binary: "voice-overlay",
     sidecars: ["ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu"],
+    // whisper-cli needs its .so libs co-located (RUNPATH=$ORIGIN).
+    libs: ["libwhisper.so", "libwhisper.so.1", "libggml.so.0", "libggml-base.so.0", "libggml-cpu-*.so"],
   },
   "linux-arm64": {
     binary: "voice-overlay",
     sidecars: ["ffmpeg-aarch64-unknown-linux-gnu", "whisper-aarch64-unknown-linux-gnu"],
+    libs: ["libwhisper.so", "libwhisper.so.1", "libggml.so.0", "libggml-base.so.0", "libggml-cpu-*.so"],
   },
   "win32-x64": {
     binary: "voice-overlay.exe",
     sidecars: ["ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe"],
+    libs: ["*.dll"],
   },
 }
 
@@ -50,7 +54,20 @@ async function main() {
   const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
   const dest = path.join(repoRoot, "voice-overlay", "packaging", platform)
   await mkdir(dest, { recursive: true })
-  for (const file of [spec.binary, ...spec.sidecars]) {
+  const available = new Set(await readdir(src))
+  const matchGlob = (pattern) => {
+    if (!pattern.includes("*")) return available.has(pattern) ? [pattern] : []
+    const [prefix, suffix] = pattern.split("*")
+    return [...available].filter((f) => f.startsWith(prefix) && f.endsWith(suffix)).sort()
+  }
+  const files = [spec.binary, ...spec.sidecars]
+  for (const pattern of spec.libs) {
+    const matched = matchGlob(pattern)
+    if (matched.length === 0) throw new Error(`No files in ${src} match lib pattern ${pattern}`)
+    files.push(...matched)
+  }
+  for (const file of files) {
+    if (!available.has(file)) throw new Error(`Missing build artifact ${file} in ${src}`)
     await copyFile(path.join(src, file), path.join(dest, file))
   }
   const manifestPath = path.join(dest, "package.json")
