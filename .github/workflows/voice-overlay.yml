@@ -48,10 +48,10 @@ jobs:
       - name: Vendor ffmpeg + whisper sidecars (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
-          curl -sSL "$FFMPEG_LINUX_URL" -o /tmp/ffmpeg.tar.xz
+          curl -sSL --fail --retry 3 --retry-all-errors "$FFMPEG_LINUX_URL" -o /tmp/ffmpeg.tar.xz
           tar -xf /tmp/ffmpeg.tar.xz -C /tmp
           cp /tmp/ffmpeg-*-amd64-static/ffmpeg "voice-overlay/src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu"
-          curl -sSL "$WHISPER_LINUX_URL" -o /tmp/whisper.tgz
+          curl -sSL --fail --retry 3 --retry-all-errors "$WHISPER_LINUX_URL" -o /tmp/whisper.tgz
           mkdir -p /tmp/whisper && tar -xzf /tmp/whisper.tgz -C /tmp/whisper
           cp /tmp/whisper/whisper-bin-ubuntu-x64/whisper-cli "voice-overlay/src-tauri/binaries/whisper-x86_64-unknown-linux-gnu"
           cp /tmp/whisper/whisper-bin-ubuntu-x64/lib*.so* voice-overlay/src-tauri/binaries/
