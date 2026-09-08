@@ -69,6 +69,13 @@ jobs:
           Copy-Item C:\Windows\Temp\whisper\Release\whisper-cli.exe voice-overlay\src-tauri\binaries\whisper-x86_64-pc-windows-msvc.exe
           Copy-Item C:\Windows\Temp\whisper\Release\*.dll voice-overlay\src-tauri\binaries\
 
+      - name: Set platform bundle resources
+        # tauri-build fails when ANY resources glob matches nothing, so Linux
+        # (*.so) and Windows (*.dll) need different lists. The script defaults
+        # to the current OS; CI passes the matrix platform explicitly.
+        shell: bash
+        run: node scripts/tauri-resources.mjs --platform ${{ matrix.platform }}
+
       - name: Build Tauri app
         run: npm --prefix voice-overlay run build
 

@@ -10,13 +10,14 @@ const PLATFORMS = {
   "linux-x64": {
     binary: "voice-overlay",
     sidecars: ["ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu"],
-    // whisper-cli needs its .so libs co-located (RUNPATH=$ORIGIN).
-    libs: ["libwhisper.so", "libwhisper.so.1", "libggml.so.0", "libggml-base.so.0", "libggml-cpu-*.so"],
+    // whisper-cli needs its .so libs co-located (RUNPATH=$ORIGIN); the exact
+    // set varies per release (libwhisper, libggml*, libparakeet, versioned).
+    libs: ["lib*.so*"],
   },
   "linux-arm64": {
     binary: "voice-overlay",
     sidecars: ["ffmpeg-aarch64-unknown-linux-gnu", "whisper-aarch64-unknown-linux-gnu"],
-    libs: ["libwhisper.so", "libwhisper.so.1", "libggml.so.0", "libggml-base.so.0", "libggml-cpu-*.so"],
+    libs: ["lib*.so*"],
   },
   "win32-x64": {
     binary: "voice-overlay.exe",
@@ -56,9 +57,8 @@ async function main() {
   await mkdir(dest, { recursive: true })
   const available = new Set(await readdir(src))
   const matchGlob = (pattern) => {
-    if (!pattern.includes("*")) return available.has(pattern) ? [pattern] : []
-    const [prefix, suffix] = pattern.split("*")
-    return [...available].filter((f) => f.startsWith(prefix) && f.endsWith(suffix)).sort()
+    const regex = new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`)
+    return [...available].filter((f) => regex.test(f)).sort()
   }
   const files = [spec.binary, ...spec.sidecars]
   for (const pattern of spec.libs) {

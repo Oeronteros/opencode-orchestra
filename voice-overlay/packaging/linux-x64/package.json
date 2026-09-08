@@ -5,5 +5,5 @@
   "description": "Prebuilt voice-overlay button binary for Linux x64 (stamped to the plugin version by CI)",
   "os": ["linux"],
   "cpu": ["x64"],
-  "files": ["voice-overlay", "ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu", "libwhisper.so*", "libggml*.so*"]
+  "files": ["voice-overlay", "ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu", "lib*.so*"]
 }
