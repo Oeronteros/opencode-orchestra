@@ -104,7 +104,7 @@ fn sidecar_path(app: &AppHandle, base: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub async fn health_check(host: String, port: u16) -> Result<bool, String> {
+async fn health_check(host: String, port: u16) -> Result<bool, String> {
     let resp = reqwest::get(format!("http://{host}:{port}/global/health"))
         .await
         .map_err(|e| format!("server-unreachable: {e}"))?;
@@ -115,7 +115,7 @@ pub async fn health_check(host: String, port: u16) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn append_to_prompt(cfg: ServerConfig, text: String) -> Result<bool, String> {
+async fn append_to_prompt(cfg: ServerConfig, text: String) -> Result<bool, String> {
     let mut req = reqwest::Client::new()
         .post(append_url(&cfg.host, cfg.port))
         .json(&serde_json::json!({ "text": text }));
@@ -141,7 +141,7 @@ pub async fn append_to_prompt(cfg: ServerConfig, text: String) -> Result<bool, S
 }
 
 #[tauri::command]
-pub async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
+async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
     if std::env::consts::OS != "windows" {
         return Ok(Vec::new());
     }
@@ -160,7 +160,7 @@ pub async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub async fn start_recording(
+async fn start_recording(
     app: AppHandle,
     state: State<'_, AppState>,
     device: Option<String>,
@@ -210,19 +210,13 @@ pub async fn start_recording(
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(MAX_SECONDS)).await;
-        let kill = match app_clone.state::<AppState>().recording.lock() {
-            Ok(slot) => match slot.as_ref() {
-                Some(rec) if rec.id == id => true,
-                _ => false,
-            },
-            Err(_) => false,
-        };
-        if kill {
-            if let Ok(mut slot) = app_clone.state::<AppState>().recording.lock() {
-                if let Some(rec) = slot.as_mut() {
-                    if rec.id == id {
-                        let _ = rec.child.kill().await;
-                    }
+        // No .await while the std lock is held: MutexGuard over Recording
+        // (owns a tokio Child) is !Send, so `child.kill().await` under the
+        // lock breaks Send. `start_kill()` is sync — same force-kill semantics.
+        if let Ok(mut slot) = app_clone.state::<AppState>().recording.lock() {
+            if let Some(rec) = slot.as_mut() {
+                if rec.id == id {
+                    let _ = rec.child.start_kill();
                 }
             }
         }
@@ -231,7 +225,7 @@ pub async fn start_recording(
 }
 
 #[tauri::command]
-pub async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
+async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
     let mut rec = state
         .recording
         .lock()
@@ -266,7 +260,7 @@ pub fn allowed_model_file(model: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn transcribe(
+async fn transcribe(
     app: AppHandle,
     wav: String,
     model: String,
@@ -349,7 +343,7 @@ pub struct SessionInfo {
 }
 
 #[tauri::command]
-pub async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
+async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
     let mut req = reqwest::Client::new().get(session_url(&cfg.host, cfg.port));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
@@ -374,7 +368,7 @@ pub async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String
 }
 
 #[tauri::command]
-pub async fn send_to_session(cfg: ServerConfig, session_id: String, text: String) -> Result<bool, String> {
+async fn send_to_session(cfg: ServerConfig, session_id: String, text: String) -> Result<bool, String> {
     if session_id.is_empty() {
         return Err("session-not-found: выбери сессию в настройках.".to_string());
     }

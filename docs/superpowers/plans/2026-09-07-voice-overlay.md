@@ -1952,3 +1952,11 @@ Root `package.json`: add the two v1 pins to `optionalDependencies` (exact versio
 Run: `npm run typecheck` (clean) + `npm test` (full suite green, incl. new `test/voice.test.ts` + new cli/doctor cases, no regressions).
 Run: `node scripts/pack-voice-overlay.mjs --help` (exits 0, prints usage) — the real pack/publish path runs only in CI (no Rust/npm-publish here).
 Verify + report (no commit without explicit request).
+
+---
+
+### CI fix 2026-09-09 (from the first real `tauri build` log — overrides snippets above where they conflict)
+
+1. **E0255 `__cmd__* defined multiple times` (all 8 commands):** root cause in `tauri-macros` source (`src/command/wrapper.rs`): a `pub` command fn makes the macro emit `#[macro_export] macro_rules! __cmd__*` (hoisted to crate root) PLUS `#visibility use {__cmd__*}` (here `pub use`) — the two definitions collide. Official templates use private fns. Fix: all `#[tauri::command]` fns are now private `async fn` (pure helper fns stay `pub`). `generate_handler!` in the same module is unaffected.
+2. **`generate_context!` panic — missing `icons/icon.png`:** the macro hard-requires it. Added (512×512, same Pillow design as the other icons).
+3. **Future not `Send` in the autostop `spawn`:** `std MutexGuard` over `Recording` (owns a tokio `Child`, hence `!Send`) was held across `child.kill().await`. Fix: single lock scope, `start_kill()` (sync, same force-kill semantics), no await under the guard. `stop_recording` untouched — the compiler never flagged it.
