@@ -5,6 +5,7 @@
 // Runs in CI only (needs a real `tauri build` output in --src).
 import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 const PLATFORMS = {
   "linux-x64": {
@@ -52,23 +53,27 @@ async function main() {
   const src = arg("src")
   const spec = PLATFORMS[platform]
   if (!spec) throw new Error(`Unknown --platform ${platform}; expected one of: ${Object.keys(PLATFORMS).join(", ")}`)
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
   const dest = path.join(repoRoot, "voice-overlay", "packaging", platform)
   await mkdir(dest, { recursive: true })
-  const available = new Set(await readdir(src))
+  // Tauri removes target triples from externalBin names and puts resources
+  // in bundle-specific directories. Stage the original vendored files instead.
+  const sidecarDir = path.join(repoRoot, "voice-overlay", "src-tauri", "binaries")
+  const available = new Set(await readdir(sidecarDir))
   const matchGlob = (pattern) => {
     const regex = new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`)
     return [...available].filter((f) => regex.test(f)).sort()
   }
-  const files = [spec.binary, ...spec.sidecars]
+  await copyFile(path.join(src, spec.binary), path.join(dest, spec.binary))
+  const files = [...spec.sidecars]
   for (const pattern of spec.libs) {
     const matched = matchGlob(pattern)
-    if (matched.length === 0) throw new Error(`No files in ${src} match lib pattern ${pattern}`)
+    if (matched.length === 0) throw new Error(`No files in ${sidecarDir} match lib pattern ${pattern}`)
     files.push(...matched)
   }
   for (const file of files) {
-    if (!available.has(file)) throw new Error(`Missing build artifact ${file} in ${src}`)
-    await copyFile(path.join(src, file), path.join(dest, file))
+    if (!available.has(file)) throw new Error(`Missing build artifact ${file} in ${sidecarDir}`)
+    await copyFile(path.join(sidecarDir, file), path.join(dest, file))
   }
   const manifestPath = path.join(dest, "package.json")
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"))

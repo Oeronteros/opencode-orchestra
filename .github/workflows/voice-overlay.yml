@@ -22,6 +22,7 @@ jobs:
   build:
     # linux-arm64 follows (spec Section 7): add an `ubuntu-*-arm` runner row here.
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
@@ -44,6 +45,9 @@ jobs:
 
       - name: Install frontend deps
         run: npm ci --prefix voice-overlay
+
+      - name: Test sidecar packaging
+        run: node --test scripts/pack-voice-overlay.test.mjs
 
       - name: Vendor ffmpeg + whisper sidecars (Linux)
         if: startsWith(matrix.os, 'ubuntu')
@@ -77,7 +81,14 @@ jobs:
         run: node scripts/tauri-resources.mjs --platform ${{ matrix.platform }}
 
       - name: Build Tauri app
-        run: npm --prefix voice-overlay run build
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            # linuxdeploy scans whisper after Tauri moves it to usr/bin.
+            # Its $ORIGIN no longer contains the vendored shared libraries.
+            export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/voice-overlay/src-tauri/binaries${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          npm --prefix voice-overlay run build -- --verbose
 
       - name: Stage sidecar npm package
         shell: bash

@@ -75,6 +75,21 @@ npm test               # tsc + node --test (чистые TS-библиотеки
 cargo check && cargo test  # в src-tauri/ (на машине с тулчейном)
 ```
 
+Для Linux перед упаковкой AppImage из корня репозитория задайте путь к
+скачанным библиотекам whisper:
+
+```bash
+export LD_LIBRARY_PATH="$PWD/voice-overlay/src-tauri/binaries${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+npm --prefix voice-overlay run build -- --verbose
+```
+
+В CI это делает workflow. Tauri переносит whisper в `usr/bin`, а библиотеки
+из `bundle.resources` — в каталог ресурсов. Без указанного пути `linuxdeploy`
+останавливается с `Could not find dependency: libwhisper.so.1`.
+Скрипт подготовки npm-пакета берёт приложение из `target/release`, а sidecars
+и их библиотеки — из `src-tauri/binaries`, сохраняя исходные имена.
+Проверка этого шага: `node --test scripts/pack-voice-overlay.test.mjs` из корня.
+
 ## Ручной E2E чеклист (на машинах с тулчейном)
 
 | # | Действие | Ожидание |
