@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
+          # OIDC publishing must not inherit a placeholder NODE_AUTH_TOKEN.
           cache: npm
 
       - name: Set package version from release tag
@@ -80,4 +80,4 @@ jobs:
       # Configure npm Trusted Publisher for Oeronteros/opencode-orchestra,
       # workflow publish.yml, with direct npm publish allowed.
       - name: Publish package
-        run: npm publish --access public
+        run: npm publish --access public --registry=https://registry.npmjs.org --loglevel=http
