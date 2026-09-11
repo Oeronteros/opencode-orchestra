@@ -2,6 +2,7 @@
   "name": "@oeronteros-1/voice-overlay-linux-x64",
   "version": "0.0.0-dev",
   "private": false,
+  "repository": { "type": "git", "url": "git+https://github.com/Oeronteros/opencode-orchestra.git" },
   "description": "Prebuilt voice-overlay button binary for Linux x64 (stamped to the plugin version by CI)",
   "os": ["linux"],
   "cpu": ["x64"],

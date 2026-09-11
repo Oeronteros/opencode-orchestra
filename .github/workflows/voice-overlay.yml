@@ -131,6 +131,12 @@ jobs:
           name: voice-overlay-${{ matrix.platform }}
           path: voice-overlay/src-tauri/target/release/bundle
 
+      - name: Upload npm package for first publication or recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-npm-${{ matrix.platform }}
+          path: voice-overlay/packaging/${{ matrix.platform }}
+
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@latest
 
