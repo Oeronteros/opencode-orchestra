@@ -18,7 +18,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  voice:
+    if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
+    uses: ./.github/workflows/voice-overlay.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      tag: ${{ inputs.tag || github.event.release.tag_name }}
+
   publish:
+    needs: voice
     if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
     runs-on: ubuntu-latest
     permissions:
@@ -47,6 +57,17 @@ jobs:
           NODE
           # Update both manifests in the runner checkout without creating a commit or tag.
           npm version "${RELEASE_TAG#v}" --no-git-tag-version --allow-same-version --ignore-scripts
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const version = process.env.RELEASE_TAG.slice(1);
+          for (const file of ['package.json', 'package-lock.json']) {
+            const manifest = JSON.parse(readFileSync(file, 'utf8'));
+            const root = file === 'package.json' ? manifest : manifest.packages[''];
+            root.optionalDependencies ??= {};
+            for (const platform of ['linux-x64', 'win32-x64']) root.optionalDependencies[`@oeronteros-1/voice-overlay-${platform}`] = version;
+            writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+          }
+          NODE
 
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@latest

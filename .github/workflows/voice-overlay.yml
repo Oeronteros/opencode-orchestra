@@ -5,6 +5,16 @@ on:
     tags:
       - "voice-overlay-v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: Voice package version to publish (empty uses the plugin dependency)
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
 
 # Trusted publishing to npm via OIDC: no NPM_TOKEN secret needed.
 # The npm packages list this repo + workflow as trusted publisher.
@@ -32,6 +42,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve package version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+          const tag = process.env.RELEASE_TAG;
+          const version = process.env.REQUESTED_VERSION || (/^(voice-overlay-)?v\d/.test(tag) ? tag.replace(/^(voice-overlay-)?v/, '') : manifest.optionalDependencies['@oeronteros-1/voice-overlay-linux-x64']);
+          if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Invalid voice version: ${version}`);
+          appendFileSync(process.env.GITHUB_ENV, `VOICE_VERSION=${version}\n`);
+          NODE
 
       - name: Install Linux webkit deps
         if: startsWith(matrix.os, 'ubuntu')
@@ -39,7 +66,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -47,7 +74,7 @@ jobs:
         run: npm ci --prefix voice-overlay
 
       - name: Test sidecar packaging
-        run: node --test scripts/pack-voice-overlay.test.mjs
+        run: node --test scripts/pack-voice-overlay.test.mjs scripts/publish-voice-package.test.mjs
 
       - name: Vendor ffmpeg + whisper sidecars (Linux)
         if: startsWith(matrix.os, 'ubuntu')
@@ -95,7 +122,7 @@ jobs:
         run: >
           node scripts/pack-voice-overlay.mjs
           --platform ${{ matrix.platform }}
-          --version "$(node -p "require('./package.json').version")"
+          --version "$VOICE_VERSION"
           --src voice-overlay/src-tauri/target/release
 
       - name: Upload bundle artifacts
@@ -105,9 +132,8 @@ jobs:
           path: voice-overlay/src-tauri/target/release/bundle
 
       - name: Upgrade npm for OIDC trusted publishing
-        if: startsWith(github.ref, 'refs/tags/voice-overlay-v')
         run: npm install -g npm@latest
 
       - name: Publish sidecar package
-        if: startsWith(github.ref, 'refs/tags/voice-overlay-v')
-        run: npm publish --access public ./voice-overlay/packaging/${{ matrix.platform }}
+        shell: bash
+        run: node scripts/publish-voice-package.mjs voice-overlay/packaging/${{ matrix.platform }}
