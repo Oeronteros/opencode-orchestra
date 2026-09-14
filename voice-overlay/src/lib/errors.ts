@@ -17,7 +17,7 @@ export type OverlayErrorCode = (typeof ERROR_CODES)[number];
 
 const COPY: Record<OverlayErrorCode, string> = {
   "no-mic": "Микрофон не найден. Подключи устройство и выбери его в настройках.",
-  "no-ffmpeg": "Не найден ffmpeg. Установи его и перезапусти приложение.",
+  "no-ffmpeg": "Не удалось запустить ffmpeg для записи. Обнови Voice Overlay или установи системный ffmpeg. На Linux нужна поддержка PulseAudio.",
   "no-audio-server": "Нет доступа к звуковому серверу. Проверь PulseAudio или PipeWire: выполни pactl info.",
   "model-missing": "Модель распознавания не скачана. Нажми «Скачать модель» в настройках (нужен интернет один раз).",
   "server-unreachable": "Сервер opencode недоступен. Запусти opencode с фиксированным портом: opencode --port 4096.",

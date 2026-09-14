@@ -1,6 +1,39 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceOverlayTriple, VOICE_MODEL_URL } from "../src/voice.js"
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceOverlayTriple, voiceSidecarNames, VOICE_MODEL_URL } from "../src/voice.js"
+
+describe("voice installation upgrades", () => {
+  it("refreshes old binaries, restores missing sidecars and repairs Unix execute permissions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "voice-upgrade-"))
+    try {
+      const source = path.join(root, "package")
+      const target = path.join(root, "installed")
+      await mkdir(source)
+      const executables = [voiceBinaryName("linux"), ...voiceSidecarNames("linux", "x64")!]
+      for (const name of [...executables, "libwhisper.so.1", "package.json"]) await writeFile(path.join(source, name), name)
+      assert.equal(await installVoiceFiles(source, target, "linux", "x64"), true)
+      await assert.rejects(readFile(path.join(target, "package.json")))
+      await writeFile(path.join(source, executables[0]!), "updated application")
+      await rm(path.join(target, executables[1]!))
+      await chmod(path.join(target, executables[2]!), 0o644)
+      assert.equal(await installVoiceFiles(source, target, "linux", "x64"), true)
+      assert.equal(await readFile(path.join(target, executables[0]!), "utf8"), "updated application")
+      assert.equal(await readFile(path.join(target, executables[1]!), "utf8"), executables[1])
+      assert.equal(await readFile(path.join(target, "libwhisper.so.1"), "utf8"), "libwhisper.so.1")
+      if (process.platform !== "win32") {
+        for (const name of executables) assert.equal((await stat(path.join(target, name))).mode & 0o777, 0o755)
+      }
+      assert.equal(await installVoiceFiles(source, target, "linux", "x64"), false)
+      await rm(path.join(source, executables[1]!))
+      await assert.rejects(installVoiceFiles(source, target, "linux", "x64"), /missing ffmpeg/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
 
 describe("voiceOverlayPackageFor", () => {
   it("maps supported platforms to sidecar package names", () => {
@@ -42,12 +75,12 @@ describe("voiceOverlayTriple", () => {
 
 describe("voiceManagedDir", () => {
   it("uses ~/.local/bin on Linux", () => {
-    assert.equal(voiceManagedDir("linux", { HOME: "/home/u" }), "/home/u/.local/bin")
+    assert.equal(voiceManagedDir("linux", { HOME: "/home/u" }), path.join("/home/u", ".local", "bin"))
   })
   it("uses LOCALAPPDATA Programs dir on Windows", () => {
     assert.equal(
       voiceManagedDir("win32", { LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local" }),
-      "C:\\Users\\u\\AppData\\Local/Programs/voice-overlay",
+      path.join("C:\\Users\\u\\AppData\\Local", "Programs", "voice-overlay"),
     )
   })
   it("returns null when the home base is missing or unsupported", () => {
@@ -61,19 +94,19 @@ describe("voiceModelDir", () => {
   it("uses XDG_DATA_HOME on Linux when set", () => {
     assert.equal(
       voiceModelDir("linux", { XDG_DATA_HOME: "/xdg", HOME: "/home/u" }),
-      "/xdg/ai.opencode.voice-overlay/models",
+      path.join("/xdg", "ai.opencode.voice-overlay", "models"),
     )
   })
   it("falls back to ~/.local/share on Linux", () => {
     assert.equal(
       voiceModelDir("linux", { HOME: "/home/u" }),
-      "/home/u/.local/share/ai.opencode.voice-overlay/models",
+      path.join("/home/u", ".local", "share", "ai.opencode.voice-overlay", "models"),
     )
   })
   it("uses APPDATA on Windows", () => {
     assert.equal(
       voiceModelDir("win32", { APPDATA: "C:\\Users\\u\\AppData\\Roaming" }),
-      "C:\\Users\\u\\AppData\\Roaming/ai.opencode.voice-overlay/models",
+      path.join("C:\\Users\\u\\AppData\\Roaming", "ai.opencode.voice-overlay", "models"),
     )
   })
   it("returns null when the base is missing or unsupported", () => {

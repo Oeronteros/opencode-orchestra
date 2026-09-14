@@ -5,6 +5,40 @@
 
 Явный не-результат v1: никакой кнопки внутри TUI, никакого стриминга распознавания.
 
+Окно содержит кнопку микрофона, таймер и кнопку остановки. Во время распознавания
+показывается индикатор; настройки и закрытие заблокированы до завершения операции.
+Окно можно перетащить за заголовок. Настройки и длинный результат прокручиваются.
+
+### Linux: ffmpeg и графика
+
+Приложение ищет ffmpeg и Whisper рядом со своим исполняемым файлом, включая имена
+с target triple из npm и короткие имена из Tauri-бандла. Повторный `install`
+обновляет файлы и восстанавливает права на запуск всех трёх исполняемых файлов.
+
+Linux-пакет собирает минимальный ffmpeg из исходников с поддержкой входа PulseAudio;
+на системе нужна `libpulse.so.0` (Ubuntu/Debian: пакет `libpulse0`) и доступный
+PulseAudio или PipeWire с совместимостью PulseAudio. Проверка `-devices` выполняется
+до записи; если комплектный ffmpeg непригоден, пробуется системный.
+Старые пакеты со статическим ffmpeg могут не поддерживать PulseAudio. Для них:
+
+```bash
+sudo apt install ffmpeg pulseaudio-utils
+pactl info
+```
+
+Подробная причина сбоя доступна в раскрывающемся блоке «Подробности ошибки».
+Отсутствие Whisper теперь сообщается как ошибка распознавания, а не ffmpeg.
+
+На Linux приложение по умолчанию устанавливает `WEBKIT_DISABLE_DMABUF_RENDERER=1`
+до запуска WebKit, если переменная ещё не задана пользователем. Это обход проблем
+DMA-BUF на WSL/виртуальных машинах ([описание WebKitGTK](https://planet.webkitgtk.org/)).
+Предупреждения EGL/Mesa могут зависеть и от системного драйвера. Для диагностики
+старой версии или оставшихся проблем можно проверить программный рендеринг:
+
+```bash
+WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 ~/.local/bin/voice-overlay
+```
+
 ## Предусловие: живой TUI с фиксированным портом
 
 Overlay ходит в Server API живого TUI:
@@ -54,7 +88,7 @@ Get-FileHash ggml-base.bin -Algorithm SHA256
 
 Имена load-bearing (`sidecar_file` в `src-tauri/src/main.rs` их конструирует):
 
-- `src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu` — Linux static build (https://johnvansickle.com/ffmpeg/)
+- `src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu` — минимальная сборка из [FFmpeg 7.0.2](https://ffmpeg.org/releases/ffmpeg-7.0.2.tar.xz) через `scripts/build-voice-ffmpeg.sh`, с `--enable-libpulse` ([документация входа](https://ffmpeg.org/ffmpeg-devices.html#pulse)); библиотеки FFmpeg статические, libpulse системная.
 - `src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe` — Windows essentials build (https://www.gyan.dev/ffmpeg/builds/)
 - `src-tauri/binaries/whisper-x86_64-unknown-linux-gnu` и `whisper-x86_64-pc-windows-msvc.exe` — matching whisper.cpp release (https://github.com/ggerganov/whisper.cpp/releases)
 

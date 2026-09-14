@@ -1,4 +1,5 @@
 import path from "node:path"
+import { chmod, copyFile, mkdir, readFile, readdir } from "node:fs/promises"
 
 const SCOPE = "@oeronteros-1/voice-overlay"
 
@@ -20,7 +21,7 @@ export function voiceBinaryName(platform: string): string {
 
 /**
  * Tauri sidecar triple. Must stay identical to `sidecar_file` in
- * `voice-overlay/src-tauri/src/main.rs` — the filenames below are load-bearing.
+ * `voice-overlay/src-tauri/src/sidecars.rs` — the filenames below are load-bearing.
  */
 export function voiceOverlayTriple(platform: string, arch: string): string | null {
   if (platform === "linux" && arch === "x64") return "x86_64-unknown-linux-gnu"
@@ -33,6 +34,30 @@ export function voiceSidecarNames(platform: string, arch: string): string[] | nu
   const triple = voiceOverlayTriple(platform, arch)
   if (triple === null) return null
   return [`ffmpeg-${triple}`, `whisper-${triple}`]
+}
+
+/** Refresh an existing installation too: otherwise upgrades keep the old binary. */
+export async function installVoiceFiles(packageDir: string, managedDir: string, platform: string, arch: string): Promise<boolean> {
+  const executables = [voiceBinaryName(platform), ...(voiceSidecarNames(platform, arch) ?? [])]
+  const entries = await readdir(packageDir)
+  for (const name of executables) {
+    if (!entries.includes(name)) throw new Error(`Voice package is missing ${name}`)
+  }
+  await mkdir(managedDir, { recursive: true })
+  const skipNames = new Set(["package.json", "package-lock.json", "README.md", "LICENSE"])
+  let changed = false
+  for (const file of entries) {
+    if (skipNames.has(file) || file.startsWith(".")) continue
+    const source = path.join(packageDir, file)
+    const target = path.join(managedDir, file)
+    const previous = await readFile(target).catch(() => null)
+    if (previous === null || !previous.equals(await readFile(source))) {
+      await copyFile(source, target)
+      changed = true
+    }
+    if (platform !== "win32" && executables.includes(file)) await chmod(target, 0o755)
+  }
+  return changed
 }
 
 /**

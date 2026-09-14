@@ -14,9 +14,11 @@
       {
         "label": "overlay",
         "title": "Голосовой ввод",
-        "width": 320,
-        "height": 140,
-        "resizable": false,
+        "width": 360,
+        "height": 460,
+        "minWidth": 320,
+        "minHeight": 380,
+        "resizable": true,
         "decorations": false,
         "alwaysOnTop": true
       }

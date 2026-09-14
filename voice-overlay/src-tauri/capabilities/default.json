@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the voice overlay window: invoke backend commands.",
   "windows": ["overlay"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-close"]
 }

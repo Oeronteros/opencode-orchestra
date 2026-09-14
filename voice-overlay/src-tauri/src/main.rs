@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
+mod sidecars;
+pub use sidecars::sidecar_file;
 
 pub const MAX_SECONDS: u64 = 120;
 pub const MIN_WAV_BYTES: u64 = 16000;
@@ -78,29 +80,36 @@ pub fn ffmpeg_input_args(os: &str, device: Option<&str>) -> Vec<String> {
     }
 }
 
-pub fn sidecar_file(base: &str) -> Result<String, String> {
-    let triple = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc.exe",
-        ("windows", "aarch64") => "aarch64-pc-windows-msvc.exe",
-        (os, arch) => return Err(format!("unsupported-os: {os}/{arch}")),
-    };
-    Ok(format!("{base}-{triple}"))
+fn sidecar_path(app: &AppHandle, base: &str) -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("transcribe-failed: {e}"))?;
+    let dir = exe.parent().ok_or("transcribe-failed: executable directory missing")?;
+    sidecars::resolve(base, dir, app.path().resource_dir().ok().as_deref())
 }
 
-fn sidecar_path(app: &AppHandle, base: &str) -> Result<PathBuf, String> {
-    let name = sidecar_file(base)?;
-    let path = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("no-ffmpeg: {e}"))?
-        .join(&name);
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(format!("no-ffmpeg: sidecar missing: {}", path.display()))
+async fn recording_ffmpeg(app: &AppHandle, needs_pulse: bool) -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = sidecar_path(app, "ffmpeg") {
+        candidates.push(path);
     }
+    candidates.push(PathBuf::from("ffmpeg"));
+    let mut details = Vec::new();
+    for path in candidates {
+        let probe = tokio::time::timeout(std::time::Duration::from_secs(5),
+            tokio::process::Command::new(&path).kill_on_drop(true).args(["-hide_banner", "-devices"]).output()).await;
+        match probe {
+            Ok(Ok(output)) if output.status.success() => {
+                let devices = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                if !needs_pulse || sidecars::supports_pulse(&devices) {
+                    return Ok(path);
+                }
+                details.push(format!("{}: нет входа PulseAudio; установи системный ffmpeg с поддержкой PulseAudio", path.display()));
+            }
+            Ok(Ok(output)) => details.push(format!("{}: {}", path.display(), String::from_utf8_lossy(&output.stderr).trim())),
+            Ok(Err(error)) => details.push(format!("{}: {error}", path.display())),
+            Err(_) => details.push(format!("{}: проверка превысила 5 секунд", path.display())),
+        }
+    }
+    Err(format!("no-ffmpeg: {}", details.join("; ")))
 }
 
 #[tauri::command]
@@ -145,7 +154,7 @@ async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
     if std::env::consts::OS != "windows" {
         return Ok(Vec::new());
     }
-    let ffmpeg = sidecar_path(&app, "binaries/ffmpeg")?;
+    let ffmpeg = recording_ffmpeg(&app, false).await?;
     let out = tokio::process::Command::new(ffmpeg)
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .output()
@@ -189,17 +198,26 @@ async fn start_recording(
             .map(str::to_string),
     );
     args.push(wav.to_string_lossy().into_owned());
-    let ffmpeg: PathBuf = match sidecar_path(&app, "binaries/ffmpeg") {
-        Ok(p) => p,
-        Err(_) => PathBuf::from("ffmpeg"),
-    };
-    let child = tokio::process::Command::new(ffmpeg)
+    let needs_pulse = std::env::consts::OS == "linux" && std::env::var("VOICE_FFMPEG_TEST_INPUT").is_err();
+    let ffmpeg = recording_ffmpeg(&app, needs_pulse).await?;
+    let stderr_file = std::fs::File::create(wav.with_extension("stderr"))
+        .map_err(|e| format!("no-ffmpeg: {e}"))?;
+    let mut child = tokio::process::Command::new(ffmpeg)
+        .kill_on_drop(true)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .map_err(|e| format!("no-ffmpeg: не удалось запустить ffmpeg: {e}"))?;
+    // Report failed audio-device initialization instead of pretending to record.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    if let Some(exit) = child.try_wait().map_err(|e| format!("no-mic: {e}"))? {
+        if !exit.success() {
+            let detail = std::fs::read_to_string(wav.with_extension("stderr")).unwrap_or_default();
+            return Err(format!("{}: {}", if needs_pulse { "no-audio-server" } else { "no-mic" }, detail.trim()));
+        }
+    }
     let rec = Recording {
         id,
         wav,
@@ -246,6 +264,10 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
         .map(|m| m.len())
         .unwrap_or(0);
     if size < MIN_WAV_BYTES {
+        let detail = std::fs::read_to_string(rec.wav.with_extension("stderr")).unwrap_or_default();
+        if matches!(finished, Ok(Ok(exit)) if !exit.success()) {
+            return Err(format!("no-mic: {}", detail.trim()));
+        }
         return Err("empty-recording: запись пустая (короче полсекунды). Нажми Record, дождись и потом Stop.".to_string());
     }
     Ok(rec.wav.to_string_lossy().into_owned())
@@ -275,7 +297,7 @@ async fn transcribe(
     if !model_path.exists() {
         return Err("model-missing: модель распознавания не скачана. Нажми «Скачать модель» в настройках (нужен интернет один раз).".to_string());
     }
-    let whisper = sidecar_path(&app, "binaries/whisper")?;
+    let whisper = sidecar_path(&app, "whisper")?;
     let out_base = format!("{wav}.out");
     let args = vec![
         "-m".to_string(),
@@ -393,6 +415,12 @@ async fn send_to_session(cfg: ServerConfig, session_id: String, text: String) ->
 }
 
 fn main() {
+    // This small overlay needs no DMA-BUF acceleration. Avoid broken GPU paths
+    // on WSL/VMs, while honoring an explicit user override. Set before threads.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     tauri::Builder::default()
         .setup(|app| {
             let app_dir = app

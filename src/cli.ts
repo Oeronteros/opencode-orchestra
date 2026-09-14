@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { pathToFileURL, fileURLToPath } from "node:url"
@@ -18,7 +18,7 @@ import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/confi
 import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
-import { voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, VOICE_MODEL_FILE, VOICE_MODEL_URL } from "./voice.js"
+import { installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_URL } from "./voice.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -305,14 +305,15 @@ async function provisionVoiceOverlay(shouldProvision: boolean): Promise<Provisio
   const managedDir = voiceManagedDir(platform, process.env)
   const binary = voiceBinaryName(platform)
   const managedBinary = managedDir === null ? null : path.join(managedDir, binary)
-  if (managedBinary !== null && isExecutableFile(managedBinary)) {
-    await ensureVoiceModel().catch(() => undefined)
-    return { command: managedBinary, status: "existing" }
-  }
   let packageDir: string
   try {
     packageDir = path.dirname(fileURLToPath(import.meta.resolve(`${dep}/package.json`)))
   } catch {
+    if (managedDir !== null && managedBinary !== null &&
+      [binary, ...(voiceSidecarNames(platform, process.arch) ?? [])].every(name => isExecutableFile(path.join(managedDir, name)))) {
+      await ensureVoiceModel().catch(() => undefined)
+      return { command: managedBinary, status: "existing" }
+    }
     return { command: "voice-overlay", status: "failed", reason: `optional package ${dep} is not installed` }
   }
   if (managedDir === null) {
@@ -321,20 +322,15 @@ async function provisionVoiceOverlay(shouldProvision: boolean): Promise<Provisio
   // Copy everything the sidecar package ships (binary + sidecars + runtime
   // libs) except npm metadata: whisper-cli needs its .so/.dll co-located
   // (RUNPATH=$ORIGIN), and the exact lib set varies per release.
-  const skipNames = new Set(["package.json", "package-lock.json", "README.md", "LICENSE"])
+  let changed: boolean
   try {
-    await mkdir(managedDir, { recursive: true })
-    for (const file of await readdir(packageDir)) {
-      if (skipNames.has(file) || file.startsWith(".")) continue
-      await copyFile(path.join(packageDir, file), path.join(managedDir, file))
-    }
-    if (platform !== "win32") await chmod(path.join(managedDir, binary), 0o755)
+    changed = await installVoiceFiles(packageDir, managedDir, platform, process.arch)
   } catch (error) {
     const reason = failureReason(error)
     return { command: "voice-overlay", status: "failed", ...(reason ? { reason } : {}) }
   }
   await ensureVoiceModel().catch(() => undefined)
-  return { command: path.join(managedDir, binary), status: "installed" }
+  return { command: path.join(managedDir, binary), status: changed ? "installed" : "existing" }
 }
 
 async function ensureUv(): Promise<ProvisionedDependency & { command: string }> {
