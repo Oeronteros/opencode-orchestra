@@ -1,35 +1,58 @@
 name: Publish to npm
 
 on:
+  push:
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing stable release tag to publish (vX.Y.Z)
-        required: true
+        description: Existing tag to retry (vX.Y.Z); empty creates an automatic release
+        required: false
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ inputs.tag || github.event.release.tag_name }}
+  group: npm-publish
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    if: github.event_name != 'release' || (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test release version selection
+        run: node --test scripts/prepare-npm-release.test.mjs
+      - name: Reserve release tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: node scripts/prepare-npm-release.mjs
+
   voice:
-    if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
+    needs: prepare
     uses: ./.github/workflows/voice-overlay.yml
     permissions:
       contents: read
       id-token: write
     with:
-      tag: ${{ inputs.tag || github.event.release.tag_name }}
+      tag: ${{ needs.prepare.outputs.tag }}
 
   publish:
-    needs: voice
-    if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
+    needs: [prepare, voice]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.tag || github.event.release.tag_name }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
       - uses: actions/setup-node@v4
         with:
@@ -47,7 +70,7 @@ jobs:
 
       - name: Set package version from release tag
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           node --input-type=module <<'NODE'
           const tag = process.env.RELEASE_TAG;
@@ -101,4 +124,4 @@ jobs:
       # Configure npm Trusted Publisher for Oeronteros/opencode-orchestra,
       # workflow publish.yml, with direct npm publish allowed.
       - name: Publish package
-        run: npm publish --access public --registry=https://registry.npmjs.org --loglevel=http
+        run: node scripts/publish-voice-package.mjs .
