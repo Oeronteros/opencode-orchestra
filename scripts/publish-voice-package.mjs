@@ -14,7 +14,10 @@ const run = (args, options = {}) => spawnSync(command, [...(npmCli ? [npmCli] : 
 const result = run(['view', `${name}@${version}`, 'version', '--json', '--registry=https://registry.npmjs.org'])
 if (result.error) throw result.error
 if (result.status === 0) {
-  if (JSON.parse(result.stdout) !== version) throw new Error('Unexpected registry version response')
+  const response = JSON.parse(result.stdout)
+  // npm 12 returns an array even for an exact version; older npm returns a string.
+  const versions = Array.isArray(response) ? response : [response]
+  if (versions.length !== 1 || versions[0] !== version) throw new Error('Unexpected registry version response')
   console.log(`${name}@${version} already published; skipping`)
 } else {
   let code
