@@ -19,6 +19,7 @@ import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 import { installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_URL } from "./voice.js"
+import { startVoiceWeb } from "./voice-web.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -708,6 +709,8 @@ function usage(): string {
     "Commands:",
     "  install     Configure OpenCode and provision companion MCPs",
     "  dashboard   Start the local telemetry dashboard",
+    "  voice-web   OpenCode web with an inline offline microphone",
+    "              --upstream http://127.0.0.1:4096 --port 4097",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",
     "  update      Check for a newer published version",
@@ -742,6 +745,7 @@ function usage(): string {
 }
 
 type ParsedCommand =
+  | { command: "voice-web"; options: { upstream?: string; port?: number } }
   | { command: "install"; options: InstallOptions }
   | { command: "dashboard"; options: DashboardOptions }
   | { command: "doctor"; options: { configDirectory?: string; json?: boolean } }
@@ -751,6 +755,17 @@ type ParsedCommand =
 
 function parseArguments(argv: string[]): ParsedCommand | "help" {
   if (argv[0] === "--help" || argv[0] === "-h") return "help"
+  if (argv[0] === "voice-web") {
+    const options: { upstream?: string; port?: number } = {}
+    for (let index = 1; index < argv.length; index++) {
+      const flag = argv[index]
+      const value = argv[++index]
+      if (flag === "--upstream" && value) options.upstream = value
+      else if (flag === "--port" && value && /^\d+$/.test(value) && Number(value) > 0 && Number(value) <= 65535) options.port = Number(value)
+      else throw new Error(`Invalid voice-web option: ${flag}`)
+    }
+    return { command: "voice-web", options }
+  }
   if (argv[0] === "dashboard") {
     const options: DashboardOptions = {}
     for (let index = 1; index < argv.length; index += 1) {
@@ -861,6 +876,12 @@ async function main(): Promise<void> {
     const parsed = parseArguments(process.argv.slice(2))
     if (parsed === "help") {
       console.log(usage())
+      return
+    }
+    if (parsed.command === "voice-web") {
+      const web = await startVoiceWeb(parsed.options)
+      console.log(`OpenCode с микрофоном: ${web.url}`)
+      console.log("Откройте этот адрес в браузере. Для остановки нажмите Ctrl+C.")
       return
     }
     if (parsed.command === "dashboard") {
