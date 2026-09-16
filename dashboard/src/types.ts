@@ -43,7 +43,16 @@ export interface DashboardConfig {
     }
   }
   telemetry: { enabled: boolean; storeTexts: boolean; anomalySigma: number }
-  orchestration: { parallelWorkers: number; parallelEditors: number; maxWorkers: number; maxDelegationDepth: number; premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number; exposeWorkers: boolean; worktreeRoot?: string }
+  orchestration: {
+    parallelWorkers: number; parallelEditors: number; maxWorkers: number; maxDelegationDepth: number
+    premiumEscalation: boolean; maxPremiumCallsPerTask: number; confidenceThreshold: number
+    exposeWorkers: boolean; worktreeRoot?: string
+    persistence: { enabled: boolean; directory: string }
+    verification: { required: boolean; maxGates: number }
+    taskBudget: { maxCostUSD: number; maxTokens: number; maxMinutes: number; unknownPricing: "warn" | "block" }
+    adaptive: { enabled: boolean; initialWorkers: number; maxExtensions: number; minEvidenceItems: number }
+    knowledge: { enabled: boolean; directory: string; maxEntries: number }
+  }
   permissions: { autoAcceptAll: boolean }
   superpowers: { compatibility: boolean; injectPrimaryHint: boolean }
   pricing: { endpoint?: string; refreshIntervalHours: number; estimate: boolean; warnThresholdUSD: number; openrouter: { enabled: boolean; ttlHours: number }; aliases: Array<{ canonical: string; aliases: string[] }> }
@@ -158,6 +167,55 @@ export interface Snapshot {
   mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "playwright" | "git" | "astGrep", boolean>
   mcpUsage: McpUsageRow[]
   availableModels: string[]
+  orchestrationRuns: OrchestrationRun[]
+}
+
+export interface OrchestrationNode {
+  id: string
+  description: string
+  agent: string
+  status: "pending" | "queued" | "running" | "succeeded" | "failed" | "blocked" | "cancelled"
+  depth: number
+  parentNodeId?: string
+  role?: "specialist" | "reviewer" | "merger" | "editor" | "integrator"
+  dependsOn: string[]
+  contract: {
+    objective: string
+    inputs: string[]
+    deliverable: string
+    acceptanceCriteria: string[]
+    allowedPaths: string[]
+    exclusiveResources: string[]
+    delegation: { allowed: boolean; maxChildren: number }
+  }
+  error?: string
+  output?: string
+}
+
+export interface OrchestrationRun {
+  rootSessionID: string
+  planRegistered: boolean
+  totalStarted: number
+  touchedAt: number
+  planVersion?: number
+  planChanges?: Array<{ version: number; at: number; reason: string; trigger?: string; addedNodeIds: string[] }>
+  nodes: OrchestrationNode[]
+  completion?: {
+    status: "working" | "claimed" | "verified" | "failed"
+    summary?: string
+    gates: Array<{ id: string; label: string; kind: "command" | "artifact"; status: "pending" | "passed" | "failed"; evidence?: string }>
+  }
+  budget?: {
+    limits: { maxCostUSD: number; maxTokens: number; maxMinutes: number; unknownPricing: "warn" | "block" }
+    startedAt: number
+    estimatedCostUSD?: number
+    estimatedTokens?: number
+    actualCostUSD: number
+    actualTokens: number
+    unknownPriceCalls: number
+    status: "active" | "warning" | "exceeded"
+    reason?: string
+  }
 }
 
 export interface ProjectInfo {

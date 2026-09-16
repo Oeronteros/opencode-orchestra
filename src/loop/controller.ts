@@ -3,12 +3,13 @@ import { classifyLoopReply, loopPrompt, normalizeLoopReason } from "./protocol.j
 export interface LoopState {
   goal: string
   iteration: number
-  status: "running" | "completed" | "failed" | "cancelled" | "paused"
+  status: "running" | "completed" | "unverified" | "failed" | "cancelled" | "paused"
   reason: string
   startedAt: number
   parentID?: string | undefined
   reply?: { id: string; text: string } | undefined
   lastReason?: string
+  lastProgressKey?: string | undefined
   repeatedReasonCount: number
   busy: boolean
   timer?: ReturnType<typeof setTimeout>
@@ -21,6 +22,9 @@ export interface LoopControllerOptions {
   noProgressLimit: number
   verifyCommand?: string
   prompt: (sessionID: string, text: string) => Promise<void>
+  verifyCompletion?: (sessionID: string, summary: string) => Promise<{ ok: boolean; error?: string }>
+  /** Stable evidence fingerprint. Repeated MORE replies only count as progress when this changes. */
+  progressKey?: (sessionID: string) => string | undefined
   log?: (message: string) => void
 }
 
@@ -34,7 +38,7 @@ export class LoopController {
     if (!this.options.enabled) throw new Error("Loop is disabled. Set orchestration.loop.enabled to true and restart OpenCode.")
     if (this.options.verifyCommand?.trim()) throw new Error("Loop verifyCommand is unsupported: no permission-safe runtime verifier is available. Remove verifyCommand and ask orch-lead to verify through normal tools; DONE is only a completion claim.")
     if (this.get(sessionID)?.status === "running") throw new Error("A loop is already running. Use /loop stop first.")
-    const state: LoopState = { goal, iteration: 1, status: "running", reason: "First iteration", startedAt: Date.now(), repeatedReasonCount: 0, busy: false }
+    const state: LoopState = { goal, iteration: 1, status: "running", reason: "First iteration", startedAt: Date.now(), repeatedReasonCount: 0, busy: false, lastProgressKey: this.options.progressKey?.(sessionID) }
     state.timer = setTimeout(() => this.stop(sessionID, "failed", "Time limit reached; no further iterations"), this.options.maxMinutes * 60_000)
     state.timer.unref?.()
     this.states.set(sessionID, state)
@@ -73,10 +77,24 @@ export class LoopController {
     state.parentID = undefined // Duplicate idle/reply events cannot reuse this turn.
     try {
       if (Date.now() - state.startedAt >= this.options.maxMinutes * 60_000) { this.stop(sessionID, "failed", "Time limit reached"); return }
-      if (reply.kind === "done") { this.stop(sessionID, "completed", `Assistant completion claim (not independently verified): ${reply.detail}`); return }
+      if (reply.kind === "done") {
+        const verification = await this.options.verifyCompletion?.(sessionID, reply.detail)
+        if (verification && !verification.ok) {
+          this.stop(sessionID, "unverified", `Assistant completion claim was not verified: ${verification.error ?? "verification gate did not pass"}`)
+          return
+        }
+        this.stop(sessionID, "completed", verification ? `Verified completion: ${reply.detail}` : `Assistant completion claim: ${reply.detail}`)
+        return
+      }
       if (reply.kind === "unknown") { this.stop(sessionID, "paused", "No explicit safe continuation signal"); return }
       const reason = normalizeLoopReason(reply.detail)
-      state.repeatedReasonCount = reason === state.lastReason ? state.repeatedReasonCount + 1 : 1
+      const progressKey = this.options.progressKey?.(sessionID)
+      if (this.options.progressKey && progressKey !== undefined) {
+        state.repeatedReasonCount = progressKey === state.lastProgressKey ? state.repeatedReasonCount + 1 : 0
+        state.lastProgressKey = progressKey
+      } else {
+        state.repeatedReasonCount = reason === state.lastReason ? state.repeatedReasonCount + 1 : 1
+      }
       state.lastReason = reason
       if (state.iteration >= this.options.maxIterations || state.repeatedReasonCount >= this.options.noProgressLimit) {
         this.stop(sessionID, "failed", "Iteration or no-progress limit reached"); return

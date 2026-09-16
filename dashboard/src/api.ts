@@ -63,5 +63,9 @@ export const api = {
     method: "PUT",
     body: JSON.stringify(config),
   }),
+  orchestrationAction: (projectId: string, rootSessionID: string, nodeId: string, action: "cancel" | "retry") => request<{ ok: true; requestId: string }>("/api/orchestration/action?project=" + encodeURIComponent(projectId), {
+    method: "POST",
+    body: JSON.stringify({ rootSessionID, nodeId, action }),
+  }),
   exportUrl: (scope: ExportScope, format: ExportFormat) => `/api/export?scope=${scope}&format=${format}`,
 }

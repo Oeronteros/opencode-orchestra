@@ -76,6 +76,22 @@ test("records assistant responses outside the orchestra subagent modes", async (
   }
 })
 
+test("disabled telemetry still keeps in-memory totals for task budget enforcement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-memory-"))
+  const ledger = new Ledger(root, ".orchestra", false, [])
+  try {
+    await ledger.recordAssistant({
+      id: "message", sessionID: "session", role: "assistant", mode: "orch-repo",
+      providerID: "vendor", modelID: "paid", cost: 0.25,
+      tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 3, write: 1 } },
+    })
+    assert.deepEqual(await ledger.usageTotals("session"), { costUSD: 0.25, tokens: 21, unknownPriceCalls: 0 })
+    await assert.rejects(readFile(path.join(root, ".orchestra", "state.json"), "utf8"))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("recordText is a no-op when storeTexts is disabled", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
   const ledger = new Ledger(root, ".orchestra", true, [])
@@ -111,6 +127,38 @@ test("recordText persists prompt and reply when storeTexts is enabled", async ()
     const message = state.sessions["session-1"]?.messages["msg"]
     assert.equal(message?.prompt, "hello")
     assert.equal(message?.reply, "world")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("recordAssistant persists opt-in text with the message update", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-ledger-"))
+  const ledger = new Ledger(root, ".orchestra", true, [], true)
+
+  try {
+    await ledger.recordAssistant({
+      id: "msg",
+      sessionID: "session-1",
+      role: "assistant",
+      mode: "build",
+      providerID: "openai",
+      modelID: "gpt-5",
+      cost: 0.01,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    }, { prompt: "hello", reply: "world" })
+    const state = JSON.parse(await readFile(path.join(root, ".orchestra", "state.json"), "utf8")) as {
+      sessions: Record<string, { messages: Record<string, { prompt?: string; reply?: string }> }>
+    }
+    assert.deepEqual(state.sessions["session-1"]?.messages.msg, {
+      cost: 0.01,
+      agent: "build",
+      model: "gpt-5",
+      provider: "openai",
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+      prompt: "hello",
+      reply: "world",
+    })
   } finally {
     await rm(root, { recursive: true, force: true })
   }

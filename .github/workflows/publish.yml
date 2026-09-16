@@ -125,3 +125,27 @@ jobs:
       # workflow publish.yml, with direct npm publish allowed.
       - name: Publish package
         run: node scripts/publish-voice-package.mjs .
+
+  github-release:
+    needs: [prepare, publish]
+    # A release published manually starts this workflow to publish to npm.
+    # Do not try to create that same release again.
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $RELEASE_TAG already exists"
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi

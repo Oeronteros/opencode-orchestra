@@ -32,6 +32,16 @@ test("built CLI emits zsh completion", () => {
   assert.match(result.stdout, /_opencode_orchestra\(\)/)
 })
 
+test("built CLI exposes the reproducible eval manifest", () => {
+  const result = runCli("eval", "--json")
+  assert.equal(result.status, 0, result.stderr)
+  const report = JSON.parse(result.stdout) as { suiteVersion?: string; cases?: unknown[]; structural?: unknown[]; observed?: unknown[] }
+  assert.equal(report.suiteVersion, "orchestra-core-v1")
+  assert.equal(report.cases?.length, 5)
+  assert.equal(report.structural?.length, 25)
+  assert.deepEqual(report.observed, [])
+})
+
 test("built CLI runs offline doctor JSON against a temporary config directory", async () => {
   const configDirectory = await mkdtemp(path.join(os.tmpdir(), "orchestra-cli-doctor-"))
   const result = spawnSync(process.execPath, [cli, "doctor", "--json", "--config-dir", configDirectory], {

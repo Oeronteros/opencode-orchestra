@@ -34,6 +34,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install
 ```text
 /orchestra-status
 /plugin-status
+/orchestra-resume
 ```
 
 安装程序是幂等的。修改 OpenCode 配置前会创建备份，并保留已有的插件和 MCP 配置；只有显式传入 `--force` 时才会替换现有条目。
@@ -96,6 +97,60 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
 - 依赖失败会阻塞下游节点，避免部分执行继续漂移。
 
 默认限制为 8 个 workers、8 个并发 workers，委派深度为 2。这些限制由运行时强制执行，而不仅仅依赖提示词。
+
+### 重启后恢复
+
+Orchestra 会把密封计划、节点状态、依赖结果和已验证的 Git 提交保存在本地 `.orchestra/orchestration/runs.json`。重启后，运行中或排队中的节点会恢复为待处理状态；已经完成的节点不会重复执行。
+
+```text
+/orchestra-resume
+/orchestra-resume <原始-session-id>
+```
+
+不带参数时会恢复最近的未完成运行。状态文件位于本地，但包含 worker 结果；如果结果可能包含敏感信息，应像保护仓库一样保护该目录。
+
+### 已验证完成
+
+最终检查前，`orch-lead` 通过 `orchestration_set_verification` 注册精确命令和预期产物。命令仍由普通 `bash` 工具执行，因此继续受 OpenCode 权限控制。只有匹配的调用成功后，runtime 才会通过命令 gate；产物则直接在 workspace 中检查。
+
+`orchestration_complete` 会区分工作中、已声明、验证失败和已验证四种状态。默认情况下，没有 gate、存在未完成节点或失败节点时，运行都不能标记为已验证。
+
+### 单任务预算
+
+除了模型选择模式，还可以设置成本、token 和运行时间的硬限制。`0` 表示不限制：
+
+```jsonc
+{
+  "orchestration": {
+    "taskBudget": {
+      "maxCostUSD": 2,
+      "maxTokens": 120000,
+      "maxMinutes": 15,
+      "unknownPricing": "warn"
+    }
+  }
+}
+```
+
+执行前，Orchestra 会估算并预留整个 DAG 的预算；估算已超限的计划不会启动。每次 worker 调用之间，runtime 会检查 ledger 中的实际成本和 token；时间从运行开始计算，并在重启后继续。`unknownPricing: "block"` 会在价格未知时停止，`"warn"` 则明确把未知价格调用排除在 USD 总额之外。
+
+### 执行图与自适应团队
+
+`ebobo` 为最高质量仲裁保留完整的有界团队；最小初始团队适用于其他预算模式。
+
+Dashboard 的 **Runs** 页面会显示持久化的依赖图、节点合同、输出、失败、完成 gate 和任务预算。可以取消运行中的分支，也可以重试失败、阻塞或已取消的分支；重试会使下游结果失效，旧尝试的延迟响应不能覆盖新结果。
+
+Orchestra 默认从两个专家和一个综合节点开始，并保留其余 worker 名额。只有出现带证据的运行时信号时，`orchestration_adapt` 才会创建新版本计划，例如复现失败、证据矛盾、授权边界、文档缺口、性能或视觉回归、低置信度或无进展。可通过 `orchestration.adaptive.initialWorkers`、`maxExtensions` 和 `minEvidenceItems` 配置。
+
+Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展；仅改写 `MORE` 的措辞不会重置无进展限制。
+
+### 内置评测
+
+`opencode-orchestra eval --json` 输出版本化的五个核心场景，并比较 solo、eco、balanced、quality 和 ebobo 的结构化路由覆盖。通过 `--results results.json` 可汇总实际成功率、耗时、USD 成本和 token。`--write baseline.json` 保存基线；之后使用 `--baseline baseline.json`，当成功率下降超过五个百分点，或平均时间/成本增加超过 20% 时，命令以状态码 2 退出。
+
+### 可复用的已验证知识
+
+只有 `orchestration_complete` 返回已验证后，`orchestra_knowledge_record` 才能保存决策、精确测试命令或约束，并记录证据、来源运行、计划版本、Git revision 和相关路径。`orchestra_route` 与 `orchestra_knowledge_query` 只复用有效记录。记录过期、相关路径存在未提交修改，或这些路径在来源 revision 后发生变化时，会被标记为 stale。默认本地文件为 `.orchestra/knowledge/verified.json`，数量由 `orchestration.knowledge.maxEntries` 限制。
 
 ## 安装
 
@@ -221,9 +276,9 @@ Bounded Loop 允许 `orch-lead` 在多个受控迭代中持续处理同一个目
 /loop stop
 ```
 
-只有未被引用的最后一行 `MORE: <剩余工作>` 才能授权下一次迭代。`DONE: <摘要>` 只记录智能体声称已完成，并不代表独立验证通过。权限请求和未知回复会暂停循环；错误或新的用户消息会停止循环。
+只有未被引用的最后一行 `MORE: <剩余工作>` 才能授权下一次迭代。启用强制验证时，只有 `orchestration_complete` 成功后，`DONE: <摘要>` 才会完成循环；否则循环进入 `unverified` 状态。权限请求和未知回复会暂停循环；错误或新的用户消息会停止循环。
 
-循环状态保存在内存中，OpenCode 重启后会丢失。当前，非空 `verifyCommand` 会失败关闭，因为运行时尚不支持权限安全的 shell 验证；请让 lead 使用常规工具运行验证。
+bounded loop 本身的状态保存在内存中，OpenCode 重启后会丢失。非空 `verifyCommand` 仍会失败关闭；安全验证通过已注册的 gate 和 OpenCode 常规权限工具执行。
 
 ## 语音输入
 
@@ -307,12 +362,14 @@ opencode-orch web
 | `voice-web`、`web` | 为 OpenCode Web 添加内联离线麦克风代理 |
 | `doctor` | 诊断配置、MCP 和本地工具路径 |
 | `mcp-smoke` | 启动已启用的本地 MCP，并测试 `initialize`、`tools/list` 和安全调用 |
+| `eval` | 比较可复现的 solo 与 Orchestra 结果并检查基线 |
 | `update` | 检查 npm 上是否有新版本 |
 | `completion` | 输出 `zsh`、`bash` 或 `pwsh` 补全脚本 |
 
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest doctor --json
 bunx @oeronteros-1/opencode-orchestra@latest mcp-smoke --directory . --json
+bunx @oeronteros-1/opencode-orchestra@latest eval --results results.json --json
 bunx @oeronteros-1/opencode-orchestra@latest update
 bunx @oeronteros-1/opencode-orchestra@latest completion pwsh
 ```

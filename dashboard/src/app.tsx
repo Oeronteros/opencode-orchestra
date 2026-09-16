@@ -39,7 +39,7 @@ import type { TranslationKey } from "./lib/locales"
 import { splitTokens } from "./lib/tokens"
 import { snapshotResetDecision, type SnapshotResetState } from "./lib/snapshot-reset"
 import { useUiStore } from "./store"
-import type { ActivityRow, AggregateRow, DashboardConfig, GlobalSnapshot, LiveActiveAgent, LiveSnapshot, Snapshot } from "./types"
+import type { ActivityRow, AggregateRow, DashboardConfig, GlobalSnapshot, LiveActiveAgent, LiveSnapshot, OrchestrationNode, OrchestrationRun, Snapshot } from "./types"
 
 const EMPTY: never[] = []
 
@@ -136,6 +136,7 @@ function AppShell() {
   const nav = [
     { to: "/", label: t("overview"), icon: DashboardSquare01Icon },
     { to: "/activity", label: t("activity"), icon: Activity01Icon },
+    { to: "/runs", label: t("runs"), icon: Database01Icon },
     { to: "/models", label: t("models"), icon: Chart01Icon },
     { to: "/agents", label: t("agents"), icon: AiBrain01Icon },
     { to: "/settings", label: t("settings"), icon: Settings01Icon },
@@ -1566,6 +1567,93 @@ function RankingPage({ kind }: { kind: "models" | "agents" }) {
   )
 }
 
+const RUN_STATUS_KEYS: Record<OrchestrationNode["status"], TranslationKey> = {
+  pending: "runPending", queued: "runQueued", running: "runRunning", succeeded: "runSucceeded",
+  failed: "runFailed", blocked: "runBlocked", cancelled: "runCancelled",
+}
+
+function runLevels(run: OrchestrationRun): OrchestrationNode[][] {
+  const levels = new Map<string, number>()
+  for (let pass = 0; pass < run.nodes.length; pass += 1) {
+    for (const node of run.nodes) {
+      const dependencies = node.dependsOn.map((id) => levels.get(id))
+      if (dependencies.every((level) => level !== undefined)) levels.set(node.id, dependencies.length ? Math.max(...dependencies as number[]) + 1 : 0)
+    }
+  }
+  return Array.from({ length: Math.max(0, ...levels.values()) + 1 }, (_, level) => run.nodes.filter((node) => (levels.get(node.id) ?? 0) === level))
+}
+
+function RunsPage() {
+  const { t } = useTranslation()
+  const selectedProject = useUiStore((state) => state.selectedProject)
+  const query = useSnapshot(1)
+  const client = useQueryClient()
+  const [selectedRunID, setSelectedRunID] = useState("")
+  const [selectedNodeID, setSelectedNodeID] = useState("")
+  const runs = query.data?.orchestrationRuns ?? EMPTY as OrchestrationRun[]
+  const run = runs.find((candidate) => candidate.rootSessionID === selectedRunID) ?? runs[0]
+  const node = run?.nodes.find((candidate) => candidate.id === selectedNodeID)
+  const action = useMutation({
+    mutationFn: ({ nodeId, action }: { nodeId: string; action: "cancel" | "retry" }) => api.orchestrationAction(selectedProject, run!.rootSessionID, nodeId, action),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["snapshot"] }) },
+  })
+  useEffect(() => {
+    if (run && run.rootSessionID !== selectedRunID) setSelectedRunID(run.rootSessionID)
+  }, [run, selectedRunID])
+  if (selectedProject === "global") return <ProjectRequired title={t("runsTitle")} />
+  if (query.isLoading) return <Loading />
+  if (!query.data) return <ErrorState error={query.error} />
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
+      <PageIntro kicker={t("runsKicker")} title={t("runsTitle")} text={t("runsText")} />
+      {!run ? <Card className="run-empty">{t("runsEmpty")}</Card> : (
+        <>
+          <div className="run-toolbar">
+            <label><span>{t("runSelect")}</span><select value={run.rootSessionID} onChange={(event) => { setSelectedRunID(event.target.value); setSelectedNodeID("") }}>
+              {runs.map((candidate) => <option value={candidate.rootSessionID} key={candidate.rootSessionID}>{candidate.rootSessionID}</option>)}
+            </select></label>
+            <div><span>{t("runCompletion")}</span><strong className={`run-state state-${run.completion?.status ?? "working"}`}>{run.completion?.status ?? "working"}</strong></div>
+            <div><span>{t("runPlanVersion")}</span><strong>v{run.planVersion ?? 1}</strong></div>
+            <div><span>{t("runBudget")}</span><strong className={`run-state state-${run.budget?.status ?? "active"}`}>{run.budget?.status ?? "active"}</strong></div>
+            <div><span>{t("runUpdated")}</span><strong>{new Date(run.touchedAt).toLocaleString()}</strong></div>
+          </div>
+          <div className="run-layout">
+            <Card className="run-graph" aria-label={t("runGraphLabel")}>
+              {runLevels(run).map((level, index) => <div className="run-wave" key={index}>
+                <span className="run-wave-label">{t("runWave", { value: index + 1 })}</span>
+                <div className="run-wave-nodes">{level.map((item) => <button
+                  type="button" key={item.id} onClick={() => setSelectedNodeID(item.id)}
+                  className={cn("run-node", `status-${item.status}`, selectedNodeID === item.id && "selected")}
+                >
+                  <span className="run-node-status">{t(RUN_STATUS_KEYS[item.status])}</span>
+                  <strong>{item.id}</strong><small>{item.agent}</small>
+                  {item.dependsOn.length > 0 && <em>← {item.dependsOn.join(", ")}</em>}
+                </button>)}</div>
+              </div>)}
+            </Card>
+            <Card className="run-detail">
+              {!node ? <p>{t("runSelectNode")}</p> : <>
+                <div className="run-detail-head"><div><span>{t(RUN_STATUS_KEYS[node.status])}</span><h2>{node.id}</h2><small>{node.agent}</small></div>
+                  <div className="run-detail-actions">
+                    {(["pending", "queued", "running"].includes(node.status)) && <Button variant="ghost" onClick={() => action.mutate({ nodeId: node.id, action: "cancel" })}>{t("runCancel")}</Button>}
+                    {(["failed", "blocked", "cancelled"].includes(node.status)) && <Button onClick={() => action.mutate({ nodeId: node.id, action: "retry" })}>{t("runRetry")}</Button>}
+                  </div>
+                </div>
+                <h3>{t("runObjective")}</h3><p>{node.contract.objective}</p>
+                <h3>{t("runAcceptance")}</h3><ul>{node.contract.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+                {node.output && <><h3>{t("runResult")}</h3><pre>{node.output}</pre></>}
+                {node.error && <><h3>{t("runError")}</h3><pre className="error">{node.error}</pre></>}
+                {action.error && <p className="error">{action.error.message}</p>}
+              </>}
+            </Card>
+          </div>
+        </>
+      )}
+    </motion.div>
+  )
+}
+
 /* ═══════════════════════════════════════════════════════
    SETTINGS PAGE
    ═══════════════════════════════════════════════════════ */
@@ -1635,7 +1723,17 @@ const settingsSchema = z.object({
     }),
   }),
   telemetry: z.object({ enabled: z.boolean(), storeTexts: z.boolean(), anomalySigma: z.number().min(0.5).max(6) }),
-  orchestration: z.object({ parallelWorkers: z.number().int().min(1).max(8), parallelEditors: z.number().int().min(0).max(8), maxWorkers: z.number().int().min(1).max(8), maxDelegationDepth: z.number().int().min(1).max(4), premiumEscalation: z.boolean(), maxPremiumCallsPerTask: z.number().int().min(0).max(24), confidenceThreshold: z.number().min(0).max(1), exposeWorkers: z.boolean(), worktreeRoot: z.string().optional() }),
+  orchestration: z.object({
+    parallelWorkers: z.number().int().min(1).max(8), parallelEditors: z.number().int().min(0).max(8),
+    maxWorkers: z.number().int().min(1).max(8), maxDelegationDepth: z.number().int().min(1).max(4),
+    premiumEscalation: z.boolean(), maxPremiumCallsPerTask: z.number().int().min(0).max(24),
+    confidenceThreshold: z.number().min(0).max(1), exposeWorkers: z.boolean(), worktreeRoot: z.string().optional(),
+    persistence: z.object({ enabled: z.boolean(), directory: z.string().min(1) }),
+    verification: z.object({ required: z.boolean(), maxGates: z.number().int().min(1).max(64) }),
+    taskBudget: z.object({ maxCostUSD: z.number().min(0), maxTokens: z.number().int().min(0), maxMinutes: z.number().min(0).max(1440), unknownPricing: z.enum(["warn", "block"]) }),
+    adaptive: z.object({ enabled: z.boolean(), initialWorkers: z.number().int().min(1).max(6), maxExtensions: z.number().int().min(0).max(6), minEvidenceItems: z.number().int().min(0).max(8) }),
+    knowledge: z.object({ enabled: z.boolean(), directory: z.string().min(1), maxEntries: z.number().int().min(1).max(4096) }),
+  }),
   permissions: z.object({ autoAcceptAll: z.boolean() }),
   superpowers: z.object({ compatibility: z.boolean(), injectPrimaryHint: z.boolean() }),
   pricing: z.object({ endpoint: z.string().optional(), refreshIntervalHours: z.number().int().min(0).max(2160), estimate: z.boolean(), warnThresholdUSD: z.number().min(0), openrouter: z.object({ enabled: z.boolean(), ttlHours: z.number().int().min(1).max(720) }), aliases: z.array(z.object({ canonical: z.string(), aliases: z.array(z.string()) })) }),
@@ -1989,6 +2087,64 @@ function SettingsPage() {
                 <input aria-describedby="worktree-root-hint" {...form.register("orchestration.worktreeRoot")} placeholder={t("placeholderUnset")} />
                 <SettingsFieldHint id="worktree-root-hint" text={t("fieldWorktreeRootHint")} />
               </label>
+              <label>
+                <span>{t("fieldTaskMaxCost")}</span>
+                <input type="number" min="0" step="0.01" {...form.register("orchestration.taskBudget.maxCostUSD", { valueAsNumber: true })} aria-describedby="task-budget-cost-hint" />
+                <SettingsFieldHint id="task-budget-cost-hint" text={t("fieldTaskMaxCostHint")} error={form.formState.errors.orchestration?.taskBudget?.maxCostUSD} />
+              </label>
+              <label>
+                <span>{t("fieldTaskMaxTokens")}</span>
+                <input type="number" min="0" step="1000" {...form.register("orchestration.taskBudget.maxTokens", { valueAsNumber: true })} aria-describedby="task-budget-tokens-hint" />
+                <SettingsFieldHint id="task-budget-tokens-hint" text={t("fieldTaskMaxTokensHint")} error={form.formState.errors.orchestration?.taskBudget?.maxTokens} />
+              </label>
+              <label>
+                <span>{t("fieldTaskMaxMinutes")}</span>
+                <input type="number" min="0" max="1440" step="1" {...form.register("orchestration.taskBudget.maxMinutes", { valueAsNumber: true })} aria-describedby="task-budget-minutes-hint" />
+                <SettingsFieldHint id="task-budget-minutes-hint" text={t("fieldTaskMaxMinutesHint")} error={form.formState.errors.orchestration?.taskBudget?.maxMinutes} />
+              </label>
+              <label>
+                <span>{t("fieldUnknownPricing")}</span>
+                <select {...form.register("orchestration.taskBudget.unknownPricing")}>
+                  <option value="warn">{t("unknownPricingWarn")}</option>
+                  <option value="block">{t("unknownPricingBlock")}</option>
+                </select>
+                <SettingsFieldHint id="unknown-pricing-hint" text={t("fieldUnknownPricingHint")} />
+              </label>
+              <label>
+                <span>{t("fieldPersistenceDirectory")}</span>
+                <input {...form.register("orchestration.persistence.directory")} aria-describedby="persistence-directory-hint" />
+                <SettingsFieldHint id="persistence-directory-hint" text={t("fieldPersistenceDirectoryHint")} error={form.formState.errors.orchestration?.persistence?.directory} />
+              </label>
+              <label>
+                <span>{t("fieldAdaptiveInitialWorkers")}</span>
+                <input type="number" min="1" max="6" step="1" {...form.register("orchestration.adaptive.initialWorkers", { valueAsNumber: true })} />
+                <SettingsFieldHint id="adaptive-initial-hint" text={t("fieldAdaptiveInitialWorkersHint")} error={form.formState.errors.orchestration?.adaptive?.initialWorkers} />
+              </label>
+              <label>
+                <span>{t("fieldAdaptiveMaxExtensions")}</span>
+                <input type="number" min="0" max="6" step="1" {...form.register("orchestration.adaptive.maxExtensions", { valueAsNumber: true })} />
+                <SettingsFieldHint id="adaptive-extensions-hint" text={t("fieldAdaptiveMaxExtensionsHint")} error={form.formState.errors.orchestration?.adaptive?.maxExtensions} />
+              </label>
+              <label>
+                <span>{t("fieldAdaptiveMinEvidence")}</span>
+                <input type="number" min="0" max="8" step="1" {...form.register("orchestration.adaptive.minEvidenceItems", { valueAsNumber: true })} />
+                <SettingsFieldHint id="adaptive-evidence-hint" text={t("fieldAdaptiveMinEvidenceHint")} error={form.formState.errors.orchestration?.adaptive?.minEvidenceItems} />
+              </label>
+              <label>
+                <span>{t("fieldKnowledgeDirectory")}</span>
+                <input {...form.register("orchestration.knowledge.directory")} />
+                <SettingsFieldHint id="knowledge-directory-hint" text={t("fieldKnowledgeDirectoryHint")} error={form.formState.errors.orchestration?.knowledge?.directory} />
+              </label>
+              <label>
+                <span>{t("fieldKnowledgeMaxEntries")}</span>
+                <input type="number" min="1" max="4096" step="1" {...form.register("orchestration.knowledge.maxEntries", { valueAsNumber: true })} />
+                <SettingsFieldHint id="knowledge-entries-hint" text={t("fieldKnowledgeMaxEntriesHint")} error={form.formState.errors.orchestration?.knowledge?.maxEntries} />
+              </label>
+              <label>
+                <span>{t("fieldMaxVerificationGates")}</span>
+                <input type="number" min="1" max="64" step="1" {...form.register("orchestration.verification.maxGates", { valueAsNumber: true })} aria-describedby="verification-gates-hint" />
+                <SettingsFieldHint id="verification-gates-hint" text={t("fieldMaxVerificationGatesHint")} error={form.formState.errors.orchestration?.verification?.maxGates} />
+              </label>
               <label className="check-setting">
                 <span><strong>{t("fieldPremiumEscalation")}</strong><small>{t("fieldPremiumEscalationHint")}</small></span>
                 <Controller
@@ -1997,6 +2153,22 @@ function SettingsPage() {
                   defaultValue={query.data.config.orchestration.premiumEscalation}
                   render={({ field }) => <Switch aria-label={t("fieldPremiumEscalation")} checked={field.value} onCheckedChange={field.onChange} />}
                 />
+              </label>
+              <label className="check-setting">
+                <span><strong>{t("fieldPersistenceEnabled")}</strong><small>{t("fieldPersistenceEnabledHint")}</small></span>
+                <Controller name="orchestration.persistence.enabled" control={form.control} render={({ field }) => <Switch aria-label={t("fieldPersistenceEnabled")} checked={field.value} onCheckedChange={field.onChange} />} />
+              </label>
+              <label className="check-setting">
+                <span><strong>{t("fieldVerificationRequired")}</strong><small>{t("fieldVerificationRequiredHint")}</small></span>
+                <Controller name="orchestration.verification.required" control={form.control} render={({ field }) => <Switch aria-label={t("fieldVerificationRequired")} checked={field.value} onCheckedChange={field.onChange} />} />
+              </label>
+              <label className="check-setting">
+                <span><strong>{t("fieldAdaptiveEnabled")}</strong><small>{t("fieldAdaptiveEnabledHint")}</small></span>
+                <Controller name="orchestration.adaptive.enabled" control={form.control} render={({ field }) => <Switch aria-label={t("fieldAdaptiveEnabled")} checked={field.value} onCheckedChange={field.onChange} />} />
+              </label>
+              <label className="check-setting">
+                <span><strong>{t("fieldKnowledgeEnabled")}</strong><small>{t("fieldKnowledgeEnabledHint")}</small></span>
+                <Controller name="orchestration.knowledge.enabled" control={form.control} render={({ field }) => <Switch aria-label={t("fieldKnowledgeEnabled")} checked={field.value} onCheckedChange={field.onChange} />} />
               </label>
               <label className="check-setting">
                 <span><strong>{t("fieldExposeWorkers")}</strong><small>{t("fieldExposeWorkersHint")}</small></span>
@@ -2241,11 +2413,12 @@ function ErrorState({ error }: { error: unknown }) {
 const rootRoute = createRootRoute({ component: AppShell })
 const overviewRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: OverviewPage })
 const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/activity", component: ActivityPage })
+const runsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/runs", component: RunsPage })
 const modelsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/models", component: () => <RankingPage kind="models" /> })
 const agentsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/agents", component: () => <RankingPage kind="agents" /> })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage })
 
-export const router = createRouter({ routeTree: rootRoute.addChildren([overviewRoute, activityRoute, modelsRoute, agentsRoute, settingsRoute]) })
+export const router = createRouter({ routeTree: rootRoute.addChildren([overviewRoute, activityRoute, runsRoute, modelsRoute, agentsRoute, settingsRoute]) })
 
 declare module "@tanstack/react-router" {
   interface Register { router: typeof router }

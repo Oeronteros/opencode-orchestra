@@ -1,4 +1,6 @@
 import { tool, type PluginInput, type ToolDefinition } from "@opencode-ai/plugin"
+import { stat } from "node:fs/promises"
+import path from "node:path"
 import type { OrchestraConfig, ProfileName } from "./config/schema.js"
 import type { AgentSet } from "./agents/types.js"
 import { profileNameSchema } from "./config/schema.js"
@@ -11,6 +13,7 @@ import { validateOwnership, validateChangedFiles } from "./orchestration/ownersh
 import { assertCommitDescendsFromBase, collectCommitChanges, systemGit } from "./orchestration/worktrees.js"
 import type { TaskContract } from "./orchestration/contracts.js"
 import { OrchestrationRunState } from "./orchestration/run-state.js"
+import { ADAPTIVE_TRIGGERS, planAdaptiveExtension } from "./orchestration/adaptive.js"
 import { createBudgetGuard, paidBudgetFor } from "./routing/budget-guard.js"
 import { estimateCost, formatEstimateWarning } from "./routing/pricing/estimate.js"
 import type { PriceSnapshot } from "./routing/pricing/prices.js"
@@ -22,6 +25,7 @@ import { buildFallbackChain } from "./routing/fallback.js"
 import { fallbackModelsForAgent, supportsFallbackDispatch } from "./routing/agent-fallback.js"
 import { dispatchWithFallback } from "./routing/fallback-dispatch.js"
 import { resolveModel, leadResolveRequest, boundReasonText, type RoutingReason } from "./routing/model-resolver.js"
+import { VerifiedKnowledgeStore } from "./knowledge/store.js"
 
 interface ToolContextLike {
   sessionID?: string
@@ -157,6 +161,18 @@ export function createOrchestraTools(
     parallelWorkers: config.orchestration.parallelWorkers,
     maxDelegationDepth: config.orchestration.maxDelegationDepth,
   })
+  const knowledge = new VerifiedKnowledgeStore(
+    dispatch?.directory ?? process.cwd(),
+    config.orchestration.knowledge.directory,
+    config.orchestration.knowledge.enabled,
+    config.orchestration.knowledge.maxEntries,
+  )
+  const syncTaskBudget = async (sessionID: string) => {
+    const rootSessionID = coordinator.rootSessionID(sessionID)
+    if (!coordinator.budget(rootSessionID)) return undefined
+    const usage = await ledger.usageTotals(rootSessionID)
+    return coordinator.updateBudgetUsage(rootSessionID, usage)
+  }
   return {
     orchestration_prepare_edit_plan: tool({
       description: "Seal explicit non-overlapping ownership/resource partitions and prepare an isolated editor DAG.",
@@ -288,6 +304,14 @@ export function createOrchestraTools(
           return JSON.stringify({ ok: false, error: "No model is available for this agent." })
         }
         const directory = context.directory || context.worktree || dispatch.directory
+        try {
+          const budget = await syncTaskBudget(parentSessionID)
+          if (budget?.status === "exceeded") {
+            return JSON.stringify({ ok: false, code: "budget_exceeded", error: budget.reason, budget }, null, 2)
+          }
+        } catch {
+          return JSON.stringify({ ok: false, code: "budget_accounting_error", error: "Unable to read task budget usage." }, null, 2)
+        }
         const reservation = await coordinator.acquire({
           parentSessionID,
           nodeId: args.nodeId,
@@ -351,6 +375,10 @@ export function createOrchestraTools(
       args: {
         task: tool.schema.string().min(1),
         profile: tool.schema.string().optional(),
+        maxCostUSD: tool.schema.number().min(0).optional(),
+        maxTokens: tool.schema.number().int().min(0).optional(),
+        maxMinutes: tool.schema.number().min(0).max(24 * 60).optional(),
+        unknownPricing: tool.schema.enum(["warn", "block"]).optional(),
       },
       async execute(args, context) {
         const requested = args.profile ? profileNameSchema.safeParse(args.profile) : undefined
@@ -376,13 +404,17 @@ export function createOrchestraTools(
         }
 
         const profile = classification.profile
+        const reusableKnowledge = await knowledge.query(args.task).catch(() => [])
         const enabledWorkers = Object.values(PROFILE_CATALOG)
           .filter((candidate) => config.orchestration.profiles[candidate.name] !== false)
           .flatMap((candidate) => candidate.workers)
+        const initialPlanNodes = config.orchestration.adaptive.enabled && config.budget !== "ebobo"
+          ? Math.min(config.orchestration.maxWorkers, config.orchestration.adaptive.initialWorkers + 1)
+          : config.orchestration.maxWorkers
         const planOptions = {
-          maxNodes: config.orchestration.maxWorkers,
+          maxNodes: initialPlanNodes,
           dependencyAware: true,
-          includeMerger: true,
+          includeMerger: initialPlanNodes > 1,
           includeJudge: config.budget === "ebobo",
           researchSwarm: config.budget === "ebobo" && profile === "research",
           ...(config.budget === "ebobo" ? { secondaryWorkers: Array.from(new Set(enabledWorkers)) } : {}),
@@ -446,17 +478,7 @@ export function createOrchestraTools(
             return SESSION_LEDGER_ERROR
           }
         }
-        let run
-        if (sessionID) {
-          try {
-            run = coordinator.registerPlan(sessionID, plan)
-          } catch (error) {
-            const message = error instanceof Error ? error.message : "Unable to seal the orchestration plan."
-            return JSON.stringify({ ok: false, error: message }, null, 2)
-          }
-        }
-
-        // Pre-run cost estimate (informational; does not block execution).
+        // Pre-run estimate reserves the whole planned DAG against hard limits.
         let estimate: Awaited<ReturnType<typeof estimateCost>> | undefined
         if (config.pricing.estimate && pricing?.snapshot) {
           estimate = await estimateCost({
@@ -472,6 +494,42 @@ export function createOrchestraTools(
             ...(pricing.aliases?.length ? { aliases: pricing.aliases } : {}),
             ...(pricing.openRouter ? { openRouter: pricing.openRouter } : {}),
           })
+        }
+        const taskBudget = {
+          ...config.orchestration.taskBudget,
+          ...(args.maxCostUSD !== undefined ? { maxCostUSD: args.maxCostUSD } : {}),
+          ...(args.maxTokens !== undefined ? { maxTokens: args.maxTokens } : {}),
+          ...(args.maxMinutes !== undefined ? { maxMinutes: args.maxMinutes } : {}),
+          ...(args.unknownPricing !== undefined ? { unknownPricing: args.unknownPricing } : {}),
+        }
+        const estimatedTokens = Math.ceil((plan.nodes.length * 4_000 + 6_000) * 1.2)
+        const preflightProblems = [
+          ...(taskBudget.maxCostUSD > 0 && estimate && estimate.total > taskBudget.maxCostUSD
+            ? [`Estimated cost $${estimate.total.toFixed(2)} exceeds the $${taskBudget.maxCostUSD.toFixed(2)} task budget.`]
+            : []),
+          ...(taskBudget.maxTokens > 0 && estimatedTokens > taskBudget.maxTokens
+            ? [`Estimated token use ${estimatedTokens} exceeds the ${taskBudget.maxTokens} task budget.`]
+            : []),
+          ...(taskBudget.unknownPricing === "block" && (!estimate || estimate.breakdown.unknownCalls > 0)
+            ? [estimate ? `${estimate.breakdown.unknownCalls} planned call(s) have unknown pricing.` : "A cost estimate is unavailable, so the USD budget cannot be enforced before execution."]
+            : []),
+        ]
+        if (preflightProblems.length) {
+          return JSON.stringify({ ok: false, code: "budget_preflight_failed", errors: preflightProblems, taskBudget, estimate: estimate ?? null, estimatedTokens }, null, 2)
+        }
+        let run
+        let runtimeBudget
+        if (sessionID) {
+          try {
+            run = coordinator.registerPlan(sessionID, plan)
+            runtimeBudget = coordinator.configureBudget(sessionID, taskBudget, {
+              ...(estimate ? { costUSD: estimate.total, unknownPriceCalls: estimate.breakdown.unknownCalls } : {}),
+              tokens: estimatedTokens,
+            })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Unable to seal the orchestration plan."
+            return JSON.stringify({ ok: false, error: message }, null, 2)
+          }
         }
 
         const eboboHint = config.budget === "ebobo"
@@ -500,6 +558,8 @@ export function createOrchestraTools(
               maxDelegationDepth: config.orchestration.maxDelegationDepth,
             },
             plan,
+            reusableKnowledge: reusableKnowledge.filter((entry) => entry.status === "valid"),
+            staleKnowledge: reusableKnowledge.filter((entry) => entry.status === "stale").map((entry) => ({ id: entry.id, kind: entry.kind, staleReason: entry.staleReason, paths: entry.paths })),
             swarm: plan.strategy ?? null,
             ...(run ? { run } : {}),
             routing: {
@@ -520,6 +580,15 @@ export function createOrchestraTools(
                 ? "Premium budget is nearly exhausted. Paid models will be excluded at the cap."
                 : null,
             },
+            taskBudget: runtimeBudget ?? {
+              limits: taskBudget,
+              estimatedCostUSD: estimate?.total ?? null,
+              estimatedTokens,
+              status: "estimate-only",
+              warning: !estimate || estimate.breakdown.unknownCalls > 0
+                ? "Some model prices are unknown; those calls are excluded from the USD estimate."
+                : null,
+            },
             fallback: {
               enabled: config.models.fallback.enabled,
               maxRetries: config.models.fallback.maxRetries,
@@ -530,11 +599,108 @@ export function createOrchestraTools(
             escalation,
             ...(estimate ? { estimate } : {}),
             ...(estimate ? { warning: formatEstimateWarning(estimate, config.pricing.warnThresholdUSD) ?? null } : { warning: null }),
-            next: "Execute the sealed plan as orch-lead. Pass each node's unchanged nodeId and TaskContract to orchestra_dispatch, release dependencies only after success, and call orch-merge exactly once." + eboboHint,
+            next: "Execute the sealed plan as orch-lead. Pass each node's unchanged nodeId and TaskContract to orchestra_dispatch, release dependencies only after success, and call orch-merge exactly once. Register final verification gates, run them through normal permissioned tools, and call orchestration_complete before reporting verified completion." + eboboHint,
           },
           null,
           2,
         )
+      },
+    }),
+    orchestration_adapt: tool({
+      description: "Extend the sealed plan with a small specialist branch only when runtime evidence exposes a supported trigger. Every extension creates an auditable plan version.",
+      args: {
+        observations: tool.schema.array(tool.schema.object({
+          trigger: tool.schema.enum(ADAPTIVE_TRIGGERS),
+          detail: tool.schema.string().min(1),
+          evidence: tool.schema.array(tool.schema.string().min(1)).optional(),
+        })).min(1).max(8),
+      },
+      async execute(args, context) {
+        if (!config.orchestration.adaptive.enabled) return JSON.stringify({ ok: false, error: "Adaptive team expansion is disabled." })
+        const sessionID = (context as ToolContextLike).sessionID
+        if (!sessionID) return JSON.stringify({ ok: false, error: "Cannot adapt: current session ID was not provided." })
+        const current = coordinator.adaptiveContext(sessionID)
+        if (!current) return JSON.stringify({ ok: false, error: "Register an orchestration plan before adapting it." })
+        const extensions = current.triggers.length
+        if (extensions >= config.orchestration.adaptive.maxExtensions) {
+          return JSON.stringify({ ok: false, error: `Adaptive extension limit ${config.orchestration.adaptive.maxExtensions} is exhausted.`, planVersion: current.planVersion })
+        }
+        const insufficient = args.observations.filter((observation) => (observation.evidence ?? []).length < config.orchestration.adaptive.minEvidenceItems)
+        if (insufficient.length) {
+          return JSON.stringify({ ok: false, error: `Every adaptive observation requires at least ${config.orchestration.adaptive.minEvidenceItems} evidence item(s).`, triggers: insufficient.map((entry) => entry.trigger) })
+        }
+        const plan = planAdaptiveExtension({
+          planVersion: current.planVersion,
+          nodeIds: current.nodeIds,
+          succeededNodeIds: current.succeededNodeIds,
+          remainingSlots: current.remainingSlots,
+          usedTriggers: current.triggers,
+        }, args.observations)
+        if (!plan) return JSON.stringify({ ok: false, code: "no_adaptive_change", error: "No new supported trigger or worker slot is available.", planVersion: current.planVersion })
+        const triggers = [...new Set(args.observations.map((entry) => entry.trigger))]
+        try {
+          const run = coordinator.extendPlan(current.rootSessionID, plan, {
+            reason: args.observations.map((entry) => `${entry.trigger}: ${entry.detail}`).join(" | "),
+            trigger: triggers.join(","),
+          })
+          return JSON.stringify({
+            ok: true,
+            planVersion: run.planVersion,
+            extension: plan,
+            run,
+            next: "Dispatch the new ready nodes with their unchanged nodeId and TaskContract, then execute the adaptive merge node after its dependencies succeed.",
+          }, null, 2)
+        } catch (error) {
+          return JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Unable to extend the orchestration plan." }, null, 2)
+        }
+      },
+    }),
+    orchestra_knowledge_query: tool({
+      description: "Find locally stored verified decisions, test commands, and constraints, including provenance and stale status for changed paths.",
+      args: {
+        query: tool.schema.string().min(1),
+        paths: tool.schema.array(tool.schema.string().min(1)).optional(),
+      },
+      async execute(args) {
+        try {
+          const matches = await knowledge.query(args.query, args.paths ?? [])
+          return JSON.stringify({ ok: true, valid: matches.filter((entry) => entry.status === "valid"), stale: matches.filter((entry) => entry.status === "stale") }, null, 2)
+        } catch (error) {
+          return JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Unable to query verified knowledge." })
+        }
+      },
+    }),
+    orchestra_knowledge_record: tool({
+      description: "Record a reusable decision, test command, or constraint after this run has reached runtime-verified completion.",
+      args: {
+        kind: tool.schema.enum(["decision", "test-command", "constraint"]),
+        value: tool.schema.string().min(1),
+        evidence: tool.schema.array(tool.schema.string().min(1)).min(1).max(16),
+        paths: tool.schema.array(tool.schema.string().min(1)).min(1).max(64),
+        ttlDays: tool.schema.number().min(0).max(3650).optional(),
+      },
+      async execute(args, context) {
+        const sessionID = (context as ToolContextLike).sessionID
+        if (!sessionID) return JSON.stringify({ ok: false, error: "Cannot record knowledge: current session ID was not provided." })
+        const completion = coordinator.completion(sessionID)
+        const run = coordinator.snapshot(sessionID)
+        if (completion?.status !== "verified" || !run) {
+          return JSON.stringify({ ok: false, error: "Reusable knowledge can only be recorded after orchestration_complete returns verified completion." })
+        }
+        try {
+          const entry = await knowledge.record({
+            kind: args.kind,
+            value: args.value,
+            evidence: args.evidence,
+            paths: args.paths,
+            sourceRun: run.rootSessionID,
+            sourcePlanVersion: run.planVersion,
+            ...(args.ttlDays !== undefined ? { ttlDays: args.ttlDays } : {}),
+          })
+          return JSON.stringify({ ok: true, entry }, null, 2)
+        } catch (error) {
+          return JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Unable to record verified knowledge." })
+        }
       },
     }),
     orchestration_report: tool({
@@ -552,6 +718,66 @@ export function createOrchestraTools(
         return JSON.stringify({ ok: true, sessionID: rootSessionID, consensus: args.consensus, ...(args.uncertainty !== undefined ? { uncertainty: args.uncertainty } : {}), ...(args.notes !== undefined ? { notes: args.notes } : {}) })
       },
     }),
+    orchestration_set_verification: tool({
+      description: "Register the exact command and artifact gates that must pass before this Orchestra run can be marked verified.",
+      args: {
+        commands: tool.schema.array(tool.schema.object({
+          id: tool.schema.string().min(1),
+          label: tool.schema.string().min(1),
+          command: tool.schema.string().min(1),
+        })).max(config.orchestration.verification.maxGates).optional(),
+        artifacts: tool.schema.array(tool.schema.object({
+          id: tool.schema.string().min(1),
+          label: tool.schema.string().min(1),
+          path: tool.schema.string().min(1),
+        })).max(config.orchestration.verification.maxGates).optional(),
+      },
+      async execute(args, context) {
+        const sessionID = (context as ToolContextLike).sessionID
+        if (!sessionID) return JSON.stringify({ ok: false, error: "Cannot register verification: current session ID was not provided." })
+        const gates = [
+          ...(args.commands ?? []).map((entry) => ({ ...entry, kind: "command" as const })),
+          ...(args.artifacts ?? []).map((entry) => ({ ...entry, kind: "artifact" as const })),
+        ]
+        try {
+          return JSON.stringify({ ok: true, completion: coordinator.setVerificationGates(sessionID, gates) }, null, 2)
+        } catch (error) {
+          return JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Unable to register verification gates." }, null, 2)
+        }
+      },
+    }),
+    orchestration_complete: tool({
+      description: "Claim completion and receive a verified result only when all orchestration nodes and registered verification gates have passed.",
+      args: {
+        summary: tool.schema.string().min(1),
+      },
+      async execute(args, context) {
+        const sessionID = (context as ToolContextLike).sessionID
+        if (!sessionID) return JSON.stringify({ ok: false, error: "Cannot complete: current session ID was not provided." })
+        try {
+          await syncTaskBudget(sessionID)
+        } catch {
+          return JSON.stringify({ ok: false, error: "Cannot verify completion because task budget usage is unavailable." })
+        }
+        const base = path.resolve((context as ToolContextLike).worktree ?? dispatch?.directory ?? process.cwd())
+        for (const gate of coordinator.completion(sessionID)?.gates ?? []) {
+          if (gate.kind !== "artifact") continue
+          const candidate = path.resolve(base, gate.path)
+          const relative = path.relative(base, candidate)
+          if (relative.startsWith("..") || path.isAbsolute(relative)) {
+            coordinator.recordArtifactVerification(sessionID, gate.id, false, `Path is outside the active workspace: ${gate.path}`)
+            continue
+          }
+          try {
+            const info = await stat(candidate)
+            coordinator.recordArtifactVerification(sessionID, gate.id, true, `${gate.path} exists (${info.isDirectory() ? "directory" : `${info.size} bytes`}).`)
+          } catch {
+            coordinator.recordArtifactVerification(sessionID, gate.id, false, `${gate.path} does not exist.`)
+          }
+        }
+        return JSON.stringify(coordinator.claimCompletion(sessionID, args.summary, config.orchestration.verification.required), null, 2)
+      },
+    }),
     orchestra_status: tool({
       description: "Show model, worker, escalation, cost, and consensus statistics for the current Orchestra session.",
       args: {},
@@ -559,9 +785,39 @@ export function createOrchestraTools(
         const sessionID = (context as ToolContextLike).sessionID
         if (!sessionID) return "Orchestra status is unavailable because the current session ID was not provided."
         const rootSessionID = coordinator.rootSessionID(sessionID)
+        await syncTaskBudget(rootSessionID).catch(() => undefined)
         const run = coordinator.formatStatus(rootSessionID)
         const usage = await ledger.formatStatus(rootSessionID)
         return run ? `${run}\n\n${usage}` : usage
+      },
+    }),
+    orchestra_resume: tool({
+      description: "List or resume a locally checkpointed unfinished Orchestra run in the current OpenCode session.",
+      args: {
+        runId: tool.schema.string().optional(),
+        list: tool.schema.boolean().optional(),
+      },
+      async execute(args, context) {
+        const sessionID = (context as ToolContextLike).sessionID
+        if (!sessionID) return JSON.stringify({ ok: false, error: "Cannot resume: current session ID was not provided." })
+        const available = coordinator.resumableRuns()
+        if (args.list) return JSON.stringify({ ok: true, runs: available }, null, 2)
+        try {
+          const resumed = coordinator.resume(sessionID, args.runId)
+          return JSON.stringify({
+            ok: true,
+            ...resumed,
+            next: resumed.ready.length > 0
+              ? "Dispatch every ready node with its unchanged nodeId and TaskContract. Use orchestra_resume again after those nodes finish to obtain the next dependency wave."
+              : "No node is ready. Inspect failed dependencies in the run snapshot before continuing.",
+          }, null, 2)
+        } catch (error) {
+          return JSON.stringify({
+            ok: false,
+            error: error instanceof Error ? error.message : "Unable to resume the saved Orchestra run.",
+            runs: available,
+          }, null, 2)
+        }
       },
     }),
     orchestra_plugin_status: tool({

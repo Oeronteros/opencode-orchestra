@@ -41,6 +41,11 @@ export interface MessageUsage {
   reply?: string
 }
 
+export interface MessageText {
+  prompt?: string
+  reply?: string
+}
+
 /**
  * A sanitized, bounded record of an observed attempt: the model that ran, the
  * policy error class (never the raw error text), the next model when a retry
@@ -94,6 +99,12 @@ export interface SessionLedger {
   messages: Record<string, MessageUsage>
   reliability?: ReliabilityEvent[]
   mcp: Record<string, McpUsage>
+}
+
+export interface SessionUsageTotals {
+  costUSD: number
+  tokens: number
+  unknownPriceCalls: number
 }
 
 export interface LedgerState {
@@ -309,6 +320,7 @@ export class Ledger {
     pricingOf?: PricingLookup,
   ) {
     this.enabled = enabled
+    if (!enabled) this.state = emptyLedgerState()
     this.storeTexts = storeTexts
     this.pricingOf = pricingOf
     this.stateFile = path.resolve(directory, telemetryDirectory, "state.json")
@@ -347,7 +359,6 @@ export class Ledger {
   }
 
   private mutate(operation: (state: LedgerState) => void): Promise<void> {
-    if (!this.enabled) return Promise.resolve()
     this.queue = this.queue.then(async () => {
       const state = await this.load()
       operation(state)
@@ -372,7 +383,7 @@ export class Ledger {
     })
   }
 
-  async recordAssistant(info: AssistantInfo): Promise<void> {
+  async recordAssistant(info: AssistantInfo, text?: MessageText): Promise<void> {
     const agent = info.mode ?? "default"
     const model = info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined
     const resolution = resolutionOf(this.pricingOf?.(info.providerID, info.modelID))
@@ -419,8 +430,12 @@ export class Ledger {
         ...(info.finish ? { finish: info.finish } : {}),
         tokens,
         ...(pricingStatus ? { pricingStatus } : {}),
-        ...(previous?.prompt !== undefined ? { prompt: previous.prompt } : {}),
-        ...(previous?.reply !== undefined ? { reply: previous.reply } : {}),
+        ...(this.storeTexts && text?.prompt !== undefined
+          ? { prompt: text.prompt }
+          : previous?.prompt !== undefined ? { prompt: previous.prompt } : {}),
+        ...(this.storeTexts && text?.reply !== undefined
+          ? { reply: text.reply }
+          : previous?.reply !== undefined ? { reply: previous.reply } : {}),
       }
     })
   }
@@ -531,7 +546,7 @@ export class Ledger {
   async recordText(
     sessionID: string,
     messageID: string,
-    text: { prompt?: string; reply?: string },
+    text: MessageText,
   ): Promise<void> {
     if (!this.storeTexts) return
     await this.mutate((state) => {
@@ -550,6 +565,20 @@ export class Ledger {
     await this.queue
     const state = await this.load()
     return state.sessions[sessionID] ?? emptySession()
+  }
+
+  async usageTotals(sessionID: string): Promise<SessionUsageTotals> {
+    const session = await this.getSession(sessionID)
+    let tokens = 0
+    for (const message of Object.values(session.messages)) {
+      tokens += message.tokens.input + message.tokens.output + message.tokens.reasoning
+        + message.tokens.cache.read + message.tokens.cache.write
+    }
+    return {
+      costUSD: session.estimatedPaidUsage,
+      tokens,
+      unknownPriceCalls: session.unknownPriceCalls,
+    }
   }
 
   async formatStatus(sessionID: string): Promise<string> {

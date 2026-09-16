@@ -118,6 +118,37 @@ export const orchestraConfigSchema = z.object({
         verifyCommand: z.string().default(""),
         noProgressLimit: z.number().int().min(1).max(20).default(3),
       }).default({ enabled: false, maxIterations: 10, maxMinutes: 30, verifyCommand: "", noProgressLimit: 3 }),
+      persistence: z.object({
+        /** Persist sealed plans and worker results so interrupted runs can resume. */
+        enabled: z.boolean().default(true),
+        /** Project-relative directory for the local run checkpoint. */
+        directory: z.string().min(1).default(".orchestra/orchestration"),
+      }).default({ enabled: true, directory: ".orchestra/orchestration" }),
+      verification: z.object({
+        /** Require runtime-observed gates before Orchestra reports verified completion. */
+        required: z.boolean().default(true),
+        maxGates: z.number().int().min(1).max(64).default(24),
+      }).default({ required: true, maxGates: 24 }),
+      taskBudget: z.object({
+        /** Zero disables the corresponding hard limit. */
+        maxCostUSD: z.number().min(0).default(0),
+        maxTokens: z.number().int().min(0).default(0),
+        maxMinutes: z.number().min(0).max(24 * 60).default(0),
+        unknownPricing: z.enum(["warn", "block"]).default("warn"),
+      }).default({ maxCostUSD: 0, maxTokens: 0, maxMinutes: 0, unknownPricing: "warn" }),
+      adaptive: z.object({
+        /** Start with a small evidence team and add specialists only after observable triggers. */
+        enabled: z.boolean().default(true),
+        initialWorkers: z.number().int().min(1).max(6).default(2),
+        maxExtensions: z.number().int().min(0).max(6).default(3),
+        minEvidenceItems: z.number().int().min(0).max(8).default(1),
+      }).default({ enabled: true, initialWorkers: 2, maxExtensions: 3, minEvidenceItems: 1 }),
+      knowledge: z.object({
+        /** Reuse only evidence-backed entries recorded after verified completion. */
+        enabled: z.boolean().default(true),
+        directory: z.string().min(1).default(".orchestra/knowledge"),
+        maxEntries: z.number().int().min(1).max(4096).default(256),
+      }).default({ enabled: true, directory: ".orchestra/knowledge", maxEntries: 256 }),
     })
     .default({
       parallelWorkers: 8,
@@ -131,6 +162,11 @@ export const orchestraConfigSchema = z.object({
       exposeWorkers: false,
       profiles: {},
       loop: { enabled: false, maxIterations: 10, maxMinutes: 30, verifyCommand: "", noProgressLimit: 3 },
+      persistence: { enabled: true, directory: ".orchestra/orchestration" },
+      verification: { required: true, maxGates: 24 },
+      taskBudget: { maxCostUSD: 0, maxTokens: 0, maxMinutes: 0, unknownPricing: "warn" },
+      adaptive: { enabled: true, initialWorkers: 2, maxExtensions: 3, minEvidenceItems: 1 },
+      knowledge: { enabled: true, directory: ".orchestra/knowledge", maxEntries: 256 },
     }),
   permissions: z
     .object({

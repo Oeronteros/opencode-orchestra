@@ -34,6 +34,7 @@ Useful status commands:
 ```text
 /orchestra-status
 /plugin-status
+/orchestra-resume
 ```
 
 The installer is idempotent. It backs up the OpenCode configuration before changing it and preserves existing plugins and MCP entries unless `--force` is explicitly supplied.
@@ -96,6 +97,73 @@ In `ebobo` mode, tasks classified as research use a bounded research swarm. With
 - A failed dependency blocks downstream nodes instead of allowing partial execution to drift.
 
 The default limits are eight workers, eight concurrent workers, and a delegation depth of two. Limits are enforced by the runtime, not only by prompts.
+
+### Resume after restart
+
+Orchestra stores the sealed plan, node states, dependency results, and validated Git commits locally in `.orchestra/orchestration/runs.json`. After a restart, active and queued nodes become pending and can be retried safely; completed nodes are not run again.
+
+```text
+/orchestra-resume
+/orchestra-resume <original-session-id>
+```
+
+With no argument, the newest unfinished run is resumed. Persistence can be disabled or moved:
+
+```jsonc
+{
+  "orchestration": {
+    "persistence": {
+      "enabled": true,
+      "directory": ".orchestra/orchestration"
+    }
+  }
+}
+```
+
+The state file is local but contains worker results. Protect its directory like the repository when those results may contain sensitive data.
+
+### Verified completion
+
+Before final checks, `orch-lead` registers exact commands and expected artifacts through `orchestration_set_verification`. Commands run through the normal `bash` tool, so OpenCode permissions still apply. The runtime marks a command gate as passed only after the matching call succeeds, and checks artifact existence directly inside the workspace.
+
+`orchestration_complete` distinguishes working, claimed, failed, and verified completion. By default a run cannot become verified without at least one gate or while any plan node is unfinished or unsuccessful. This can be disabled with `orchestration.verification.required`; `orchestration.verification.maxGates` caps the number of gates.
+
+### Per-task budget
+
+In addition to the model-selection mode, you can set hard cost, token, and elapsed-time limits. A value of `0` disables that limit:
+
+```jsonc
+{
+  "orchestration": {
+    "taskBudget": {
+      "maxCostUSD": 2,
+      "maxTokens": 120000,
+      "maxMinutes": 15,
+      "unknownPricing": "warn"
+    }
+  }
+}
+```
+
+Before execution, Orchestra estimates and reserves the whole DAG budget. A plan whose estimate already exceeds a limit is rejected. Between worker calls, the runtime checks actual cost and tokens from the local ledger; elapsed time starts with the run and survives restart. `unknownPricing: "block"` rejects or stops work when a price cannot be determined, while `"warn"` explicitly excludes unknown calls from the USD total. One call to `orchestra_route` can override these limits with `maxCostUSD`, `maxTokens`, and `maxMinutes`.
+
+### Execution graph and adaptive teams
+
+`ebobo` retains its full bounded team for maximum-quality arbitration; the minimal initial team applies to the other budget modes.
+
+The dashboard **Runs** page renders the persisted dependency graph, node contracts, outputs, failures, completion gates, and task budget. A running branch can be cancelled and a failed, blocked, or cancelled branch can be retried. Retry invalidates downstream results and stale worker responses cannot overwrite the new attempt.
+
+By default Orchestra starts with two specialists plus synthesis and keeps the remaining worker slots available. `orchestration_adapt` can add a versioned branch only for a concrete runtime trigger such as a failed reproduction, contradictory evidence, an authorization boundary, a documentation gap, a performance or visual regression, low confidence, or evidence-backed lack of progress. Every trigger needs evidence, repeated triggers are ignored, and the dashboard shows the resulting plan version. Configure this with `orchestration.adaptive.initialWorkers`, `maxExtensions`, and `minEvidenceItems`.
+
+Loop progress uses successful nodes, validated commits, and passed verification gates. Rephrasing the same `MORE` reason no longer resets the no-progress limit.
+
+### Built-in evaluations
+
+`opencode-orchestra eval --json` emits the versioned five-case core suite and structural routing coverage for solo, eco, balanced, quality, and ebobo modes. Supply observed rows with `--results results.json` to compare success rate, elapsed time, USD cost, and tokens. `--write baseline.json` stores a report; a later `--baseline baseline.json` exits with status 2 when success falls by more than five percentage points or mean time/cost rises by more than 20%.
+
+### Verified reusable knowledge
+
+After `orchestration_complete` returns verified completion, `orchestra_knowledge_record` can store a decision, exact test command, or constraint with evidence, source run, plan version, Git revision, and affected paths. `orchestra_route` and `orchestra_knowledge_query` reuse valid entries. An entry becomes stale when it expires, its paths have uncommitted changes, or those paths changed after its source revision; stale entries are returned only as leads. The local store defaults to `.orchestra/knowledge/verified.json` and is bounded by `orchestration.knowledge.maxEntries`.
 
 ## Installation
 
@@ -221,9 +289,9 @@ Bounded Loop lets `orch-lead` continue a single goal over multiple controlled it
 /loop stop
 ```
 
-Only an unquoted final `MORE: <remaining work>` line authorizes another iteration. `DONE: <summary>` records the agent's completion claim; it is not an independent verification result. Permission requests and unknown replies pause the loop, while errors and new user messages stop it.
+Only an unquoted final `MORE: <remaining work>` line authorizes another iteration. When verification is required, `DONE: <summary>` completes the loop only after `orchestration_complete` succeeds; otherwise the loop becomes `unverified`. Permission requests and unknown replies pause the loop, while errors and new user messages stop it.
 
-Loop state is in memory and is lost when OpenCode restarts. A non-empty `verifyCommand` currently fails closed because permission-safe runtime shell verification is not supported; ask the lead to run verification through its normal tools.
+Bounded-loop state itself is in memory and is lost when OpenCode restarts. A non-empty `verifyCommand` still fails closed; safe verification runs through registered gates and OpenCode's normal permissioned tools.
 
 ## Voice input
 
@@ -307,6 +375,7 @@ The complete contract and bounds are defined in [schema/opencode-orchestra.schem
 | `voice-web`, `web` | Proxy OpenCode Web with an inline offline microphone |
 | `doctor` | Diagnose configuration, MCPs, and local toolchain paths |
 | `mcp-smoke` | Launch enabled local MCPs and test `initialize`, `tools/list`, and safe calls |
+| `eval` | Compare reproducible solo and Orchestra results and check a baseline |
 | `update` | Check npm for a newer release |
 | `completion` | Print completion for `zsh`, `bash`, or `pwsh` |
 
@@ -315,6 +384,7 @@ Examples:
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest doctor --json
 bunx @oeronteros-1/opencode-orchestra@latest mcp-smoke --directory . --json
+bunx @oeronteros-1/opencode-orchestra@latest eval --results results.json --json
 bunx @oeronteros-1/opencode-orchestra@latest update
 bunx @oeronteros-1/opencode-orchestra@latest completion pwsh
 ```

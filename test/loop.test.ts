@@ -39,8 +39,28 @@ test("bounded loop isolates replies, deduplicates events and reports claims hone
     loop.reply("s", "u2", "a2", "DONE: finished")
     await loop.tick("s")
     assert.equal(loop.get("s")?.status, "completed")
-    assert.match(loop.get("s")!.reason, /not independently verified/)
+    assert.match(loop.get("s")!.reason, /Assistant completion claim/)
   } finally { loop.dispose() }
+})
+
+test("bounded loop distinguishes unverified and verified completion", async () => {
+  let verified = false
+  const loop = new LoopController({
+    enabled: true, maxIterations: 2, maxMinutes: 1, noProgressLimit: 2,
+    prompt: async () => {},
+    verifyCompletion: async () => verified ? { ok: true } : { ok: false, error: "tests pending" },
+  })
+  loop.start("first", "goal"); loop.bind("first", "u1"); loop.reply("first", "u1", "a1", "DONE: done")
+  await loop.tick("first")
+  assert.equal(loop.get("first")?.status, "unverified")
+  assert.match(loop.get("first")?.reason ?? "", /tests pending/)
+
+  verified = true
+  loop.start("second", "goal"); loop.bind("second", "u2"); loop.reply("second", "u2", "a2", "DONE: done")
+  await loop.tick("second")
+  assert.equal(loop.get("second")?.status, "completed")
+  assert.match(loop.get("second")?.reason ?? "", /Verified completion/)
+  loop.dispose()
 })
 
 test("disabled and unrestricted verification fail closed", () => {
@@ -76,6 +96,27 @@ test("cancel during awaited submission cannot resurrect loop", async () => {
   loop.dispose()
 })
 
+test("loop no-progress detection follows evidence fingerprints", async () => {
+  let revision = "0"
+  let prompts = 0
+  const loop = new LoopController({
+    enabled: true, maxIterations: 6, maxMinutes: 1, noProgressLimit: 2,
+    progressKey: () => revision,
+    prompt: async () => { prompts += 1 },
+  })
+  loop.start("s", "goal")
+  loop.bind("s", "u1"); loop.reply("s", "u1", "a1", "MORE: first wording"); await loop.tick("s")
+  assert.equal(prompts, 1)
+  revision = "1"
+  loop.bind("s", "u2"); loop.reply("s", "u2", "a2", "MORE: same work"); await loop.tick("s")
+  assert.equal(loop.get("s")?.status, "running")
+  loop.bind("s", "u3"); loop.reply("s", "u3", "a3", "MORE: different wording"); await loop.tick("s")
+  assert.equal(loop.get("s")?.status, "running")
+  loop.bind("s", "u4"); loop.reply("s", "u4", "a4", "MORE: another wording"); await loop.tick("s")
+  assert.equal(loop.get("s")?.status, "failed")
+  loop.dispose()
+})
+
 test("plugin activates only explicit commands and continues with telemetry disabled", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-loop-"))
   const initialize = OrchestraPlugin as unknown as (input: unknown, options: unknown) => Promise<Record<string, any>>
@@ -84,7 +125,7 @@ test("plugin activates only explicit commands and continues with telemetry disab
   const hooks = await initialize({ directory, client: { app: { log: async () => {} }, session: {
     message: async () => ({ data: { info: { role: "assistant" }, parts: [{ type: "text", text }] } }),
     promptAsync: async (input: any) => { prompts.push(input) },
-  } } }, { telemetry: { enabled: false, storeTexts: false }, orchestration: { loop: { enabled: true } } })
+  } } }, { telemetry: { enabled: false, storeTexts: false }, orchestration: { loop: { enabled: true }, verification: { required: false } } })
   const command = (arguments_: string) => hooks["command.execute.before"]({ command: "loop", sessionID: "s", arguments: arguments_ }, { parts: [{ type: "text", text: arguments_ }] })
   const chat = (id: string) => hooks["chat.message"]({ sessionID: "s", agent: "orch-lead" }, { message: { id }, parts: [{ type: "text", text: "DONE: fake user text" }] })
   const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "s" } } })
@@ -102,7 +143,7 @@ test("plugin activates only explicit commands and continues with telemetry disab
     assert.equal(prompts[0].body.agent, "orch-lead")
     await chat("u2"); text = "DONE: tests passed"
     await idle(); await reply("u2", "a2"); await settle()
-    await assert.rejects(command("status"), /completed.*iteration 2.*not independently verified/)
+    await assert.rejects(command("status"), /completed.*iteration 2.*Assistant completion claim/)
     assert.equal(prompts.length, 1)
     await command("new goal"); await chat("u3")
     await assert.rejects(command("stop"), /Loop stopped/)

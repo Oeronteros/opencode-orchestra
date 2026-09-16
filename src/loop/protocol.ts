@@ -25,5 +25,5 @@ export function normalizeLoopReason(value: string): string {
 }
 
 export function loopPrompt(goal: string): string {
-  return `Execute one bounded iteration using orch-lead. Goal:\n${goal}\n\nRun appropriate verification through normal permissioned tools and report its actual results. Never claim verification solely from this protocol. If complete, end with the unquoted final line DONE: <summary>. If safe autonomous work remains, end with MORE: <remaining work>. If blocked, asking a question, or waiting for permission, do not use either marker.`
+  return `Execute one bounded iteration using orch-lead. Goal:\n${goal}\n\nRegister concrete command or artifact gates with orchestration_set_verification before verification. Run command gates through the normal permissioned bash tool, then call orchestration_complete. Only after it returns ok=true may you end with the unquoted final line DONE: <summary>. If safe autonomous work remains, end with MORE: <remaining work>. If blocked, asking a question, waiting for permission, or completion is unverified, do not use either marker.`
 }

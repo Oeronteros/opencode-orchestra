@@ -15,6 +15,7 @@ import { analyzeDaily, type DailyAnomaly, type MonthProjection } from "../teleme
 import { readLedgerState, type MessageUsage, type TokenUsage } from "../telemetry/ledger.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../telemetry/live.js"
 import { projectId, readProjects, registerProject, type RegisteredProject } from "./registry.js"
+import type { PersistedRun } from "../orchestration/run-state.js"
 
 /**
  * Any top-level config section may be edited from the dashboard, so the input
@@ -23,6 +24,11 @@ import { projectId, readProjects, registerProject, type RegisteredProject } from
  * and the server fills defaults by re-parsing the merged result.
  */
 const CONFIG_INPUT_SCHEMA = orchestraConfigSchema.partial()
+const ORCHESTRATION_ACTION_SCHEMA = z.object({
+  rootSessionID: z.string().min(1).max(300),
+  nodeId: z.string().min(1).max(200),
+  action: z.enum(["cancel", "retry"]),
+})
 
 const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
@@ -68,17 +74,72 @@ function addTokens(target: TokenUsage, source: TokenUsage): void {
   target.cache.write += source.cache.write
 }
 
-function aggregate(rows: ActivityRow[], key: (row: ActivityRow) => string): AggregateRow[] {
-  const result = new Map<string, AggregateRow>()
-  for (const row of rows) {
-    const id = key(row)
-    const current = result.get(id) ?? { id, calls: 0, cost: 0, tokens: emptyTokens() }
-    current.calls += 1
-    current.cost += row.cost
-    addTokens(current.tokens, row.tokens)
-    result.set(id, current)
+function addAggregate(target: Map<string, AggregateRow>, id: string, row: ActivityRow): void {
+  const current = target.get(id) ?? { id, calls: 0, cost: 0, tokens: emptyTokens() }
+  current.calls += 1
+  current.cost += row.cost
+  addTokens(current.tokens, row.tokens)
+  target.set(id, current)
+}
+
+function sortedAggregates(values: Map<string, AggregateRow>): AggregateRow[] {
+  return [...values.values()].sort((a, b) => b.cost - a.cost || b.tokens.output - a.tokens.output)
+}
+
+function activityTime(row: ActivityRow): number {
+  return row.completedAt ?? row.createdAt ?? 0
+}
+
+/** Keep only the newest rows while scanning a large ledger. */
+class RecentActivity {
+  private readonly heap: ActivityRow[] = []
+
+  constructor(private readonly limit: number) {}
+
+  add(row: ActivityRow): void {
+    if (this.limit === 0) {
+      this.heap.push(row)
+      return
+    }
+    if (this.heap.length < this.limit) {
+      this.heap.push(row)
+      this.bubbleUp(this.heap.length - 1)
+      return
+    }
+    if (activityTime(row) <= activityTime(this.heap[0]!)) return
+    this.heap[0] = row
+    this.bubbleDown(0)
   }
-  return [...result.values()].sort((a, b) => b.cost - a.cost || b.tokens.output - a.tokens.output)
+
+  values(): ActivityRow[] {
+    return this.heap.sort((a, b) => activityTime(b) - activityTime(a))
+  }
+
+  private bubbleUp(index: number): void {
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2)
+      if (activityTime(this.heap[parent]!) <= activityTime(this.heap[index]!)) return
+      const previous = this.heap[parent]!
+      this.heap[parent] = this.heap[index]!
+      this.heap[index] = previous
+      index = parent
+    }
+  }
+
+  private bubbleDown(index: number): void {
+    for (;;) {
+      const left = index * 2 + 1
+      const right = left + 1
+      let smallest = index
+      if (left < this.heap.length && activityTime(this.heap[left]!) < activityTime(this.heap[smallest]!)) smallest = left
+      if (right < this.heap.length && activityTime(this.heap[right]!) < activityTime(this.heap[smallest]!)) smallest = right
+      if (smallest === index) return
+      const previous = this.heap[index]!
+      this.heap[index] = this.heap[smallest]!
+      this.heap[smallest] = previous
+      index = smallest
+    }
+  }
 }
 
 async function jsonBody(request: IncomingMessage): Promise<unknown> {
@@ -121,6 +182,20 @@ async function readTextOr(file: string, fallback: string): Promise<string> {
   } catch {
     return fallback
   }
+}
+
+async function enqueueOrchestrationAction(directory: string, configDirectory: string, input: unknown): Promise<string> {
+  const action = ORCHESTRATION_ACTION_SCHEMA.parse(input)
+  const config = (await loadConfigForDirectory(directory, configDirectory)).config
+  if (!config.orchestration.persistence.enabled) throw new Error("Orchestration persistence is disabled for this project")
+  const requestId = `${Date.now()}-${randomBytes(8).toString("hex")}`
+  const actionDirectory = path.resolve(directory, config.orchestration.persistence.directory, "actions")
+  await mkdir(actionDirectory, { recursive: true })
+  const target = path.join(actionDirectory, `${requestId}.json`)
+  const temporary = `${target}.tmp`
+  await writeFile(temporary, JSON.stringify({ version: 1, requestId, ...action, requestedAt: Date.now() }, null, 2) + "\n", "utf8")
+  await rename(temporary, target)
+  return requestId
 }
 
 async function findMainConfig(configDirectory: string): Promise<string> {
@@ -206,6 +281,7 @@ interface SnapshotData {
   mcp: Record<string, boolean>
   mcpUsage: McpUsageRow[]
   availableModels: string[]
+  orchestrationRuns: PersistedRun[]
 }
 
 interface ProjectInfo {
@@ -349,8 +425,8 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   }
 
   const entry: SnapshotCacheEntry = { signature, inputFiles }
-  const pending = buildSnapshot(directory, configDirectory, includeModels, options).then(({ data, ledgerFile }) => {
-    entry.inputFiles = [...defaultSnapshotInputFiles(directory, configDirectory), ledgerFile]
+  const pending = buildSnapshot(directory, configDirectory, includeModels, options).then(({ data, ledgerFile, orchestrationFile }) => {
+    entry.inputFiles = [...defaultSnapshotInputFiles(directory, configDirectory), ledgerFile, orchestrationFile]
     entry.value = data
     delete entry.pending
     return data
@@ -363,14 +439,57 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   return pending
 }
 
-async function buildSnapshot(directory: string, configDirectory: string, includeModels: boolean, options: SnapshotOptions): Promise<{ data: SnapshotData; ledgerFile: string }> {
+async function buildSnapshot(directory: string, configDirectory: string, includeModels: boolean, options: SnapshotOptions): Promise<{ data: SnapshotData; ledgerFile: string; orchestrationFile: string }> {
   const config = (await loadConfigForDirectory(directory, configDirectory)).config
   const ledgerFile = path.resolve(directory, config.telemetry.directory, "state.json")
+  const orchestrationFile = path.resolve(directory, config.orchestration.persistence.directory, "runs.json")
   const ledger = await readLedgerState(ledgerFile)
-  const activity: ActivityRow[] = []
+  let orchestrationRuns: PersistedRun[] = []
+  try {
+    const checkpoint = JSON.parse(await readFile(orchestrationFile, "utf8")) as { version?: number; runs?: PersistedRun[] }
+    if (checkpoint.version === 1 && Array.isArray(checkpoint.runs)) {
+      orchestrationRuns = checkpoint.runs
+        .filter((run) => run && typeof run.rootSessionID === "string" && Array.isArray(run.nodes))
+        .sort((left, right) => right.touchedAt - left.touchedAt)
+        .slice(0, 50)
+    }
+  } catch {
+    // No checkpoint has been written yet.
+  }
+  const activityLimit = options.activityLimit ?? 5_000
+  const recentActivity = new RecentActivity(activityLimit)
+  const totalTokens = emptyTokens()
+  const modelAggregates = new Map<string, AggregateRow>()
+  const agentAggregates = new Map<string, AggregateRow>()
+  const dailyMap = new Map<string, { date: string; cost: number; input: number; output: number; reasoning: number }>()
   const mcpUsageMap = new Map<string, McpUsageRow & { totalLatencyMs: number; outputChars: number }>()
+  const rankingCutoff = options.rankingDays && options.rankingDays > 0
+    ? Date.now() - options.rankingDays * 24 * 60 * 60 * 1_000
+    : 0
+  let activityTotal = 0
+  let totalCost = 0
   for (const [sessionID, session] of Object.entries(ledger.sessions)) {
-    for (const [id, message] of Object.entries(session.messages)) activity.push({ id, sessionID, ...message })
+    for (const [id, message] of Object.entries(session.messages)) {
+      const row: ActivityRow = { id, sessionID, ...message }
+      const timestamp = activityTime(row)
+      activityTotal += 1
+      totalCost += row.cost
+      addTokens(totalTokens, row.tokens)
+      recentActivity.add(row)
+      if (rankingCutoff === 0 || timestamp >= rankingCutoff) {
+        addAggregate(modelAggregates, row.provider && row.model ? `${row.provider}/${row.model}` : "unknown", row)
+        addAggregate(agentAggregates, row.agent ?? "unknown", row)
+      }
+      if (timestamp > 0) {
+        const date = new Date(timestamp).toISOString().slice(0, 10)
+        const point = dailyMap.get(date) ?? { date, cost: 0, input: 0, output: 0, reasoning: 0 }
+        point.cost += row.cost
+        point.input += row.tokens.input
+        point.output += row.tokens.output
+        point.reasoning += row.tokens.reasoning
+        dailyMap.set(date, point)
+      }
+    }
     for (const [server, usage] of Object.entries(session.mcp)) {
       const aggregate = mcpUsageMap.get(server) ?? {
         server, calls: 0, successes: 0, failures: 0, retries: 0, averageLatencyMs: 0,
@@ -396,35 +515,10 @@ async function buildSnapshot(directory: string, configDirectory: string, include
     averageLatencyMs: usage.calls > 0 ? Math.round(totalLatencyMs / usage.calls) : 0,
     estimatedOutputTokens: Math.ceil(outputChars / 4),
   })).sort((a, b) => a.server.localeCompare(b.server))
-  activity.sort((a, b) => (b.completedAt ?? b.createdAt ?? 0) - (a.completedAt ?? a.createdAt ?? 0))
-  const totalTokens = emptyTokens()
-  let totalCost = 0
-  for (const row of activity) {
-    totalCost += row.cost
-    addTokens(totalTokens, row.tokens)
-  }
-  const dailyMap = new Map<string, { date: string; cost: number; input: number; output: number; reasoning: number }>()
-  for (const row of activity) {
-    const timestamp = row.completedAt ?? row.createdAt
-    if (!timestamp) continue
-    const date = new Date(timestamp).toISOString().slice(0, 10)
-    const point = dailyMap.get(date) ?? { date, cost: 0, input: 0, output: 0, reasoning: 0 }
-    point.cost += row.cost
-    point.input += row.tokens.input
-    point.output += row.tokens.output
-    point.reasoning += row.tokens.reasoning
-    dailyMap.set(date, point)
-  }
+  const activity = recentActivity.values()
   const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
   const analytics = analyzeDaily(daily, new Date(), config.telemetry.anomalySigma)
-  const activityLimit = options.activityLimit ?? 5_000
   const dailyLimit = options.dailyLimit ?? 30
-  const rankingCutoff = options.rankingDays && options.rankingDays > 0
-    ? Date.now() - options.rankingDays * 24 * 60 * 60 * 1_000
-    : 0
-  const rankingActivity = rankingCutoff > 0
-    ? activity.filter((row) => (row.completedAt ?? row.createdAt ?? 0) >= rankingCutoff)
-    : activity
   const data: SnapshotData = {
     projectId: projectId(directory),
     updatedAt: ledger.updatedAt,
@@ -448,16 +542,16 @@ async function buildSnapshot(directory: string, configDirectory: string, include
     },
     summary: {
       sessions: Object.keys(ledger.sessions).length,
-      calls: activity.length,
+      calls: activityTotal,
       cost: totalCost,
       tokens: totalTokens,
     },
-    models: aggregate(rankingActivity, (row) => row.provider && row.model ? `${row.provider}/${row.model}` : "unknown"),
-    agents: aggregate(rankingActivity, (row) => row.agent ?? "unknown"),
-     activity: activityLimit === 0 ? activity : activity.slice(0, activityLimit),
-     activityTotal: activity.length,
-     activityTruncated: activityLimit > 0 && activity.length > activityLimit,
-     daily: dailyLimit === 0 ? daily : daily.slice(-dailyLimit),
+    models: sortedAggregates(modelAggregates),
+    agents: sortedAggregates(agentAggregates),
+    activity,
+    activityTotal,
+    activityTruncated: activityLimit > 0 && activityTotal > activityLimit,
+    daily: dailyLimit === 0 ? daily : daily.slice(-dailyLimit),
     projection: analytics.projection,
     anomalies: analytics.anomalies,
     mcp: await mcpStatus(configDirectory),
@@ -468,8 +562,9 @@ async function buildSnapshot(directory: string, configDirectory: string, include
       ...Object.values(config.models.fallback.agents).flat(),
       ...config.models.lead, ...config.models.judge, ...Object.values(config.models.worker).flat(),
     ].map((model) => typeof model === "string" ? model : model.id))].sort(),
+    orchestrationRuns,
   }
-  return { data, ledgerFile }
+  return { data, ledgerFile, orchestrationFile }
 }
 
 function mergeAggregateRows(snapshots: SnapshotData[], key: "models" | "agents"): AggregateRow[] {
@@ -834,48 +929,77 @@ function sseSend(response: ServerResponse, event: string, data: unknown): void {
   response.write("event: " + event + "\ndata: " + JSON.stringify(data) + "\n\n")
 }
 
-function handleLiveStream(request: IncomingMessage, response: ServerResponse, directory: string, configDirectory: string): void {
-  response.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  })
-  response.write("retry: 2000\n\n")
+class LiveSnapshotFeed {
+  private readonly clients = new Set<ServerResponse>()
+  private readonly timer: ReturnType<typeof setInterval>
+  private polling = false
+  private lastSignature = ""
+  private lastSnapshot: LiveSnapshot | undefined
+  private idleTicks = 0
 
-  let closed = false
-  let timer: ReturnType<typeof setInterval> | undefined
-  const close = () => {
-    if (closed) return
-    closed = true
-    if (timer) clearInterval(timer)
-    response.end()
+  constructor(
+    private readonly directory: string,
+    private readonly configDirectory: string,
+    private readonly onEmpty: () => void,
+  ) {
+    this.timer = setInterval(() => void this.tick(), 700)
+    this.timer.unref?.()
   }
-  request.on("close", close)
-  response.on("close", close)
 
-  let lastSeq = -1
-  let lastUpdatedAt = -1
-  let lastActiveCount = -1
+  subscribe(request: IncomingMessage, response: ServerResponse): void {
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    })
+    response.write("retry: 2000\n\n")
+    this.clients.add(response)
+    const close = () => this.unsubscribe(response)
+    request.once("close", close)
+    response.once("close", close)
+    if (this.lastSnapshot) sseSend(response, "snapshot", this.lastSnapshot)
+    else void this.tick()
+  }
 
-  const tick = async () => {
-    if (closed) return
-    const snapshot = await readLiveSnapshot(directory, configDirectory)
-    if (closed) return
-    if (snapshot.seq !== lastSeq || snapshot.updatedAt !== lastUpdatedAt || snapshot.active.length !== lastActiveCount) {
-      lastSeq = snapshot.seq
-      lastUpdatedAt = snapshot.updatedAt
-      lastActiveCount = snapshot.active.length
-      sseSend(response, "snapshot", snapshot)
-    } else {
-      response.write(": ping\n\n") // keep the connection alive
+  dispose(): void {
+    clearInterval(this.timer)
+    for (const response of this.clients) {
+      if (!response.writableEnded) response.end()
+    }
+    this.clients.clear()
+  }
+
+  private unsubscribe(response: ServerResponse): void {
+    if (!this.clients.delete(response)) return
+    if (!response.writableEnded) response.end()
+    if (this.clients.size === 0) {
+      this.dispose()
+      this.onEmpty()
     }
   }
 
-  // Send the current state immediately, then poll the plugin's live file.
-  void tick().catch(() => undefined)
-  timer = setInterval(() => void tick().catch(() => undefined), 700)
-  timer.unref?.()
+  private async tick(): Promise<void> {
+    if (this.polling || this.clients.size === 0) return
+    this.polling = true
+    try {
+      const snapshot = await readLiveSnapshot(this.directory, this.configDirectory)
+      const signature = `${snapshot.seq}:${snapshot.updatedAt}:${snapshot.active.length}`
+      this.lastSnapshot = snapshot
+      if (signature !== this.lastSignature) {
+        this.lastSignature = signature
+        this.idleTicks = 0
+        for (const response of this.clients) sseSend(response, "snapshot", snapshot)
+      } else if (++this.idleTicks >= 20) {
+        this.idleTicks = 0
+        for (const response of this.clients) response.write(": ping\n\n")
+      }
+    } catch {
+      // A transient partial write is reconciled by the next poll.
+    } finally {
+      this.polling = false
+    }
+  }
 }
 
 export async function startDashboard(options: DashboardOptions = {}): Promise<{
@@ -888,6 +1012,16 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
   const port = options.port ?? 0
   const assetsDirectory = path.resolve(options.assetsDirectory ?? defaultAssetsDirectory())
   const token = randomBytes(24).toString("base64url")
+  const liveFeeds = new Map<string, LiveSnapshotFeed>()
+  const subscribeLive = (request: IncomingMessage, response: ServerResponse, target: string) => {
+    const key = path.resolve(target)
+    let feed = liveFeeds.get(key)
+    if (!feed) {
+      feed = new LiveSnapshotFeed(key, configDirectory, () => liveFeeds.delete(key))
+      liveFeeds.set(key, feed)
+    }
+    feed.subscribe(request, response)
+  }
   await registerProject(directory, configDirectory).catch(() => undefined)
   const resolveProject = async (id: string | null): Promise<string | undefined> => {
     if (!id) return directory
@@ -908,7 +1042,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
         if (request.method === "GET" && url.pathname === "/api/live") {
           const target = await resolveProject(url.searchParams.get("project"))
           if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
-          handleLiveStream(request, response, target, configDirectory)
+          subscribeLive(request, response, target)
           return
         }
         if (request.method === "GET" && url.pathname === "/api/snapshot") {
@@ -944,6 +1078,13 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
           const target = await resolveProject(url.searchParams.get("project"))
           if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
           await exportReport(response, target, configDirectory, url.searchParams)
+          return
+        }
+        if (request.method === "POST" && url.pathname === "/api/orchestration/action") {
+          const target = await resolveProject(url.searchParams.get("project"))
+          if (!target) { sendJson(response, 404, { error: "Unknown project" }); return }
+          const requestId = await enqueueOrchestrationAction(target, configDirectory, await jsonBody(request))
+          sendJson(response, 202, { ok: true, requestId })
           return
         }
         if (request.method === "PUT" && url.pathname === "/api/config") {
@@ -988,6 +1129,10 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
   if (options.open !== false) openBrowser(url)
   return {
     url,
-    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+    close: () => {
+      for (const feed of liveFeeds.values()) feed.dispose()
+      liveFeeds.clear()
+      return new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    },
   }
 }

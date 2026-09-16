@@ -66,6 +66,51 @@
             "verifyCommand": { "type": "string", "default": "", "description": "Nonempty values fail closed: runtime shell verification is unsupported." }
           }
         },
+        "persistence": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "directory": { "type": "string", "minLength": 1, "default": ".orchestra/orchestration" }
+          },
+          "default": { "enabled": true, "directory": ".orchestra/orchestration" }
+        },
+        "verification": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "required": { "type": "boolean", "default": true },
+            "maxGates": { "type": "integer", "minimum": 1, "maximum": 64, "default": 24 }
+          },
+          "default": { "required": true, "maxGates": 24 }
+        },
+        "taskBudget": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "maxCostUSD": { "type": "number", "minimum": 0, "default": 0 },
+            "maxTokens": { "type": "integer", "minimum": 0, "default": 0 },
+            "maxMinutes": { "type": "number", "minimum": 0, "maximum": 1440, "default": 0 },
+            "unknownPricing": { "enum": ["warn", "block"], "default": "warn" }
+          },
+          "default": { "maxCostUSD": 0, "maxTokens": 0, "maxMinutes": 0, "unknownPricing": "warn" }
+        },
+        "adaptive": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "initialWorkers": { "type": "integer", "minimum": 1, "maximum": 6, "default": 2 },
+            "maxExtensions": { "type": "integer", "minimum": 0, "maximum": 6, "default": 3 },
+            "minEvidenceItems": { "type": "integer", "minimum": 0, "maximum": 8, "default": 1 }
+          },
+          "default": { "enabled": true, "initialWorkers": 2, "maxExtensions": 3, "minEvidenceItems": 1 }
+        },
+        "knowledge": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "directory": { "type": "string", "minLength": 1, "default": ".orchestra/knowledge" },
+            "maxEntries": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 256 }
+          },
+          "default": { "enabled": true, "directory": ".orchestra/knowledge", "maxEntries": 256 }
+        },
         "parallelEditors": { "type": "integer", "minimum": 0, "maximum": 8, "default": 0 },
         "worktreeRoot": { "type": "string", "minLength": 1 },
         "maxWorkers": { "type": "integer", "minimum": 1, "maximum": 8, "default": 8 },

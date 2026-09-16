@@ -12,6 +12,7 @@ import { openCodeConfigDirectory } from "./config/paths.js"
 import { startDashboard, type DashboardOptions } from "./dashboard/server.js"
 import { completionFor, SHELL_NAMES } from "./diagnostics/completion.js"
 import { formatDoctorReport, runDoctor } from "./diagnostics/doctor.js"
+import { createEvalReport, formatEvalReport, readEvalObservations, readEvalReport, writeEvalReport } from "./evals/harness.js"
 import { checkForUpdates, formatUpdateResult } from "./diagnostics/update.js"
 import { astGrepMcpCommand, gitMcpCommand } from "./mcp/commands.js"
 import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/config-smoke.js"
@@ -708,6 +709,7 @@ function usage(): string {
     "  web         OpenCode web with an inline offline microphone",
     "              --upstream http://127.0.0.1:4096 --port 4097",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
+    "  eval        Run the built-in reproducible evaluation suite",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",
     "  update      Check for a newer published version",
     "  completion  Print shell completion (zsh | bash | pwsh)",
@@ -737,6 +739,12 @@ function usage(): string {
     "  --directory DIR      Project used as cwd and Git repository",
     "  --config-dir DIR     Override the OpenCode config directory",
     "  --json               Print a machine-readable report",
+    "",
+    "Eval options:",
+    "  --results FILE       Observed JSON rows for solo and Orchestra modes",
+    "  --baseline FILE      Previous eval report used for regression checks",
+    "  --write FILE         Save the current report as a baseline",
+    "  --json               Print the complete suite and metrics as JSON",
   ].join("\n")
 }
 
@@ -746,6 +754,7 @@ type ParsedCommand =
   | { command: "dashboard"; options: DashboardOptions }
   | { command: "doctor"; options: { configDirectory?: string; json?: boolean } }
   | { command: "mcp-smoke"; options: { configDirectory?: string; projectDirectory?: string; json?: boolean } }
+  | { command: "eval"; options: { results?: string; baseline?: string; write?: string; json?: boolean } }
   | { command: "update" }
   | { command: "completion"; options: { shell: string; program: string } }
 
@@ -818,6 +827,21 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
       } else throw new Error(`Unknown mcp-smoke option: ${argument}`)
     }
     return { command: "mcp-smoke", options }
+  }
+  if (argv[0] === "eval") {
+    const options: { results?: string; baseline?: string; write?: string; json?: boolean } = {}
+    for (let index = 1; index < argv.length; index += 1) {
+      const argument = argv[index]
+      if (argument === "--json") options.json = true
+      else if (argument === "--results" || argument === "--baseline" || argument === "--write") {
+        const file = argv[++index]
+        if (!file) throw new Error(`${argument} requires a file`)
+        if (argument === "--results") options.results = file
+        else if (argument === "--baseline") options.baseline = file
+        else options.write = file
+      } else throw new Error(`Unknown eval option: ${argument}`)
+    }
+    return { command: "eval", options }
   }
   if (argv[0] === "update") {
     for (let index = 1; index < argv.length; index += 1) throw new Error(`Unknown update option: ${argv[index]}`)
@@ -902,6 +926,15 @@ async function main(): Promise<void> {
       })
       console.log(parsed.options.json ? JSON.stringify(report, null, 2) : formatConfiguredMcpSmokeReport(report))
       if (!report.ok) process.exitCode = 1
+      return
+    }
+    if (parsed.command === "eval") {
+      const observations = parsed.options.results ? await readEvalObservations(path.resolve(parsed.options.results)) : []
+      const baseline = parsed.options.baseline ? await readEvalReport(path.resolve(parsed.options.baseline)) : undefined
+      const report = createEvalReport(observations, baseline)
+      if (parsed.options.write) await writeEvalReport(path.resolve(parsed.options.write), report)
+      console.log(parsed.options.json ? JSON.stringify(report, null, 2) : formatEvalReport(report))
+      if (report.regressions.length) process.exitCode = 2
       return
     }
     if (parsed.command === "update") {

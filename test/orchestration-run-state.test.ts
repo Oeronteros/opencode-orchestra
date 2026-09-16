@@ -1,8 +1,14 @@
 import assert from "node:assert/strict"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 import type { TaskContract } from "../src/orchestration/contracts.js"
 import { OrchestrationRunState } from "../src/orchestration/run-state.js"
-import { planTask } from "../src/routing/planner.js"
+import { OrchestrationStateStore } from "../src/orchestration/state-store.js"
+import { OrchestrationActionInbox } from "../src/orchestration/action-inbox.js"
+import { planAdaptiveExtension } from "../src/orchestration/adaptive.js"
+import { planTask, type TaskPlan } from "../src/routing/planner.js"
 
 function contract(options: {
   resource?: string
@@ -279,4 +285,213 @@ test("research swarm keeps cross-pollination behind the complete hypothesis roun
   assert.match(sharedResults.at(-1)?.output ?? "", /final hypothesis result/)
   const refinementLease = assertLease(await state.acquire(request(refinement)))
   state.complete(refinementLease, true)
+})
+
+test("interrupted runs persist results and resume in a new session", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-runs-"))
+  const limits = { maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 }
+  const firstContract = contract({ objective: "Find the cause." })
+  const secondContract = contract({ objective: "Verify the cause." })
+  const plan: TaskPlan = {
+    nodes: [
+      { id: "investigate", description: "Investigate", worker: "orch-repo", dependsOn: [], role: "specialist", contract: firstContract },
+      { id: "verify", description: "Verify", worker: "orch-tests", dependsOn: ["investigate"], role: "reviewer", contract: secondContract },
+    ],
+    levels: [["investigate"], ["verify"]],
+    maxParallel: 1,
+  }
+  const store = new OrchestrationStateStore(directory, ".orchestra/orchestration", true)
+  try {
+    const original = new OrchestrationRunState(limits, (snapshot) => store.schedule(snapshot))
+    original.registerPlan("old-session", plan)
+    const first = assertLease(await original.acquire({
+      parentSessionID: "old-session", nodeId: "investigate", agent: "orch-repo", task: "Investigate", contract: firstContract,
+    }))
+    original.complete(first, true, undefined, "cause: stale cache")
+    const interrupted = assertLease(await original.acquire({
+      parentSessionID: "old-session", nodeId: "verify", agent: "orch-tests", task: "Verify", contract: secondContract,
+    }))
+    original.attachSession(interrupted, "lost-child-session")
+    await store.flush()
+
+    const restored = new OrchestrationRunState(limits)
+    assert.equal(restored.restore(await store.load()), 1)
+    const resumed = restored.resume("new-session", "old-session")
+    assert.equal(restored.rootSessionID("new-session"), "old-session")
+    assert.deepEqual(resumed.ready.map((node) => node.id), ["verify"])
+    assert.deepEqual(resumed.ready[0]?.dependencyResults, [{ nodeId: "investigate", agent: "orch-repo", output: "cause: stale cache" }])
+    assert.equal(resumed.run.activeWorkers, 0)
+    assert.equal(resumed.run.nodes.find((node) => node.id === "verify")?.status, "pending")
+
+    const retry = assertLease(await restored.acquire({
+      parentSessionID: "new-session", nodeId: "verify", agent: "orch-tests", task: "Verify", contract: secondContract,
+    }))
+    assert.equal(retry.rootSessionID, "old-session")
+    restored.complete(retry, true, undefined, "verified")
+    assert.equal(restored.resumableRuns().length, 0)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("completion claims remain distinct from runtime-verified completion", async () => {
+  const state = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  const lease = assertLease(await state.acquire({
+    parentSessionID: "root", nodeId: "work", agent: "orch-tests", task: "work", contract: contract(),
+  }))
+  state.complete(lease, true, undefined, "done")
+  state.setVerificationGates("root", [
+    { id: "tests", label: "Unit tests", kind: "command", command: "npm test" },
+    { id: "report", label: "Generated report", kind: "artifact", path: "out/report.json" },
+  ])
+
+  const early = state.claimCompletion("root", "finished")
+  assert.equal(early.ok, false)
+  assert.equal(early.completion.status, "claimed")
+  assert.match(early.error ?? "", /pending/)
+
+  assert.equal(state.recordCommandVerification("root", "npm test", false, "exit 1"), true)
+  assert.equal(state.claimCompletion("root", "finished").completion.status, "failed")
+  assert.equal(state.recordCommandVerification("root", "npm test", true, "10 tests passed"), true)
+  assert.equal(state.recordArtifactVerification("root", "report", true, "out/report.json exists (12 bytes)."), true)
+  const verified = state.claimCompletion("root", "finished")
+  assert.equal(verified.ok, true)
+  assert.equal(verified.completion.status, "verified")
+
+  const restored = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  restored.restore(state.exportState())
+  assert.equal(restored.completion("root")?.status, "verified")
+  assert.equal(restored.completion("root")?.gates.length, 2)
+})
+
+test("task budgets stop new work on cost, tokens, time, and unknown pricing", async () => {
+  const plan = planTask("debug", [], { maxNodes: 3 })
+  const makeState = () => {
+    const state = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+    state.registerPlan("root", plan)
+    return state
+  }
+  const request = (state: OrchestrationRunState) => {
+    const node = plan.nodes[0]!
+    return state.acquire({ parentSessionID: "root", nodeId: node.id, agent: node.worker, task: node.description, contract: node.contract })
+  }
+
+  const cost = makeState()
+  cost.configureBudget("root", { maxCostUSD: 0.5, maxTokens: 0, maxMinutes: 0, unknownPricing: "warn" })
+  assert.equal(cost.updateBudgetUsage("root", { costUSD: 0.5, tokens: 0, unknownPriceCalls: 0 })?.status, "exceeded")
+  const costDenied = await request(cost)
+  assert.equal(costDenied.ok, false)
+  if (!costDenied.ok) assert.equal(costDenied.code, "budget_exceeded")
+
+  const tokens = makeState()
+  tokens.configureBudget("root", { maxCostUSD: 0, maxTokens: 100, maxMinutes: 0, unknownPricing: "warn" })
+  assert.equal(tokens.updateBudgetUsage("root", { costUSD: 0, tokens: 100, unknownPriceCalls: 0 })?.status, "exceeded")
+
+  const unknown = makeState()
+  unknown.configureBudget("root", { maxCostUSD: 2, maxTokens: 0, maxMinutes: 0, unknownPricing: "block" })
+  assert.equal(unknown.updateBudgetUsage("root", { costUSD: 0, tokens: 1, unknownPriceCalls: 1 })?.status, "exceeded")
+
+  const timed = makeState()
+  timed.configureBudget("root", { maxCostUSD: 0, maxTokens: 0, maxMinutes: 0.000001, unknownPricing: "warn" })
+  await new Promise((resolve) => setTimeout(resolve, 2))
+  assert.equal((await request(timed)).ok, false)
+
+  const restored = makeState()
+  restored.configureBudget("root", { maxCostUSD: 3, maxTokens: 500, maxMinutes: 15, unknownPricing: "warn" }, { costUSD: 2, tokens: 400 })
+  restored.updateBudgetUsage("root", { costUSD: 1, tokens: 200, unknownPriceCalls: 0 })
+  const replacement = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  replacement.restore(restored.exportState())
+  assert.equal(replacement.budget("root")?.actualCostUSD, 1)
+  assert.equal(replacement.budget("root")?.limits.maxMinutes, 15)
+})
+
+test("dashboard actions cancel a branch and retry invalidates downstream results", async () => {
+  const firstContract = contract()
+  const secondContract = contract()
+  const plan: TaskPlan = {
+    nodes: [
+      { id: "first", description: "first", worker: "orch-repo", dependsOn: [], role: "specialist", contract: firstContract },
+      { id: "second", description: "second", worker: "orch-tests", dependsOn: ["first"], role: "reviewer", contract: secondContract },
+    ],
+    levels: [["first"], ["second"]], maxParallel: 1,
+  }
+  const state = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  state.registerPlan("root", plan)
+  const lease = assertLease(await state.acquire({ parentSessionID: "root", nodeId: "first", agent: "orch-repo", task: "first", contract: firstContract }))
+  state.attachSession(lease, "child")
+  const cancelled = state.cancelBranch("root", "first")
+  assert.deepEqual(cancelled.affected, ["first", "second"])
+  assert.deepEqual(cancelled.childSessionIDs, ["child"])
+  assert.ok(cancelled.run.nodes.every((node) => node.status === "cancelled"))
+
+  const retried = state.retryBranch("root", "first")
+  assert.ok(retried.run.nodes.every((node) => node.status === "pending"))
+  const retryLease = assertLease(await state.acquire({ parentSessionID: "root", nodeId: "first", agent: "orch-repo", task: "first", contract: firstContract }))
+  state.complete(lease, true, undefined, "stale result")
+  assert.equal(state.snapshot("root")?.nodes.find((node) => node.id === "first")?.status, "running")
+  state.complete(retryLease, true, undefined, "new result")
+  const downstream = assertLease(await state.acquire({ parentSessionID: "root", nodeId: "second", agent: "orch-tests", task: "second", contract: secondContract }))
+  state.complete(downstream, true, undefined, "reviewed")
+  assert.equal(state.snapshot("root")?.nodes.every((node) => node.status === "succeeded"), true)
+})
+
+test("action inbox processes each dashboard request once", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-actions-"))
+  const seen: string[] = []
+  const inbox = new OrchestrationActionInbox(directory, async (request) => { seen.push(request.requestId); return { affected: [request.nodeId] } })
+  try {
+    const actions = path.join(directory, "actions")
+    await writeFile(path.join(directory, "placeholder"), "")
+    await inbox.poll()
+    await writeFile(path.join(actions, "request.json"), JSON.stringify({
+      version: 1, requestId: "request", rootSessionID: "root", nodeId: "node", action: "cancel", requestedAt: Date.now(),
+    }))
+    await inbox.poll()
+    await inbox.poll()
+    assert.deepEqual(seen, ["request"])
+    const result = JSON.parse(await readFile(path.join(actions, "request.result.json"), "utf8")) as { ok: boolean }
+    assert.equal(result.ok, true)
+  } finally {
+    inbox.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("adaptive extensions are versioned, evidence-triggered, and persisted", async () => {
+  const state = new OrchestrationRunState({ maxWorkers: 6, parallelWorkers: 6, maxDelegationDepth: 2 })
+  const initial: TaskPlan = {
+    nodes: [{ id: "inspect", description: "inspect", worker: "orch-repo", dependsOn: [], role: "specialist", contract: contract() }],
+    levels: [["inspect"]], maxParallel: 1,
+  }
+  assert.equal(state.registerPlan("root", initial).planVersion, 1)
+  const lease = assertLease(await state.acquire({ parentSessionID: "root", nodeId: "inspect", agent: "orch-repo", task: "inspect", contract: initial.nodes[0]!.contract }))
+  const before = state.progressFingerprint("root")
+  state.complete(lease, true, undefined, "observed mismatch")
+  assert.notEqual(state.progressFingerprint("root"), before)
+  state.setVerificationGates("root", [{ id: "tests", label: "Tests", kind: "command", command: "npm test" }])
+  state.recordCommandVerification("root", "npm test", true, "passed")
+  assert.equal(state.claimCompletion("root", "initial complete").ok, true)
+
+  const context = state.adaptiveContext("root")!
+  const extension = planAdaptiveExtension({
+    planVersion: context.planVersion,
+    nodeIds: context.nodeIds,
+    succeededNodeIds: context.succeededNodeIds,
+    remainingSlots: context.remainingSlots,
+    usedTriggers: context.triggers,
+  }, [{ trigger: "contradictory_evidence", detail: "Two outputs disagree.", evidence: ["inspect: mismatch"] }])!
+  const snapshot = state.extendPlan("root", extension, { reason: "Two outputs disagree.", trigger: "contradictory_evidence" })
+  assert.equal(snapshot.planVersion, 2)
+  assert.equal(snapshot.planChanges[1]?.trigger, "contradictory_evidence")
+  assert.equal(snapshot.completion.status, "working")
+  assert.equal(snapshot.completion.gates[0]?.status, "pending")
+  assert.ok(extension.nodes.every((node) => node.id.startsWith("adapt-v2-")))
+
+  const restored = new OrchestrationRunState({ maxWorkers: 6, parallelWorkers: 6, maxDelegationDepth: 2 })
+  restored.restore(state.exportState())
+  assert.equal(restored.snapshot("root")?.planVersion, 2)
+  assert.equal(restored.adaptiveContext("root")?.triggers[0], "contradictory_evidence")
+  assert.equal(planAdaptiveExtension({
+    planVersion: 2, nodeIds: [], succeededNodeIds: [], remainingSlots: 2, usedTriggers: ["contradictory_evidence"],
+  }, [{ trigger: "contradictory_evidence", detail: "same", evidence: ["same"] }]), undefined)
 })

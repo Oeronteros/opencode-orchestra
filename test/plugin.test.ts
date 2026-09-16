@@ -6,7 +6,7 @@ import test from "node:test"
 import pluginModule, { mcpServerForTool, OrchestraPlugin, server } from "../src/index.js"
 import { DEFAULT_CONFIG, withDefaults } from "../src/config/defaults.js"
 import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
-import type { Ledger } from "../src/telemetry/ledger.js"
+import { Ledger } from "../src/telemetry/ledger.js"
 import { createOrchestraTools, type DispatchContext } from "../src/tools.js"
 import { createAgentSet, type PromptBundle } from "../src/agents/build.js"
 
@@ -175,9 +175,13 @@ test("plugin initializes and injects additive agents, tools, and commands", asyn
   assert.equal((commands.orchestra as { agent?: string })?.agent, "orch-lead")
   assert.ok(commands.orchestra?.template.includes("unchanged TaskContract"))
   assert.ok(commands["orchestra-status"]?.template.includes("orchestra_status"))
+  assert.ok(commands["orchestra-resume"]?.template.includes("orchestra_resume"))
   assert.ok(commands["plugin-status"]?.template.includes("orchestra_plugin_status"))
   assert.ok(tools.orchestra_route)
   assert.ok(tools.orchestra_status)
+  assert.ok(tools.orchestra_resume)
+  assert.ok(tools.orchestration_set_verification)
+  assert.ok(tools.orchestration_complete)
   assert.ok(tools.orchestra_plugin_status)
   assert.ok(tools.orchestration_report)
   assert.equal("experimental.chat.system.transform" in hooks, false)
@@ -226,6 +230,74 @@ test("plugin can automatically allow every permission prompt", async () => {
   const denied = { status: "deny" as const } as { status: "ask" | "deny" | "allow" }
   await permissionAsk({ type: "edit", sessionID: "session-1" }, denied)
   assert.equal(denied.status, "deny")
+})
+
+test("plugin restores a sealed plan and resumes it after restart", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-resume-"))
+  const initialize = OrchestraPlugin as unknown as (
+    input: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+  const input = { directory: project, client: { app: { log: async () => undefined } } }
+  try {
+    const first = await initialize(input, { telemetry: { enabled: false } })
+    const firstTools = first.tool as Record<string, { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }>
+    const routed = JSON.parse(await firstTools.orchestra_route!.execute(
+      { task: "Investigate a failing authentication test", profile: "debug" },
+      { sessionID: "original-session" },
+    )) as { run: { nodes: unknown[] } }
+    assert.ok(routed.run.nodes.length > 0)
+    await (first.dispose as () => Promise<void>)()
+
+    const second = await initialize(input, { telemetry: { enabled: false } })
+    const secondTools = second.tool as Record<string, { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }>
+    const resumed = JSON.parse(await secondTools.orchestra_resume!.execute(
+      { runId: "original-session" },
+      { sessionID: "replacement-session" },
+    )) as { ok: boolean; rootSessionID: string; ready: unknown[] }
+    assert.equal(resumed.ok, true)
+    assert.equal(resumed.rootSessionID, "original-session")
+    assert.ok(resumed.ready.length > 0)
+    await (second.dispose as () => Promise<void>)()
+  } finally {
+    await rm(project, { recursive: true, force: true })
+  }
+})
+
+test("plugin verifies completion from observed bash and artifact gates", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-verify-"))
+  const initialize = OrchestraPlugin as unknown as (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, unknown>>
+  const hooks = await initialize({ directory: project, client: { app: { log: async () => undefined } } }, { telemetry: { enabled: false } })
+  const tools = hooks.tool as Record<string, { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }>
+  const before = hooks["tool.execute.before"] as (input: { tool: string; sessionID: string; callID: string }, output: { args: Record<string, unknown> }) => Promise<void>
+  const after = hooks["tool.execute.after"] as (input: { callID: string }, output: { output: string }) => Promise<void>
+  try {
+    const registered = JSON.parse(await tools.orchestration_set_verification!.execute({
+      commands: [{ id: "tests", label: "Tests", command: "npm test" }],
+      artifacts: [{ id: "report", label: "Report", path: "out/report.txt" }],
+    }, { sessionID: "verify-session" })) as { ok: boolean }
+    assert.equal(registered.ok, true)
+
+    const early = JSON.parse(await tools.orchestration_complete!.execute(
+      { summary: "finished" }, { sessionID: "verify-session" },
+    )) as { ok: boolean; completion: { status: string } }
+    assert.equal(early.ok, false)
+    assert.equal(early.completion.status, "failed")
+
+    await before({ tool: "bash", sessionID: "verify-session", callID: "verify-call" }, { args: { command: "npm test" } })
+    await after({ callID: "verify-call" }, { output: "all tests passed" })
+    await mkdir(path.join(project, "out"), { recursive: true })
+    await writeFile(path.join(project, "out", "report.txt"), "report")
+    const completed = JSON.parse(await tools.orchestration_complete!.execute(
+      { summary: "finished" }, { sessionID: "verify-session" },
+    )) as { ok: boolean; completion: { status: string; gates: Array<{ status: string }> } }
+    assert.equal(completed.ok, true)
+    assert.equal(completed.completion.status, "verified")
+    assert.deepEqual(completed.completion.gates.map((gate) => gate.status), ["passed", "passed"])
+  } finally {
+    await (hooks.dispose as () => Promise<void>)()
+    await rm(project, { recursive: true, force: true })
+  }
 })
 
 test("auto-accept toggle written to config after startup takes effect without restart", async () => {
@@ -441,6 +513,20 @@ test("orchestra route works without a session or ledger access", async () => {
   assert.ok(result.plan?.nodes?.length)
   assert.equal(result.paidBudget?.paidCallsUsed, 0)
   assert.equal(result.paidBudget?.sessionAccountingAvailable, false)
+})
+
+test("orchestra route rejects a plan whose token reservation exceeds the task budget", async () => {
+  const route = createOrchestraTools(DEFAULT_CONFIG, new Ledger(process.cwd(), ".orchestra-test-unused", false, [])).orchestra_route as unknown as {
+    execute: (args: { task: string; maxTokens: number }, context: Record<string, unknown>) => Promise<string>
+  }
+  const result = JSON.parse(await route.execute(
+    { task: "implement a module", maxTokens: 1 },
+    { sessionID: "budget-preflight" },
+  )) as { ok: boolean; code: string; errors: string[]; estimatedTokens: number }
+  assert.equal(result.ok, false)
+  assert.equal(result.code, "budget_preflight_failed")
+  assert.ok(result.estimatedTokens > 1)
+  assert.match(result.errors.join(" "), /token/i)
 })
 
 test("orchestra route surfaces the lead routing reason and preserves existing fields", async () => {

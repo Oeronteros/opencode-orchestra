@@ -23,6 +23,8 @@ import { resolvePricingSync, type ResolverConfig } from "./pricing/resolver.js"
 import { detectMcpPresence, resolvePluginVersion, PACKAGE_NAME, type PluginStatus } from "./plugin-status.js"
 import { createGitWorktreeAdapter } from "./orchestration/worktree-adapter.js"
 import { OrchestrationRunState, type DispatchLease } from "./orchestration/run-state.js"
+import { OrchestrationStateStore } from "./orchestration/state-store.js"
+import { OrchestrationActionInbox } from "./orchestration/action-inbox.js"
 import { releasePlanMode, type ReminderMessage } from "./routing/plan-reminder.js"
 import { LoopController } from "./loop/controller.js"
 import { loopPrompt, resolveLoopGoal } from "./loop/protocol.js"
@@ -328,12 +330,45 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
   await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)
   const orchestra = applyDiscoveredModels(applyBudgetPreset(loaded.config), discovered)
+  const stateStore = new OrchestrationStateStore(
+    directory,
+    orchestra.orchestration.persistence.directory,
+    orchestra.orchestration.persistence.enabled,
+  )
   const coordinator = new OrchestrationRunState({
     maxWorkers: orchestra.orchestration.maxWorkers,
     parallelWorkers: orchestra.orchestration.parallelWorkers,
     maxDelegationDepth: orchestra.orchestration.maxDelegationDepth,
-  })
+  }, (state) => stateStore.schedule(state))
+  let restoredRuns = 0
+  try {
+    restoredRuns = coordinator.restore(await stateStore.load())
+    if (restoredRuns > 0) stateStore.schedule(coordinator.exportState())
+  } catch (error) {
+    await client.app.log({
+      body: {
+        service: "opencode-orchestra",
+        level: "warn",
+        message: "OpenCode Orchestra could not restore saved orchestration state",
+        extra: { error: error instanceof Error ? error.message : String(error), file: stateStore.file },
+      },
+    }).catch(() => undefined)
+  }
+  const actionInbox = new OrchestrationActionInbox(
+    path.resolve(directory, orchestra.orchestration.persistence.directory),
+    async (request) => {
+      const result = request.action === "cancel"
+        ? coordinator.cancelBranch(request.rootSessionID, request.nodeId)
+        : coordinator.retryBranch(request.rootSessionID, request.nodeId)
+      for (const sessionID of result.childSessionIDs) {
+        await client.session.abort({ path: { id: sessionID }, query: { directory }, throwOnError: true }).catch(() => undefined)
+      }
+      return result
+    },
+  )
+  if (orchestra.orchestration.persistence.enabled) actionInbox.start()
   const nativeLeases = new Map<string, DispatchLease>()
+  const verificationCalls = new Map<string, { sessionID: string; command: string }>()
   const autoAcceptLive = createLiveAutoAccept(directory, rawOptions)
   const prompts = await loadPrompts()
   const agents = createAgentSet(orchestra, prompts)
@@ -345,11 +380,18 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     maxMinutes: orchestra.orchestration.loop.maxMinutes,
     noProgressLimit: orchestra.orchestration.loop.noProgressLimit,
     verifyCommand: orchestra.orchestration.loop.verifyCommand,
+    progressKey: (sessionID) => coordinator.progressFingerprint(sessionID),
     prompt: async (sessionID, text) => {
       loopInputs.add(sessionID)
       loopIdle.delete(sessionID)
       await client.session.promptAsync({ path: { id: sessionID }, query: { directory }, body: { agent: "orch-lead", parts: [{ type: "text", text }] }, throwOnError: true })
     },
+    ...(orchestra.orchestration.verification.required
+      ? { verifyCompletion: async (sessionID: string, summary: string) => {
+          const result = coordinator.claimCompletion(sessionID, summary, true)
+          return { ok: result.ok, ...(result.error ? { error: result.error } : {}) }
+        } }
+      : {}),
     log: (message) => { void client.app.log({ body: { service: "opencode-orchestra", level: "warn", message } }).catch(() => undefined) },
   })
   const pools: ModelCandidateInput[][] = [
@@ -496,6 +538,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
           configuredModels: pools.flat().length,
           discoveredModels: discovered.length,
           modelStrategy: orchestra.models.strategy,
+          restoredRuns,
         },
       },
     })
@@ -524,6 +567,11 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       mutable.command["plugin-status"] ??= {
         description: "Show the OpenCode Orchestra plugin's own runtime status",
         template: "Call the orchestra_plugin_status tool and present its result verbatim.",
+      }
+      mutable.command["orchestra-resume"] ??= {
+        description: "Resume an interrupted OpenCode Orchestra run",
+        agent: "orch-lead",
+        template: "Call orchestra_resume with runId set to the trimmed value of $ARGUMENTS, or omit runId when it is empty. Continue the returned ready nodes using their unchanged nodeId and TaskContract. Do not call orchestra_route again for the resumed plan.",
       }
       mutable.command.orchestra ??= {
         description: "Classify a task and execute it through orch-lead",
@@ -563,6 +611,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (autoAcceptLive() && output.status !== "deny") output.status = "allow"
     },
     dispose: async () => {
+      actionInbox.stop()
       loop.dispose()
       loopInputs.clear()
       loopIdle.clear()
@@ -581,8 +630,10 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       mcpCalls.clear()
       completedMcpCalls.clear()
       pendingMcpFailures.clear()
+      await stateStore.flush().catch(() => undefined)
       coordinator.dispose()
       nativeLeases.clear()
+      verificationCalls.clear()
       sessionAgent.clear()
       sessionModel.clear()
       streamObservers.clear()
@@ -636,6 +687,9 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     },
     "tool.execute.before": async ({ tool, sessionID, callID }, output) => {
       if (tool === "question") loop.stop(sessionID, "paused", "Question requires user attention")
+      if (tool === "bash" && typeof output?.args?.command === "string") {
+        verificationCalls.set(callID, { sessionID, command: output.args.command })
+      }
       if (tool === "task" && (output?.args?.subagent_type?.startsWith("orch-") || sessionAgent.get(sessionID)?.startsWith("orch-") || coordinator.snapshot(sessionID))) {
         const args = output?.args
         const node = typeof args?.description === "string" ? coordinator.sealedNode(sessionID, args.description) : undefined
@@ -643,6 +697,9 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
           || args?.subagent_type !== node.agent || args?.task_id) {
           throw new Error("Orchestra native task requires a sealed editor/integrator nodeId as description, the assigned subagent_type, and a fresh task. Use orchestra_dispatch for evidence.")
         }
+        const rootSessionID = coordinator.rootSessionID(sessionID)
+        const budget = coordinator.updateBudgetUsage(rootSessionID, await ledger.usageTotals(rootSessionID))
+        if (budget?.status === "exceeded") throw new Error(budget.reason ?? "The task budget is exhausted.")
         const result = await coordinator.acquire({ parentSessionID: sessionID, nodeId: node.id, agent: node.agent, task: node.contract.objective, contract: node.contract })
         if (!result.ok) throw new Error(result.error)
         nativeLeases.set(callID, result.lease)
@@ -655,6 +712,11 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       mcpCalls.set(callID, { sessionID, tool, server, startedAt: Date.now(), retry: pendingMcpFailures.has(failureKey) })
     },
     "tool.execute.after": async ({ callID }, output) => {
+      const verification = verificationCalls.get(callID)
+      if (verification) {
+        coordinator.recordCommandVerification(verification.sessionID, verification.command, true, output.output)
+        verificationCalls.delete(callID)
+      }
       const lease = nativeLeases.get(callID)
       if (lease) {
         coordinator.complete(lease, true)
@@ -688,6 +750,11 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (event.type === "message.part.updated") {
         const part = event.properties.part
         if (part.type === "tool" && part.state.status === "error") {
+          const verification = verificationCalls.get(part.callID)
+          if (verification) {
+            coordinator.recordCommandVerification(verification.sessionID, verification.command, false, "OpenCode reported a tool execution error.")
+            verificationCalls.delete(part.callID)
+          }
           const lease = nativeLeases.get(part.callID)
           if (lease) {
             coordinator.complete(lease, false, "Native worker task failed.")
@@ -798,19 +865,19 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         finishedLiveMessages.delete(oldest)
       }
       const ledgerSessionID = coordinator.rootSessionID(info.sessionID)
-      await ledger.recordAssistant({ ...info, sessionID: ledgerSessionID })
+      let storedText: { prompt?: string; reply?: string } | undefined
       if (storeTextsFlag) {
         const prompt = promptBuffers.get(info.sessionID)
         const reply = replyBuffers.get(info.id)
         promptBuffers.delete(info.sessionID)
         replyBuffers.delete(info.id)
         if (prompt !== undefined || reply !== undefined) {
-          const text: { prompt?: string; reply?: string } = {}
-          if (prompt !== undefined) text.prompt = prompt
-          if (reply !== undefined) text.reply = reply
-          await ledger.recordText(ledgerSessionID, info.id, text)
+          storedText = {}
+          if (prompt !== undefined) storedText.prompt = prompt
+          if (reply !== undefined) storedText.reply = reply
         }
       }
+      await ledger.recordAssistant({ ...info, sessionID: ledgerSessionID }, storedText)
     },
     ...(systemHint
       ? {

@@ -24,11 +24,16 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     sessions: {
       one: {
         agents: { "orch-lead": 1 }, premiumEscalations: 0, estimatedPaidUsage: 0.01, freeWorkerCalls: 0,
-        messages: { msg: { cost: 0.01, agent: "orch-lead", provider: "openai", model: "gpt-test", pricingStatus: "paid", tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 20, write: 0 } } } },
+        messages: { msg: { cost: 0.01, agent: "orch-lead", provider: "openai", model: "gpt-test", pricingStatus: "paid", createdAt: 100, tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 20, write: 0 } } } },
       },
     },
   }
   await writeFile(statePath, JSON.stringify(initialState))
+  const runDirectory = path.join(project, ".orchestra", "orchestration")
+  await mkdir(runDirectory, { recursive: true })
+  await writeFile(path.join(runDirectory, "runs.json"), JSON.stringify({
+    version: 1, updatedAt: Date.now(), runs: [{ rootSessionID: "run-1", planRegistered: true, totalStarted: 0, touchedAt: 123, nodes: [] }],
+  }))
 
   const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
   try {
@@ -36,7 +41,7 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     const token = url.searchParams.get("token") ?? ""
     const response = await fetch(new URL("/api/snapshot", url), { headers: { "X-Orchestra-Token": token } })
     assert.equal(response.status, 200)
-    const snapshot = await response.json() as { summary: { calls: number; tokens: { input: number } }; mcp: { playwright: boolean }; projection: { projected: number }; anomalies: Array<{ date: string }>; config: { telemetry: { storeTexts: boolean } } }
+    const snapshot = await response.json() as { summary: { calls: number; tokens: { input: number } }; mcp: { playwright: boolean }; projection: { projected: number }; anomalies: Array<{ date: string }>; config: { telemetry: { storeTexts: boolean } }; orchestrationRuns: Array<{ rootSessionID: string }> }
     assert.equal(snapshot.summary.calls, 1)
     assert.equal(snapshot.summary.tokens.input, 100)
     assert.equal(snapshot.mcp.playwright, true)
@@ -45,6 +50,17 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     assert.equal(typeof snapshot.projection.projected, "number")
     assert.ok(Array.isArray(snapshot.anomalies))
     assert.equal(snapshot.config.telemetry.storeTexts, false)
+    assert.equal(snapshot.orchestrationRuns[0]?.rootSessionID, "run-1")
+
+    const actionResponse = await fetch(new URL("/api/orchestration/action", url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Orchestra-Token": token },
+      body: JSON.stringify({ rootSessionID: "run-1", nodeId: "node-1", action: "cancel" }),
+    })
+    assert.equal(actionResponse.status, 202)
+    const queued = await actionResponse.json() as { requestId: string }
+    const queuedAction = JSON.parse(await readFile(path.join(runDirectory, "actions", `${queued.requestId}.json`), "utf8")) as { action: string }
+    assert.equal(queuedAction.action, "cancel")
 
     // A lightweight overview request returns only the requested rows while
     // retaining the full totals, and a changed ledger invalidates the cache.
@@ -57,12 +73,14 @@ test("dashboard serves local telemetry and saves validated config", async () => 
       provider: "openai",
       model: "gpt-test",
       pricingStatus: "paid",
+      createdAt: 200,
       tokens: { input: 200, output: 80, reasoning: 20, cache: { read: 40, write: 0 } },
     }
     await writeFile(statePath, JSON.stringify(changedState))
     const limitedResponse = await fetch(new URL("/api/snapshot?activityLimit=1", url), { headers: { "X-Orchestra-Token": token } })
-    const limited = await limitedResponse.json() as { activity: unknown[]; activityTotal: number; activityTruncated: boolean; summary: { calls: number } }
+    const limited = await limitedResponse.json() as { activity: Array<{ id: string }>; activityTotal: number; activityTruncated: boolean; summary: { calls: number } }
     assert.equal(limited.activity.length, 1)
+    assert.equal(limited.activity[0]?.id, "msg2")
     assert.equal(limited.activityTotal, 2)
     assert.equal(limited.activityTruncated, true)
     assert.equal(limited.summary.calls, 2)

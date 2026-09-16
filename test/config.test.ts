@@ -45,6 +45,11 @@ test("orchestration agent limits have shared defaults and strict bounds", () => 
     assert.equal(orchestration.maxWorkers, 8)
     assert.equal(orchestration.parallelEditors, 0)
     assert.equal(orchestration.maxDelegationDepth, 2)
+    assert.deepEqual(orchestration.persistence, { enabled: true, directory: ".orchestra/orchestration" })
+    assert.deepEqual(orchestration.verification, { required: true, maxGates: 24 })
+    assert.deepEqual(orchestration.taskBudget, { maxCostUSD: 0, maxTokens: 0, maxMinutes: 0, unknownPricing: "warn" })
+    assert.deepEqual(orchestration.adaptive, { enabled: true, initialWorkers: 2, maxExtensions: 3, minEvidenceItems: 1 })
+    assert.deepEqual(orchestration.knowledge, { enabled: true, directory: ".orchestra/knowledge", maxEntries: 256 })
   }
 
   const configured = orchestraConfigSchema.parse({
@@ -71,13 +76,18 @@ test("published JSON schema mirrors orchestration defaults and bounds", async ()
   type NumericSchema = { type: "integer"; minimum: number; maximum: number; default: number }
   const published = JSON.parse(
     await readFile(path.resolve("schema/opencode-orchestra.schema.json"), "utf8"),
-  ) as { properties: { orchestration: { properties: Record<string, NumericSchema> } } }
+  ) as { properties: { orchestration: { properties: Record<string, NumericSchema | { default?: unknown }> } } }
   const properties = published.properties.orchestration.properties
 
   assert.deepEqual(properties.parallelWorkers, { type: "integer", minimum: 1, maximum: 8, default: 8 })
   assert.deepEqual(properties.parallelEditors, { type: "integer", minimum: 0, maximum: 8, default: 0 })
   assert.deepEqual(properties.maxWorkers, { type: "integer", minimum: 1, maximum: 8, default: 8 })
   assert.deepEqual(properties.maxDelegationDepth, { type: "integer", minimum: 1, maximum: 4, default: 2 })
+  assert.deepEqual(properties.persistence?.default, { enabled: true, directory: ".orchestra/orchestration" })
+  assert.deepEqual(properties.verification?.default, { required: true, maxGates: 24 })
+  assert.deepEqual(properties.taskBudget?.default, { maxCostUSD: 0, maxTokens: 0, maxMinutes: 0, unknownPricing: "warn" })
+  assert.deepEqual(properties.adaptive?.default, { enabled: true, initialWorkers: 2, maxExtensions: 3, minEvidenceItems: 1 })
+  assert.deepEqual(properties.knowledge?.default, { enabled: true, directory: ".orchestra/knowledge", maxEntries: 256 })
 })
 
 test("automatic permission acceptance is explicit and disabled by default", () => {
