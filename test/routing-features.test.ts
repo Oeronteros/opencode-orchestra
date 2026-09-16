@@ -40,6 +40,30 @@ test("planner respects the maxNodes cap", () => {
   assert.ok(plan.nodes.length <= 3)
 })
 
+test("research swarm uses two evidence rounds, synthesis, and arbitration within the node cap", () => {
+  const plan = planTask("research", ["review", "security"], {
+    maxNodes: 8,
+    dependencyAware: true,
+    includeMerger: true,
+    includeJudge: true,
+    researchSwarm: true,
+    secondaryWorkers: ["orch-repo", "orch-tests"],
+  })
+
+  assert.equal(plan.strategy?.kind, "research-swarm")
+  assert.equal(plan.nodes.length, 8)
+  assert.equal(plan.levels.length, 4)
+  assert.equal(plan.levels[0]?.length, 4)
+  assert.equal(plan.levels[1]?.length, 2)
+  assert.deepEqual(plan.levels[2], ["merge"])
+  assert.deepEqual(plan.levels[3], ["judge"])
+  assert.ok(plan.nodes.filter((node) => node.id.startsWith("hypothesis-")).every((node) => node.dependsOn.length === 0))
+  assert.ok(plan.nodes.filter((node) => node.id.startsWith("refinement-")).every((node) => node.dependsOn.length === 4))
+  assert.ok(plan.nodes.find((node) => node.id === "merge")?.dependsOn.every((id) => id.startsWith("hypothesis-") || id.startsWith("refinement-")))
+  assert.match(plan.nodes.find((node) => node.id === "judge")?.contract.deliverable ?? "", /verified|falsified|unresolved/)
+  assert.deepEqual(validatePlan(plan), [])
+})
+
 test("planner uses the profile catalog as its complete worker roster", () => {
   const plan = planTask("architecture", [], { maxNodes: 12 })
   const plannedWorkers = plan.nodes.filter((node) => node.role !== "merger").map((node) => node.worker).sort()

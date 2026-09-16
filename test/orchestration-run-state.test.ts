@@ -242,3 +242,41 @@ test("sealed plan enforces contracts, dependencies, and failure propagation", as
   assert.equal(blocked.ok, false)
   if (!blocked.ok) assert.ok(["dependency_failed", "duplicate_node"].includes(blocked.code))
 })
+
+test("research swarm keeps cross-pollination behind the complete hypothesis round", async () => {
+  const state = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  const plan = planTask("research", ["review", "security"], {
+    maxNodes: 8,
+    includeJudge: true,
+    researchSwarm: true,
+    secondaryWorkers: ["orch-repo", "orch-tests"],
+  })
+  state.registerPlan("root", plan)
+  const hypotheses = plan.nodes.filter((node) => node.id.startsWith("hypothesis-"))
+  const refinement = plan.nodes.find((node) => node.id === "refinement-0")!
+  const request = (node: typeof refinement) => ({
+    parentSessionID: "root",
+    nodeId: node.id,
+    agent: node.worker,
+    task: node.description,
+    contract: node.contract,
+  })
+
+  for (const [index, node] of hypotheses.slice(0, -1).entries()) {
+    const lease = assertLease(await state.acquire(request(node)))
+    state.complete(lease, true, undefined, `hypothesis result ${index}`)
+  }
+  const early = await state.acquire(request(refinement))
+  assert.equal(early.ok, false)
+  if (!early.ok) assert.equal(early.code, "dependency_pending")
+
+  const finalHypothesis = hypotheses.at(-1)!
+  const finalLease = assertLease(await state.acquire(request(finalHypothesis)))
+  state.complete(finalLease, true, undefined, "final hypothesis result")
+  const sharedResults = state.dependencyOutputs("root", refinement.id)
+  assert.equal(sharedResults.length, hypotheses.length)
+  assert.deepEqual(sharedResults.map((result) => result.nodeId), hypotheses.map((node) => node.id))
+  assert.match(sharedResults.at(-1)?.output ?? "", /final hypothesis result/)
+  const refinementLease = assertLease(await state.acquire(request(refinement)))
+  state.complete(refinementLease, true)
+})

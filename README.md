@@ -65,6 +65,8 @@ request
   → local telemetry and cost accounting
 ```
 
+In `ebobo` mode, tasks classified as research use a bounded research swarm. With the default eight-node limit, four workers explore independent hypotheses, two second-round workers receive every first-round result and reallocate their effort toward the strongest surviving directions, `orch-merge` consolidates the shared hypothesis ledger, and `orch-judge` independently verifies the candidate result. Mathematical proofs, conjectures, scientific hypotheses, failed approaches, counterexamples, and reusable intermediate results are carried between rounds with node provenance. A provisional or unresolved judge verdict is not treated as completion.
+
 `orch-lead` is the public primary agent. It can edit the current workspace, run verification, and coordinate the rest of the team. Internal workers are hidden from normal agent completion by default and have narrower permissions.
 
 | Agent | Role | Writes files |
@@ -146,7 +148,7 @@ If discovery is temporarily unavailable, Orchestra leaves the agent model unset 
 | `eco` | Prefer free models and restrict premium escalation |
 | `balanced` | Prefer subscription/free models with limited premium escalation |
 | `quality` | Prefer stronger lead models and allow paid candidates |
-| `ebobo` | Prefer frontier arbitration and always consult the judge |
+| `ebobo` | Use the bounded research swarm for research tasks, prefer frontier arbitration, and always consult the judge |
 
 Budget modes affect model choice, paid-call limits, and escalation. They do not increase the runtime's worker limits.
 

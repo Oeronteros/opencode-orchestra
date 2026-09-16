@@ -22,6 +22,21 @@ export interface TaskPlan {
   maxParallel: number
   mergerNodeId?: string
   integratorNodeId?: string
+  strategy?: ResearchSwarmStrategy
+}
+
+export interface ResearchSwarmStrategy {
+  kind: "research-swarm"
+  rounds: Array<{
+    id: "hypotheses" | "cross-pollination" | "synthesis" | "arbitration"
+    objective: string
+    nodeIds: string[]
+  }>
+  sharedLedger: {
+    requiredFields: string[]
+    propagation: "dependency-results"
+  }
+  allocation: "second-round workers rank all first-round results and spend their effort on the most promising surviving directions"
 }
 
 export interface PlanOptions {
@@ -31,6 +46,7 @@ export interface PlanOptions {
   dependencyAware?: boolean
   includeMerger?: boolean
   includeJudge?: boolean
+  researchSwarm?: boolean
   editorPartitions?: Array<{
     id?: string
     description: string
@@ -44,6 +60,17 @@ export interface PlanOptions {
 }
 
 const REVIEWERS = new Set(["orch-critic", "orch-security", "orch-visual-review"])
+
+const SWARM_LEDGER_FIELDS = [
+  "hypothesis",
+  "approach",
+  "evidence",
+  "attempted verification",
+  "counterexamples or failure modes",
+  "reusable intermediate results",
+  "confidence",
+  "open questions",
+]
 
 function evidenceContract(profile: ProfileName, worker: string, role: "specialist" | "reviewer", inputs: string[]): TaskContract {
   const objective = role === "specialist"
@@ -71,6 +98,177 @@ function sameStrings(left: string[], right: string[]): boolean {
   return a.every((value, index) => value === b[index])
 }
 
+function planResearchSwarm(
+  profile: ProfileName,
+  primary: string[],
+  reviewers: string[],
+  maxNodes: number,
+  includeMerger: boolean,
+  includeJudge: boolean,
+): TaskPlan | undefined {
+  const candidates = [...primary, ...reviewers]
+  if (candidates.length === 0 || maxNodes < 4) return undefined
+
+  const reservedForJudge = includeJudge ? 1 : 0
+  const reservedForMerger = includeMerger ? 1 : 0
+  const researchSlots = maxNodes - reservedForJudge - reservedForMerger
+  if (researchSlots < 2) return undefined
+
+  // Spend roughly two thirds of the research budget on independent search and
+  // the rest on result-aware refinement. With the default eight-node cap this
+  // produces 4 hypothesis nodes, 2 cross-pollination nodes, merge, and judge.
+  const refinementCount = Math.max(1, Math.floor(researchSlots / 3))
+  const hypothesisCount = researchSlots - refinementCount
+  const orderedHypothesisWorkers = [...primary, ...reviewers]
+  const hypothesisWorkers = Array.from(
+    { length: hypothesisCount },
+    (_, index) => orderedHypothesisWorkers[index % orderedHypothesisWorkers.length]!,
+  )
+  const unused = new Set(hypothesisWorkers)
+  const orderedRefinementWorkers = [
+    ...reviewers.filter((worker) => !unused.has(worker)),
+    ...primary.filter((worker) => !unused.has(worker)),
+    ...reviewers,
+    ...primary,
+  ]
+  const refinementWorkers = Array.from(
+    { length: refinementCount },
+    (_, index) => orderedRefinementWorkers[index % orderedRefinementWorkers.length]!,
+  )
+
+  const nodes: PlanNode[] = []
+  const hypothesisIds = hypothesisWorkers.map((worker, index) => {
+    const id = `hypothesis-${index}`
+    const objective = `Independently develop and test a distinct ${profile} hypothesis using ${worker}; do not converge on another branch's approach.`
+    nodes.push({
+      id,
+      description: objective,
+      worker,
+      dependsOn: [],
+      role: "specialist",
+      contract: {
+        objective,
+        inputs: [],
+        deliverable: `A structured hypothesis ledger entry containing: ${SWARM_LEDGER_FIELDS.join(", ")}.`,
+        acceptanceCriteria: [
+          "Pursue a concrete approach far enough to expose a proof path, computation, experiment, or decisive blocker.",
+          "Actively try to falsify the hypothesis before reporting it as promising.",
+          "Separate established facts, new deductions, assumptions, and speculation.",
+          "Record failed attempts and reusable intermediate results so later rounds do not repeat them.",
+        ],
+        allowedPaths: [],
+        exclusiveResources: [],
+        delegation: { allowed: false, maxChildren: 0 },
+      },
+    })
+    return id
+  })
+
+  const refinementIds = refinementWorkers.map((worker, index) => {
+    const id = `refinement-${index}`
+    const focus = index % 2 === 0
+      ? "Rank every first-round direction, combine compatible insights, and deepen the strongest surviving approach."
+      : "Adversarially test every first-round direction, eliminate unsound paths, then repair or branch from the strongest remaining approach."
+    const objective = `${focus} Use ${worker} and spend effort according to evidence rather than equal treatment.`
+    nodes.push({
+      id,
+      description: objective,
+      worker,
+      dependsOn: [...hypothesisIds],
+      role: "reviewer",
+      contract: {
+        objective,
+        inputs: [...hypothesisIds],
+        deliverable: `An updated shared hypothesis ledger containing: ${SWARM_LEDGER_FIELDS.join(", ")}, plus an explicit ranking and resource-allocation decision.`,
+        acceptanceCriteria: [
+          "Account for every first-round result and cite its node ID.",
+          "Rank directions using correctness, novelty, tractability, and independent verifiability.",
+          "Concentrate the remaining analysis on the strongest direction while preserving useful results from rejected branches.",
+          "Provide a concrete verification attempt and state what would still invalidate the conclusion.",
+        ],
+        allowedPaths: [],
+        exclusiveResources: [],
+        delegation: { allowed: false, maxChildren: 0 },
+      },
+    })
+    return id
+  })
+
+  const levels = [hypothesisIds, refinementIds]
+  const rounds: ResearchSwarmStrategy["rounds"] = [
+    { id: "hypotheses", objective: "Explore diverse independent hypotheses and record both progress and dead ends.", nodeIds: hypothesisIds },
+    { id: "cross-pollination", objective: "Share results, falsify weak directions, and reallocate effort to the strongest surviving approaches.", nodeIds: refinementIds },
+  ]
+  const allResearchIds = [...hypothesisIds, ...refinementIds]
+  let mergerNodeId: string | undefined
+  if (includeMerger) {
+    mergerNodeId = "merge"
+    const objective = "Consolidate the complete hypothesis ledger into one traceable candidate result without hiding failed approaches or unresolved gaps."
+    nodes.push({
+      id: mergerNodeId,
+      description: objective,
+      worker: "orch-merge",
+      dependsOn: allResearchIds,
+      role: "merger",
+      contract: {
+        objective,
+        inputs: allResearchIds,
+        deliverable: "One candidate result with full node provenance, the surviving argument or artifact, rejected directions, verification evidence, and unresolved obligations.",
+        acceptanceCriteria: [
+          "Represent every supplied ledger entry and preserve its node provenance.",
+          "Distinguish verified conclusions from plausible hypotheses and unsupported speculation.",
+          "Expose any missing proof step, failed check, counterexample, or reproducibility gap.",
+        ],
+        allowedPaths: [],
+        exclusiveResources: [],
+        delegation: { allowed: false, maxChildren: 0 },
+      },
+    })
+    levels.push([mergerNodeId])
+    rounds.push({ id: "synthesis", objective, nodeIds: [mergerNodeId] })
+  }
+
+  if (includeJudge) {
+    const dependencies = mergerNodeId ? [mergerNodeId] : allResearchIds
+    const objective = "Independently arbitrate the candidate result and reject completion unless its central claim survives the stated verification standard."
+    nodes.push({
+      id: "judge",
+      description: objective,
+      worker: "orch-judge",
+      dependsOn: dependencies,
+      role: "reviewer",
+      contract: {
+        objective,
+        inputs: dependencies,
+        deliverable: "A verdict of verified, provisionally supported, falsified, or unresolved, with precise reasons and remaining verification obligations.",
+        acceptanceCriteria: [
+          "Check the central claim independently instead of trusting the synthesis.",
+          "Treat failed formal checks, computations, tests, or missing proof steps as unresolved rather than success.",
+          "Explain the evidence behind the verdict and identify the weakest remaining link.",
+        ],
+        allowedPaths: [],
+        exclusiveResources: [],
+        delegation: { allowed: false, maxChildren: 0 },
+      },
+    })
+    levels.push(["judge"])
+    rounds.push({ id: "arbitration", objective, nodeIds: ["judge"] })
+  }
+
+  return {
+    nodes,
+    levels,
+    maxParallel: levels.reduce((max, level) => Math.max(max, level.length), 0),
+    ...(mergerNodeId ? { mergerNodeId } : {}),
+    strategy: {
+      kind: "research-swarm",
+      rounds,
+      sharedLedger: { requiredFields: [...SWARM_LEDGER_FIELDS], propagation: "dependency-results" },
+      allocation: "second-round workers rank all first-round results and spend their effort on the most promising surviving directions",
+    },
+  }
+}
+
 export function planTask(profile: ProfileName, secondaryProfiles: ProfileName[] = [], options: PlanOptions = {}): TaskPlan {
   const maxNodes = Math.max(1, options.maxNodes ?? 6)
   const includeEvidence = options.includeEvidence ?? true
@@ -89,6 +287,11 @@ export function planTask(profile: ProfileName, secondaryProfiles: ProfileName[] 
     for (const worker of PROFILE_CATALOG[profile].workers) add(worker)
     for (const secondary of secondaryProfiles) for (const worker of PROFILE_CATALOG[secondary].workers) add(worker)
     for (const worker of options.secondaryWorkers ?? []) add(worker)
+  }
+
+  if (options.researchSwarm && includeEvidence && dependencyAware) {
+    const swarm = planResearchSwarm(profile, primary, reviewers, maxNodes, includeMerger, options.includeJudge ?? false)
+    if (swarm) return swarm
   }
 
   const selectedPrimary = primary.slice(0, workerLimit)

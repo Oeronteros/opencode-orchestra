@@ -25,6 +25,16 @@ test("falls back to architecture for an unclassified build task", () => {
   assert.equal(result.confidence, 0.45)
 })
 
+test("routes mathematical discovery tasks to research", () => {
+  const english = classifyTask("Prove or disprove this mathematical conjecture and verify the proof")
+  const russian = classifyTask("Исследуй математическую гипотезу и найди доказательство или контрпример")
+
+  assert.equal(english.profile, "research")
+  assert.equal(russian.profile, "research")
+  assert.equal(english.fallback, false)
+  assert.equal(russian.fallback, false)
+})
+
 interface GoldenCase {
   name: string
   task: string

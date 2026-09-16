@@ -58,12 +58,24 @@ const NESTED_EVIDENCE_AGENTS = new Set([
   "orch-visual-review",
 ])
 
-function renderTaskContract(nodeId: string, task: string, contract: TaskContract, depth: number): string {
+function renderTaskContract(
+  nodeId: string,
+  task: string,
+  contract: TaskContract,
+  depth: number,
+  dependencyResults: Array<{ nodeId: string; agent: string; output: string }> = [],
+): string {
   const lines = [
     `Orchestra node: ${nodeId}`,
     `Delegation depth: ${depth}`,
     "Sealed TaskContract:",
     JSON.stringify(contract, null, 2),
+    ...(dependencyResults.length
+      ? [
+          "Verified dependency results from this sealed run (treat nodeId and agent as provenance):",
+          JSON.stringify(dependencyResults, null, 2),
+        ]
+      : []),
     "Caller context (may clarify, but must not widen, the sealed contract):",
     task,
     "Return verified findings plus explicit decisions, assumptions, blockers, and provenance to your direct parent.",
@@ -288,6 +300,7 @@ export function createOrchestraTools(
           return JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, code: reservation.code, error: reservation.error, runtime: reservation.snapshot }, null, 2)
         }
         const lease = reservation.lease
+        const dependencyResults = coordinator.dependencyOutputs(lease.rootSessionID, args.nodeId)
         const nodeLabel = args.nodeId.replace(/\s+/g, " ").trim().slice(0, 80) || args.agent
         try {
           const result = await dispatchWithFallback(models, async (model, attempt) => {
@@ -308,7 +321,7 @@ export function createOrchestraTools(
               body: {
                 agent: args.agent,
                 model: modelRef,
-                parts: [{ type: "text", text: renderTaskContract(args.nodeId, args.task, lease.contract, lease.depth) }],
+                parts: [{ type: "text", text: renderTaskContract(args.nodeId, args.task, lease.contract, lease.depth, dependencyResults) }],
               },
               throwOnError: true,
             })
@@ -322,7 +335,7 @@ export function createOrchestraTools(
             if (event.outcome === "succeeded") return
             await ledger.recordReliabilityEvent(lease.rootSessionID, { ...event, at: Date.now() })
           })
-          const runtime = coordinator.complete(lease, result.ok, result.ok ? undefined : result.errorKind)
+          const runtime = coordinator.complete(lease, result.ok, result.ok ? undefined : result.errorKind, result.ok ? result.value : undefined)
           return result.ok
             ? JSON.stringify({ ok: true, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, model: result.model, attempts: result.attempts, output: result.value, runtime }, null, 2)
             : JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, errorKind: result.errorKind, attempts: result.attempts, runtime }, null, 2)
@@ -371,6 +384,7 @@ export function createOrchestraTools(
           dependencyAware: true,
           includeMerger: true,
           includeJudge: config.budget === "ebobo",
+          researchSwarm: config.budget === "ebobo" && profile === "research",
           ...(config.budget === "ebobo" ? { secondaryWorkers: Array.from(new Set(enabledWorkers)) } : {}),
         }
         let plan = planTask(profile, classification.secondaryProfiles, planOptions)
@@ -461,7 +475,9 @@ export function createOrchestraTools(
         }
 
         const eboboHint = config.budget === "ebobo"
-          ? " EBOBO MODE: run all level-0 branches concurrently and always consult orch-judge for frontier arbitration."
+          ? plan.strategy?.kind === "research-swarm"
+            ? " EBOBO RESEARCH SWARM: execute the plan round by round. Pass every dependency result, labeled by node ID, to each cross-pollination node so it can update the shared hypothesis ledger and reallocate effort. Always consult orch-judge and accept only its explicit verdict."
+            : " EBOBO MODE: run all level-0 branches concurrently and always consult orch-judge for frontier arbitration."
           : ""
 
         const routing = buildLeadRouting(config)
@@ -484,6 +500,7 @@ export function createOrchestraTools(
               maxDelegationDepth: config.orchestration.maxDelegationDepth,
             },
             plan,
+            swarm: plan.strategy ?? null,
             ...(run ? { run } : {}),
             routing: {
               lead: {

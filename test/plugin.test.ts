@@ -389,6 +389,40 @@ test("ebobo fills the shared eight-node cap with frontier arbitration", async ()
   assert.equal(result.escalation.escalate, true)
 })
 
+test("ebobo routes mathematical research through the bounded research swarm", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-swarm-"))
+  const initialize = OrchestraPlugin as unknown as (
+    input: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+  const hooks = await initialize(
+    { directory: project, client: { app: { log: async () => undefined } } },
+    {
+      budget: "ebobo",
+      telemetry: { enabled: false },
+      orchestration: { maxWorkers: 8, parallelWorkers: 8 },
+    },
+  )
+  const route = (hooks.tool as Record<string, unknown>).orchestra_route as {
+    execute: (args: { task: string }, context: Record<string, unknown>) => Promise<string>
+  }
+  const result = JSON.parse(await route.execute({
+    task: "Prove or disprove this mathematical conjecture and verify every proof step",
+  }, {})) as {
+    profile: string
+    plan: { nodes: Array<{ id: string }>; strategy?: { kind: string; rounds: Array<{ id: string }> } }
+    swarm: { kind: string } | null
+    next: string
+  }
+
+  assert.equal(result.profile, "research")
+  assert.equal(result.swarm?.kind, "research-swarm")
+  assert.equal(result.plan.nodes.length, 8)
+  assert.deepEqual(result.plan.strategy?.rounds.map((round) => round.id), ["hypotheses", "cross-pollination", "synthesis", "arbitration"])
+  assert.match(result.next, /dependency result/)
+  await (hooks.dispose as () => Promise<void>)()
+})
+
 test("orchestra route works without a session or ledger access", async () => {
   const ledger = new Proxy({}, {
     get(_target, property) {

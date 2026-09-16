@@ -65,6 +65,8 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
   → 本地遥测与成本统计
 ```
 
+在 `ebobo` 模式下，被分类为 research 的任务会使用受限研究智能体群。采用默认的八节点上限时，四个 worker 独立探索不同假设，两个第二轮 worker 接收全部第一轮结果，并把精力重新分配给最有希望的存活方向；随后 `orch-merge` 汇总共享假设账本，`orch-judge` 独立验证候选结果。数学证明、猜想、科学假设、失败路径、反例和可复用的中间结果都会带着节点来源在各轮之间传递。judge 给出的暂定或未解决结论不会被视为完成。
+
 `orch-lead` 是公开的主智能体。它可以编辑当前工作区、运行验证，并协调其余团队。内部 workers 默认不会出现在常规智能体补全中，且拥有更严格的权限。
 
 | 智能体 | 职责 | 写入文件 |
@@ -146,7 +148,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install --dry-run
 | `eco` | 优先免费模型，并限制高级模型升级 |
 | `balanced` | 优先订阅或免费模型，并允许有限的高级模型升级 |
 | `quality` | 优先更强的 lead 模型，并允许付费候选 |
-| `ebobo` | 优先 frontier 裁决，并始终调用 judge |
+| `ebobo` | 对 research 任务启用受限研究智能体群，优先 frontier 裁决，并始终调用 judge |
 
 预算模式会影响模型选择、付费调用限制和升级策略，但不会提高运行时 worker 上限。
 

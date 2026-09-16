@@ -69,6 +69,8 @@ interface MutableRunNode {
   childrenStarted: number
   active: boolean
   error?: string
+  /** Successful text output retained only for the lifetime of this in-memory run. */
+  output?: string
 }
 
 interface PendingDispatch {
@@ -285,7 +287,7 @@ export class OrchestrationRunState {
     run.touchedAt = Date.now()
   }
 
-  complete(lease: DispatchLease, succeeded: boolean, error?: string): RunSnapshot {
+  complete(lease: DispatchLease, succeeded: boolean, error?: string, output?: string): RunSnapshot {
     const run = this.runs.get(lease.rootSessionID)
     const node = run?.nodes.get(lease.nodeId)
     if (!run || !node) throw new Error(`Unknown orchestration node ${lease.nodeId}.`)
@@ -293,6 +295,8 @@ export class OrchestrationRunState {
 
     node.active = false
     node.status = succeeded ? "succeeded" : "failed"
+    if (succeeded && output?.trim()) node.output = output
+    else delete node.output
     if (!succeeded && error) node.error = error.replace(/\s+/g, " ").trim().slice(0, 240)
     run.activeWorkers = Math.max(0, run.activeWorkers - 1)
     for (const resource of node.contract.exclusiveResources.map(normalizeResource)) {
@@ -309,6 +313,22 @@ export class OrchestrationRunState {
     const rootSessionID = link?.rootSessionID ?? sessionID
     const run = this.runs.get(rootSessionID)
     return run ? this.snapshotForRun(run) : undefined
+  }
+
+  /**
+   * Return successful direct dependency outputs for a sealed node. Results
+   * stay in memory and are never exposed in status snapshots or telemetry.
+   */
+  dependencyOutputs(sessionID: string, nodeId: string): Array<{ nodeId: string; agent: string; output: string }> {
+    const run = this.runs.get(this.rootSessionID(sessionID))
+    const node = run?.nodes.get(nodeId)
+    if (!run || !node) return []
+    return node.dependsOn.flatMap((dependencyId) => {
+      const dependency = run.nodes.get(dependencyId)
+      return dependency?.status === "succeeded" && dependency.output
+        ? [{ nodeId: dependency.id, agent: dependency.agent, output: dependency.output }]
+        : []
+    })
   }
 
   rootSessionID(sessionID: string): string {
