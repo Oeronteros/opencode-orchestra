@@ -239,7 +239,7 @@ For OpenCode Web, run OpenCode and the local voice proxy in separate terminals:
 
 ```bash
 opencode web --port 4096
-opencode-orch web
+bunx @oeronteros-1/opencode-orchestra@latest web
 ```
 
 Then open `http://127.0.0.1:4097`. The microphone button is added next to the prompt submit button and inserts recognized text into the draft without sending it.

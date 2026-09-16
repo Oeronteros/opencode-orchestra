@@ -145,7 +145,7 @@ npm --prefix voice-overlay run build -- --verbose
 
 ```bash
 opencode web --port 4096
-opencode-orch web
+bunx @oeronteros-1/opencode-orchestra@latest web
 ```
 
 Откройте **http://127.0.0.1:4097**. Кнопка микрофона появится рядом с отправкой
@@ -162,7 +162,7 @@ Whisper из установки voice-overlay с моделью `ggml-base.bin`;
 вернуться в исходную сессию и вставить. Невставленный результат сохраняется в
 `sessionStorage` вкладки и переживает перезагрузку.
 
-Другие порты: `opencode-orch web --upstream http://127.0.0.1:4096 --port 4097`.
+Другие порты: `bunx @oeronteros-1/opencode-orchestra@latest web --upstream http://127.0.0.1:4096 --port 4097`.
 Прокси слушает только loopback. Используйте Chrome/Edge с поддержкой MediaRecorder.
 Обычный адрес OpenCode на порту 4096 остаётся без встроенной кнопки.
 Интеграция использует DOM редактора OpenCode (`data-component="prompt-input"`

@@ -43,14 +43,14 @@ import type { ActivityRow, AggregateRow, DashboardConfig, GlobalSnapshot, LiveAc
 
 const EMPTY: never[] = []
 
-function useSnapshot() {
+function useSnapshot(activityLimit = 5_000) {
   const selected = useUiStore((state) => state.selectedProject)
-  return useQuery({ queryKey: ["snapshot", selected], queryFn: () => api.snapshot(selected === "global" ? undefined : selected), refetchInterval: 2_500, enabled: selected !== "global" })
+  return useQuery({ queryKey: ["snapshot", selected, activityLimit], queryFn: () => api.snapshot(selected === "global" ? undefined : selected, undefined, activityLimit), refetchInterval: 5_000, enabled: selected !== "global" })
 }
 
 function useDashboardData(range?: string) {
   const selected = useUiStore((state) => state.selectedProject)
-  return useQuery<Snapshot | GlobalSnapshot>({ queryKey: ["dashboard", selected, range], queryFn: async () => selected === "global" ? api.global(range) : api.snapshot(selected, range), refetchInterval: 2_500 })
+  return useQuery<Snapshot | GlobalSnapshot>({ queryKey: ["dashboard", selected, range], queryFn: async () => selected === "global" ? api.global(range) : api.snapshot(selected, range, 6), refetchInterval: 5_000 })
 }
 
 function formatNumber(value: number): string {
@@ -127,10 +127,8 @@ function AppShell() {
   const setTheme = useUiStore((state) => state.setTheme)
   const selectedProject = useUiStore((state) => state.selectedProject)
   const setSelectedProject = useUiStore((state) => state.setSelectedProject)
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, refetchInterval: 5_000 })
-  // Use the same default range as OverviewPage so the shell and the page share
-  // one React Query cache entry instead of polling the same snapshot twice.
-  const data = useDashboardData("30")
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects, refetchInterval: 15_000 })
+  const currentProject = projects.data?.find((project) => project.id === selectedProject)
   useEffect(() => { document.documentElement.classList.toggle("light", theme === "light") }, [theme])
   useEffect(() => {
     if (projects.data && selectedProject !== "global" && !projects.data.some((project) => project.id === selectedProject)) setSelectedProject("global")
@@ -185,7 +183,7 @@ function AppShell() {
               <span className="status-dot" />
               {t("live")}
             </div>
-            <div className="project-name">{data.data?.project ?? "Orchestra"}</div>
+            <div className="project-name">{currentProject?.name ?? (selectedProject === "global" ? t("allProjects") : "Orchestra")}</div>
           </div>
         </aside>
         <main className="main-panel">
@@ -202,7 +200,7 @@ function AppShell() {
                   <option key={project.id} value={project.id}>{project.name}</option>
                 ))}
               </select>
-              <span className="eyebrow">{data.data?.directory ?? t("loadingTelemetry")}</span>
+              <span className="eyebrow">{currentProject?.directory ?? (selectedProject === "global" ? t("allProjects") : t("loadingTelemetry"))}</span>
             </div>
             <div className="top-actions">
               <ExportMenu />
@@ -1688,7 +1686,7 @@ function settingsFormDefaults(config: DashboardConfig): DashboardConfig {
 
 function SettingsPage() {
   const { t } = useTranslation()
-  const query = useSnapshot()
+  const query = useSnapshot(1)
   const selected = useUiStore((state) => state.selectedProject)
   const client = useQueryClient()
   const form = useForm<DashboardConfig>({ resolver: zodResolver(settingsSchema), defaultValues: query.data ? settingsFormDefaults(query.data.config) : undefined })

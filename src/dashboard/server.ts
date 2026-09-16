@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { spawn, spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { createReadStream } from "node:fs"
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
@@ -231,24 +231,58 @@ interface GlobalSnapshot {
   projects: ProjectInfo[]
 }
 
-/**
- * `opencode models` is a blocking spawnSync with a 10s timeout. The dashboard
- * polls every ~2.5s, so an uncached call would stall the whole event loop
- * (including live SSE ticks) on every refresh. Cache per project directory.
- */
+/** Cache model discovery per project without blocking the dashboard event loop. */
 const CONNECTED_MODELS_TTL = 60_000
-const connectedModelsCache = new Map<string, { at: number; models: string[] }>()
+interface ConnectedModelsCacheEntry {
+  at: number
+  models: string[]
+  refresh?: Promise<string[]>
+}
+const connectedModelsCache = new Map<string, ConnectedModelsCacheEntry>()
 
-function connectedModels(directory: string): string[] {
+function discoverConnectedModels(directory: string): Promise<string[]> {
+  return new Promise((resolve) => {
+    const executable = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "opencode"
+    const args = process.platform === "win32" ? ["/d", "/s", "/c", "opencode.cmd models"] : ["models"]
+    const child = spawn(executable, args, { cwd: directory, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+    let stdout = ""
+    let settled = false
+    const finish = (models: string[]) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(models)
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      finish([])
+    }, 10_000)
+    timer.unref?.()
+    child.stdout.setEncoding("utf8")
+    child.stdout.on("data", (chunk: string) => { stdout += chunk })
+    child.once("error", () => finish([]))
+    child.once("close", (code) => finish(code === 0
+      ? [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
+      : []))
+  })
+}
+
+async function connectedModels(directory: string): Promise<string[]> {
   const cached = connectedModelsCache.get(directory)
   if (cached && Date.now() - cached.at < CONNECTED_MODELS_TTL) return cached.models
-  const executable = process.platform === "win32" ? "opencode.cmd" : "opencode"
-  const result = spawnSync(executable, ["models"], { cwd: directory, encoding: "utf8", windowsHide: true, timeout: 10_000 })
-  const models = result.status === 0 && result.stdout
-    ? [...new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
-    : []
-  connectedModelsCache.set(directory, { at: Date.now(), models })
-  return models
+  if (cached?.refresh) return cached.models
+
+  const entry: ConnectedModelsCacheEntry = cached ?? { at: 0, models: [] }
+  const refresh = discoverConnectedModels(directory).then((models) => {
+    connectedModelsCache.set(directory, { at: Date.now(), models })
+    return models
+  })
+  entry.refresh = refresh
+  connectedModelsCache.set(directory, entry)
+
+  // A stale value is immediately useful. Only the first discovery waits for
+  // the subprocess, and it remains asynchronous so live SSE ticks keep moving.
+  return cached ? cached.models : refresh
 }
 
 interface SnapshotOptions {
@@ -258,9 +292,81 @@ interface SnapshotOptions {
   rankingDays?: number
 }
 
+interface SnapshotCacheEntry {
+  signature: string
+  inputFiles: string[]
+  value?: SnapshotData
+  pending?: Promise<SnapshotData>
+}
+
+const snapshotCache = new Map<string, SnapshotCacheEntry>()
+
+async function fileSignature(files: string[]): Promise<string> {
+  const unique = [...new Set(files.map((file) => path.resolve(file)))].sort()
+  const parts = await Promise.all(unique.map(async (file) => {
+    try {
+      const info = await stat(file)
+      return `${file}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`
+    } catch {
+      return `${file}:missing`
+    }
+  }))
+  return parts.join("|")
+}
+
+function snapshotCacheKey(directory: string, configDirectory: string, includeModels: boolean, options: SnapshotOptions): string {
+  return JSON.stringify([
+    path.resolve(directory),
+    path.resolve(configDirectory),
+    includeModels,
+    options.activityLimit ?? 5_000,
+    options.dailyLimit ?? 30,
+    options.rankingDays ?? 0,
+  ])
+}
+
+function defaultSnapshotInputFiles(directory: string, configDirectory: string): string[] {
+  return [
+    path.join(configDirectory, "orchestra.jsonc"),
+    path.join(configDirectory, "opencode.jsonc"),
+    path.join(configDirectory, "opencode.json"),
+    path.join(directory, ".opencode", "orchestra.jsonc"),
+    path.join(directory, ".opencode", "orchestra.json"),
+    path.join(directory, ".orchestra", "state.json"),
+    path.join(directory, "orchestra", "state.json"),
+  ]
+}
+
 async function snapshot(directory: string, configDirectory: string, includeModels = true, options: SnapshotOptions = {}): Promise<SnapshotData> {
+  const cacheKey = snapshotCacheKey(directory, configDirectory, includeModels, options)
+  const cached = snapshotCache.get(cacheKey)
+  const inputFiles = cached?.inputFiles ?? defaultSnapshotInputFiles(directory, configDirectory)
+  const fileState = await fileSignature(inputFiles)
+  const signature = `${fileState}|models:${includeModels ? Math.floor(Date.now() / CONNECTED_MODELS_TTL) : 0}`
+  if (cached?.signature === signature) {
+    if (cached.value) return cached.value
+    if (cached.pending) return cached.pending
+  }
+
+  const entry: SnapshotCacheEntry = { signature, inputFiles }
+  const pending = buildSnapshot(directory, configDirectory, includeModels, options).then(({ data, ledgerFile }) => {
+    entry.inputFiles = [...defaultSnapshotInputFiles(directory, configDirectory), ledgerFile]
+    entry.value = data
+    delete entry.pending
+    return data
+  }).catch((error) => {
+    if (snapshotCache.get(cacheKey) === entry) snapshotCache.delete(cacheKey)
+    throw error
+  })
+  entry.pending = pending
+  snapshotCache.set(cacheKey, entry)
+  return pending
+}
+
+async function buildSnapshot(directory: string, configDirectory: string, includeModels: boolean, options: SnapshotOptions): Promise<{ data: SnapshotData; ledgerFile: string }> {
   const config = (await loadConfigForDirectory(directory, configDirectory)).config
-  const ledger = await readLedgerState(path.resolve(directory, config.telemetry.directory, "state.json"))
+  const ledgerFile = path.resolve(directory, config.telemetry.directory, "state.json")
+  const ledger = await readLedgerState(ledgerFile)
   const activity: ActivityRow[] = []
   const mcpUsageMap = new Map<string, McpUsageRow & { totalLatencyMs: number; outputChars: number }>()
   for (const [sessionID, session] of Object.entries(ledger.sessions)) {
@@ -319,7 +425,7 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   const rankingActivity = rankingCutoff > 0
     ? activity.filter((row) => (row.completedAt ?? row.createdAt ?? 0) >= rankingCutoff)
     : activity
-  return {
+  const data: SnapshotData = {
     projectId: projectId(directory),
     updatedAt: ledger.updatedAt,
     project: path.basename(directory),
@@ -357,12 +463,13 @@ async function snapshot(directory: string, configDirectory: string, includeModel
     mcp: await mcpStatus(configDirectory),
     mcpUsage,
     availableModels: [...new Set([
-      ...(includeModels ? connectedModels(directory) : []),
+      ...(includeModels ? await connectedModels(directory) : []),
       ...Object.values(config.models.agents),
       ...Object.values(config.models.fallback.agents).flat(),
       ...config.models.lead, ...config.models.judge, ...Object.values(config.models.worker).flat(),
     ].map((model) => typeof model === "string" ? model : model.id))].sort(),
   }
+  return { data, ledgerFile }
 }
 
 function mergeAggregateRows(snapshots: SnapshotData[], key: "models" | "agents"): AggregateRow[] {
@@ -650,6 +757,7 @@ async function updateConfig(configPath: string, input: unknown): Promise<ConfigV
   const temporary = `${configPath}.orchestra-dashboard-tmp`
   await writeFile(temporary, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8")
   await rename(temporary, configPath)
+  snapshotCache.clear()
   return { valid: true, issues: [] }
 }
 
@@ -809,7 +917,15 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<{
            const range = url.searchParams.get("range")
            const dailyLimit = range === "all" ? 0 : Math.max(1, Math.min(90, Number(range) || 30))
            const rankingDays = range === null || range === "all" ? 0 : dailyLimit
-           sendJson(response, 200, await snapshot(target, configDirectory, true, { dailyLimit, rankingDays }))
+           const requestedActivityLimit = Number(url.searchParams.get("activityLimit"))
+           const activityLimit = Number.isFinite(requestedActivityLimit) && requestedActivityLimit > 0
+             ? Math.min(5_000, Math.floor(requestedActivityLimit))
+             : undefined
+           sendJson(response, 200, await snapshot(target, configDirectory, true, {
+             ...(activityLimit === undefined ? {} : { activityLimit }),
+             dailyLimit,
+             rankingDays,
+           }))
           return
         }
         if (request.method === "GET" && url.pathname === "/api/projects") {

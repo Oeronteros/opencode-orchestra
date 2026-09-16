@@ -705,7 +705,7 @@ function usage(): string {
     "  install     Configure OpenCode and provision companion MCPs",
     "  dashboard   Start the local telemetry dashboard",
     "  voice-web   OpenCode web with an inline offline microphone",
-    "  web         Alias for voice-web (use: opencode-orch web)",
+    "  web         OpenCode web with an inline offline microphone",
     "              --upstream http://127.0.0.1:4096 --port 4097",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",

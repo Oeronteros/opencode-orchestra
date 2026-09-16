@@ -17,7 +17,8 @@ test("dashboard serves local telemetry and saves validated config", async () => 
   await writeFile(path.join(assets, "index.html"), "<h1>Orchestra</h1>")
   await writeFile(path.join(config, "orchestra.jsonc"), '\ufeff{\n  // preserve me\n  "budget": "balanced"\n}\n')
   await writeFile(path.join(config, "opencode.json"), '\ufeff{"mcp":{"playwright":{"type":"local"}}}\n')
-  await writeFile(path.join(project, ".orchestra", "state.json"), JSON.stringify({
+  const statePath = path.join(project, ".orchestra", "state.json")
+  const initialState = {
     version: 2,
     updatedAt: "2026-08-16T00:00:00.000Z",
     sessions: {
@@ -26,7 +27,8 @@ test("dashboard serves local telemetry and saves validated config", async () => 
         messages: { msg: { cost: 0.01, agent: "orch-lead", provider: "openai", model: "gpt-test", pricingStatus: "paid", tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 20, write: 0 } } } },
       },
     },
-  }))
+  }
+  await writeFile(statePath, JSON.stringify(initialState))
 
   const dashboard = await startDashboard({ directory: project, configDirectory: config, assetsDirectory: assets, open: false })
   try {
@@ -43,6 +45,27 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     assert.equal(typeof snapshot.projection.projected, "number")
     assert.ok(Array.isArray(snapshot.anomalies))
     assert.equal(snapshot.config.telemetry.storeTexts, false)
+
+    // A lightweight overview request returns only the requested rows while
+    // retaining the full totals, and a changed ledger invalidates the cache.
+    const changedState = structuredClone(initialState)
+    changedState.updatedAt = "2026-08-16T00:00:01.000Z"
+    const changedMessages = changedState.sessions.one.messages as Record<string, typeof changedState.sessions.one.messages.msg>
+    changedMessages.msg2 = {
+      cost: 0.02,
+      agent: "orch-lead",
+      provider: "openai",
+      model: "gpt-test",
+      pricingStatus: "paid",
+      tokens: { input: 200, output: 80, reasoning: 20, cache: { read: 40, write: 0 } },
+    }
+    await writeFile(statePath, JSON.stringify(changedState))
+    const limitedResponse = await fetch(new URL("/api/snapshot?activityLimit=1", url), { headers: { "X-Orchestra-Token": token } })
+    const limited = await limitedResponse.json() as { activity: unknown[]; activityTotal: number; activityTruncated: boolean; summary: { calls: number } }
+    assert.equal(limited.activity.length, 1)
+    assert.equal(limited.activityTotal, 2)
+    assert.equal(limited.activityTruncated, true)
+    assert.equal(limited.summary.calls, 2)
 
     const save = await fetch(new URL("/api/config", url), {
       method: "PUT",
@@ -77,7 +100,7 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     assert.equal(jsonBody.rows.length, 1)
     const first = jsonBody.rows[0]!
     assert.equal(first.id, "openai/gpt-test")
-    assert.equal(first.calls, 1)
+    assert.equal(first.calls, 2)
 
     const badScope = await fetch(new URL("/api/export?scope=nope&format=csv", url), { headers: { "X-Orchestra-Token": token } })
     assert.equal(badScope.status, 400)
