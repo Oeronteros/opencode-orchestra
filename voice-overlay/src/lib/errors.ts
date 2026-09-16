@@ -19,7 +19,7 @@ const COPY: Record<OverlayErrorCode, string> = {
   "no-mic": "Микрофон не найден. Подключи устройство и выбери его в настройках.",
   "no-ffmpeg": "Не удалось запустить ffmpeg для записи. Обнови Voice Overlay или установи системный ffmpeg. На Linux нужна поддержка PulseAudio.",
   "no-audio-server": "Нет доступа к звуковому серверу. Проверь PulseAudio или PipeWire: выполни pactl info.",
-  "model-missing": "Модель распознавания не скачана. Нажми «Скачать модель» в настройках (нужен интернет один раз).",
+  "model-missing": "Модель не найдена. Для base запусти opencode-orchestra install. Для small см. инструкцию в voice-overlay/README.md или выбери установленную base.",
   "server-unreachable": "Сервер opencode недоступен. Запусти opencode с фиксированным портом: opencode --port 4096.",
   "unauthorized": "Неверный пароль сервера. Проверь пароль в настройках (OPENCODE_SERVER_PASSWORD).",
   "empty-transcript": "Речь не распознана. Попробуй говорить громче и ближе к микрофону.",

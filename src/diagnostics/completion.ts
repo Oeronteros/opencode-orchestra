@@ -3,7 +3,7 @@ import { PACKAGE_NAME } from "../plugin-status.js"
 // Completions for the opencode-orchestra CLI. The binary is typically invoked
 // through bunx, so completions cover the bare command name and bunx alike.
 
-const COMMANDS = ["install", "dashboard", "doctor", "mcp-smoke", "update", "completion"] as const
+const COMMANDS = ["install", "dashboard", "voice-web", "web", "doctor", "mcp-smoke", "update", "completion"] as const
 
 interface CompletionOption {
   name: string
@@ -34,6 +34,9 @@ function optionsFor(command: string): CompletionOption[] {
         { name: "--port", takesValue: "PORT" },
         { name: "--no-open" },
       ]
+    case "voice-web":
+    case "web":
+      return [{ name: "--upstream", takesValue: "URL" }, { name: "--port", takesValue: "PORT" }]
     case "doctor":
       return [{ name: "--config-dir", takesValue: "DIR" }, { name: "--json" }]
     case "mcp-smoke":

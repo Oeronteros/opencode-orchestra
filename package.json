@@ -46,7 +46,8 @@
     "./schema": "./schema/opencode-orchestra.schema.json"
   },
   "bin": {
-    "opencode-orchestra": "dist/cli.js"
+    "opencode-orchestra": "dist/cli.js",
+    "opencode-orch": "dist/cli.js"
   },
   "scripts": {
     "build": "npm run build:dashboard && npm run build:plugin",

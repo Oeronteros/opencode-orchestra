@@ -32,9 +32,13 @@ pub fn resolve(base: &str, exe_dir: &Path, resource_dir: Option<&Path>) -> Resul
 }
 
 pub fn supports_pulse(devices: &str) -> bool {
+    supports_input(devices, "pulse")
+}
+
+pub fn supports_input(devices: &str, name: &str) -> bool {
     devices.lines().any(|line| {
         let mut fields = line.split_whitespace();
-        matches!(fields.next(), Some(flags) if flags.contains('D')) && fields.next() == Some("pulse")
+        matches!(fields.next(), Some(flags) if flags.contains('D')) && fields.next() == Some(name)
     })
 }
 

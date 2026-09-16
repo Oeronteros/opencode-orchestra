@@ -3,7 +3,8 @@ import assert from "node:assert/strict"
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceOverlayTriple, voiceSidecarNames, VOICE_MODEL_URL } from "../src/voice.js"
+import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceOverlayTriple, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_SHA256, VOICE_MODEL_URL } from "../src/voice.js"
+import { createHash } from "node:crypto"
 
 describe("voice installation upgrades", () => {
   it("refreshes old binaries, restores missing sidecars and repairs Unix execute permissions", async () => {
@@ -51,6 +52,36 @@ describe("voiceOverlayPackageFor", () => {
 describe("VOICE_MODEL_URL", () => {
   it("points at the whisper.cpp ggml base model", () => {
     assert.equal(VOICE_MODEL_URL, "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin")
+  })
+})
+
+describe("ensureVerifiedVoiceModel", () => {
+  it("atomically replaces a corrupt model only after hash verification", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "voice-model-"))
+    try {
+      await writeFile(path.join(root, VOICE_MODEL_FILE), "corrupt")
+      const model = Buffer.from("verified model fixture")
+      const sha256 = createHash("sha256").update(model).digest("hex")
+      await ensureVerifiedVoiceModel(root, {
+        sha256,
+        fetch: async () => new Response(model) as Response,
+      })
+      assert.deepEqual(await readFile(path.join(root, VOICE_MODEL_FILE)), model)
+      assert.match(VOICE_MODEL_SHA256, /^[a-f0-9]{64}$/)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("preserves an existing file when a download has the wrong hash", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "voice-model-"))
+    try {
+      const target = path.join(root, VOICE_MODEL_FILE)
+      await writeFile(target, "existing corrupt model")
+      await assert.rejects(ensureVerifiedVoiceModel(root, {
+        sha256: "0".repeat(64),
+        fetch: async () => new Response("bad download") as Response,
+      }), /SHA-256 mismatch/)
+      assert.equal(await readFile(target, "utf8"), "existing corrupt model")
+    } finally { await rm(root, { recursive: true, force: true }) }
   })
 })
 

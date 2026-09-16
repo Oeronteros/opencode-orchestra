@@ -18,7 +18,7 @@ import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/confi
 import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
-import { installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_URL } from "./voice.js"
+import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
 import { startVoiceWeb } from "./voice-web.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
@@ -290,12 +290,7 @@ function isExecutableFile(file: string): boolean {
 async function ensureVoiceModel(): Promise<void> {
   const dir = voiceModelDir(process.platform, process.env)
   if (dir === null) return
-  const target = path.join(dir, VOICE_MODEL_FILE)
-  if (fs.existsSync(target)) return
-  const response = await fetch(VOICE_MODEL_URL, { redirect: "follow", signal: AbortSignal.timeout(600_000) })
-  if (!response.ok) throw new Error(`Failed to download ${VOICE_MODEL_URL}: HTTP ${response.status}`)
-  await mkdir(dir, { recursive: true })
-  await writeFile(target, Buffer.from(await response.arrayBuffer()))
+  await ensureVerifiedVoiceModel(dir)
 }
 
 async function provisionVoiceOverlay(shouldProvision: boolean): Promise<ProvisionedDependency> {
@@ -710,6 +705,7 @@ function usage(): string {
     "  install     Configure OpenCode and provision companion MCPs",
     "  dashboard   Start the local telemetry dashboard",
     "  voice-web   OpenCode web with an inline offline microphone",
+    "  web         Alias for voice-web (use: opencode-orch web)",
     "              --upstream http://127.0.0.1:4096 --port 4097",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",
@@ -755,7 +751,7 @@ type ParsedCommand =
 
 function parseArguments(argv: string[]): ParsedCommand | "help" {
   if (argv[0] === "--help" || argv[0] === "-h") return "help"
-  if (argv[0] === "voice-web") {
+  if (argv[0] === "voice-web" || argv[0] === "web") {
     const options: { upstream?: string; port?: number } = {}
     for (let index = 1; index < argv.length; index++) {
       const flag = argv[index]

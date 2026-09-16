@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Mutex;
+use tokio::sync::{watch, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 mod sidecars;
 pub use sidecars::sidecar_file;
@@ -18,15 +19,15 @@ pub struct ServerConfig {
 
 #[derive(Debug)]
 pub struct Recording {
-    pub id: u64,
     pub wav: PathBuf,
     pub child: tokio::process::Child,
-    pub started: std::time::Instant,
+    pub folder: tempfile::TempDir,
 }
 
 pub struct AppState {
     pub recording: Mutex<Option<Recording>>,
-    pub next_id: Mutex<u64>,
+    pub pending: Mutex<Option<tempfile::TempDir>>,
+    pub transcription: Mutex<Option<watch::Sender<bool>>>,
     pub app_dir: PathBuf,
 }
 
@@ -72,12 +73,25 @@ pub fn parse_dshow_devices(stderr: &str) -> Vec<String> {
     out
 }
 
-pub fn ffmpeg_input_args(os: &str, device: Option<&str>) -> Vec<String> {
+pub fn ffmpeg_input_args(os: &str, device: Option<&str>) -> Result<Vec<String>, String> {
     match (os, device) {
-        ("linux", d) => vec!["-f".to_string(), "pulse".to_string(), "-i".to_string(), d.unwrap_or("default").to_string()],
-        (_, Some(d)) => vec!["-f".to_string(), "dshow".to_string(), "-i".to_string(), format!("audio={d}")],
-        _ => vec!["-f".to_string(), "wasapi".to_string(), "-i".to_string(), "default".to_string()],
+        ("linux", d) => Ok(vec!["-f".to_string(), "pulse".to_string(), "-i".to_string(), d.unwrap_or("default").to_string()]),
+        (_, Some(d)) => Ok(vec!["-f".to_string(), "dshow".to_string(), "-i".to_string(), format!("audio={d}")]),
+        _ => Err("no-mic: выбери микрофон DirectShow в настройках.".to_string()),
     }
+}
+
+fn command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command.kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    command
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder().connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15)).build().map_err(|e| format!("server-unreachable: {e}"))
 }
 
 fn sidecar_path(app: &AppHandle, base: &str) -> Result<PathBuf, String> {
@@ -95,14 +109,15 @@ async fn recording_ffmpeg(app: &AppHandle, needs_pulse: bool) -> Result<PathBuf,
     let mut details = Vec::new();
     for path in candidates {
         let probe = tokio::time::timeout(std::time::Duration::from_secs(5),
-            tokio::process::Command::new(&path).kill_on_drop(true).args(["-hide_banner", "-devices"]).output()).await;
+            command(&path).args(["-hide_banner", "-devices"]).output()).await;
         match probe {
             Ok(Ok(output)) if output.status.success() => {
                 let devices = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-                if !needs_pulse || sidecars::supports_pulse(&devices) {
+                let input = if needs_pulse { "pulse" } else if cfg!(target_os = "windows") { "dshow" } else { "lavfi" };
+                if sidecars::supports_input(&devices, input) {
                     return Ok(path);
                 }
-                details.push(format!("{}: нет входа PulseAudio; установи системный ffmpeg с поддержкой PulseAudio", path.display()));
+                details.push(format!("{}: нет входа {input}; установи ffmpeg с поддержкой {input}", path.display()));
             }
             Ok(Ok(output)) => details.push(format!("{}: {}", path.display(), String::from_utf8_lossy(&output.stderr).trim())),
             Ok(Err(error)) => details.push(format!("{}: {error}", path.display())),
@@ -114,7 +129,7 @@ async fn recording_ffmpeg(app: &AppHandle, needs_pulse: bool) -> Result<PathBuf,
 
 #[tauri::command]
 async fn health_check(host: String, port: u16) -> Result<bool, String> {
-    let resp = reqwest::get(format!("http://{host}:{port}/global/health"))
+    let resp = http_client()?.get(format!("http://{host}:{port}/global/health")).send()
         .await
         .map_err(|e| format!("server-unreachable: {e}"))?;
     if !resp.status().is_success() {
@@ -125,7 +140,7 @@ async fn health_check(host: String, port: u16) -> Result<bool, String> {
 
 #[tauri::command]
 async fn append_to_prompt(cfg: ServerConfig, text: String) -> Result<bool, String> {
-    let mut req = reqwest::Client::new()
+    let mut req = http_client()?
         .post(append_url(&cfg.host, cfg.port))
         .json(&serde_json::json!({ "text": text }));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
@@ -155,10 +170,11 @@ async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
     let ffmpeg = recording_ffmpeg(&app, false).await?;
-    let out = tokio::process::Command::new(ffmpeg)
+    let out = tokio::time::timeout(Duration::from_secs(5), command(ffmpeg)
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-        .output()
+        .output())
         .await
+        .map_err(|_| "no-mic: превышено время поиска микрофонов".to_string())?
         .map_err(|e| format!("no-mic: {e}"))?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let devices = parse_dshow_devices(&stderr);
@@ -173,27 +189,34 @@ async fn start_recording(
     app: AppHandle,
     state: State<'_, AppState>,
     device: Option<String>,
+    model: String,
 ) -> Result<bool, String> {
-    let id = {
-        let slot = state.recording.lock().map_err(|e| e.to_string())?;
-        if slot.is_some() {
-            return Err("busy: запись уже идёт".to_string());
-        }
-        let mut next = state.next_id.lock().map_err(|e| e.to_string())?;
-        let id = *next;
-        *next += 1;
-        id
-    };
-    let wav = state.app_dir.join(format!("record-{id}.wav"));
+    // Hold the async lock through initialization so two starts cannot open the mic.
+    let mut slot = state.recording.lock().await;
+    let transcribing = state.transcription.lock().await.is_some();
+    let pending = state.pending.lock().await.is_some();
+    if slot.is_some() || pending || transcribing {
+        return Err("busy: предыдущая запись ещё обрабатывается".to_string());
+    }
+    model_path(&app, &model)?;
+    sidecar_path(&app, "whisper")?;
+    let device = if cfg!(target_os = "windows") && device.as_deref().unwrap_or("").is_empty()
+        && std::env::var("VOICE_FFMPEG_TEST_INPUT").is_err() {
+        Some(list_microphones(app.clone()).await?.into_iter().next()
+            .ok_or("no-mic: микрофон не найден")?)
+    } else { device };
     std::fs::create_dir_all(&state.app_dir)
         .map_err(|e| format!("transcribe-failed: нет доступа к каталогу данных: {e}"))?;
+    let folder = tempfile::Builder::new().prefix("record-").tempdir_in(&state.app_dir)
+        .map_err(|e| format!("transcribe-failed: {e}"))?;
+    let wav = folder.path().join("audio.wav");
     let mut args = if let Ok(test_input) = std::env::var("VOICE_FFMPEG_TEST_INPUT") {
         vec!["-f".to_string(), "lavfi".to_string(), "-i".to_string(), test_input]
     } else {
-        ffmpeg_input_args(std::env::consts::OS, device.as_deref())
+        ffmpeg_input_args(std::env::consts::OS, device.as_deref())?
     };
     args.extend(
-        ["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y"]
+        ["-t", "120", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y"]
             .into_iter()
             .map(str::to_string),
     );
@@ -202,8 +225,7 @@ async fn start_recording(
     let ffmpeg = recording_ffmpeg(&app, needs_pulse).await?;
     let stderr_file = std::fs::File::create(wav.with_extension("stderr"))
         .map_err(|e| format!("no-ffmpeg: {e}"))?;
-    let mut child = tokio::process::Command::new(ffmpeg)
-        .kill_on_drop(true)
+    let mut child = command(ffmpeg)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -218,58 +240,42 @@ async fn start_recording(
             return Err(format!("{}: {}", if needs_pulse { "no-audio-server" } else { "no-mic" }, detail.trim()));
         }
     }
-    let rec = Recording {
-        id,
-        wav,
-        child,
-        started: std::time::Instant::now(),
-    };
-    *state.recording.lock().map_err(|e| e.to_string())? = Some(rec);
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(MAX_SECONDS)).await;
-        // No .await while the std lock is held: MutexGuard over Recording
-        // (owns a tokio Child) is !Send, so `child.kill().await` under the
-        // lock breaks Send. `start_kill()` is sync — same force-kill semantics.
-        if let Ok(mut slot) = app_clone.state::<AppState>().recording.lock() {
-            if let Some(rec) = slot.as_mut() {
-                if rec.id == id {
-                    let _ = rec.child.start_kill();
-                }
-            }
-        }
-    });
+    // FFmpeg owns the duration limit and finalizes the WAV itself (-t).
+    *slot = Some(Recording { wav, child, folder });
     Ok(true)
 }
 
 #[tauri::command]
 async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
-    let mut rec = state
-        .recording
-        .lock()
-        .map_err(|e| e.to_string())?
+    let mut slot = state.recording.lock().await;
+    let mut rec = slot
         .take()
         .ok_or_else(|| "idle: запись не запущена".to_string())?;
-    if let Some(mut stdin) = rec.child.stdin.take() {
-        use tokio::io::AsyncWriteExt as _;
-        let _ = stdin.write_all(b"q\n").await;
-        let _ = stdin.shutdown().await;
-    }
-    let finished = tokio::time::timeout(std::time::Duration::from_secs(5), rec.child.wait()).await;
+    let finished = tokio::time::timeout(Duration::from_secs(5), async {
+        if let Some(mut stdin) = rec.child.stdin.take() {
+            use tokio::io::AsyncWriteExt as _;
+            let _ = stdin.write_all(b"q\n").await;
+            let _ = stdin.shutdown().await;
+        }
+        rec.child.wait().await
+    }).await;
     if finished.is_err() {
         let _ = rec.child.kill().await;
         let _ = rec.child.wait().await;
+        return Err("empty-recording: ffmpeg не завершил запись вовремя. Попробуй снова.".to_string());
+    }
+    let exit = finished.unwrap().map_err(|e| format!("no-mic: {e}"))?;
+    if !exit.success() {
+        let detail = std::fs::read_to_string(rec.wav.with_extension("stderr")).unwrap_or_default();
+        return Err(format!("no-mic: {}", detail.trim()));
     }
     let size = std::fs::metadata(&rec.wav)
         .map(|m| m.len())
         .unwrap_or(0);
     if size < MIN_WAV_BYTES {
-        let detail = std::fs::read_to_string(rec.wav.with_extension("stderr")).unwrap_or_default();
-        if matches!(finished, Ok(Ok(exit)) if !exit.success()) {
-            return Err(format!("no-mic: {}", detail.trim()));
-        }
         return Err("empty-recording: запись пустая (короче полсекунды). Нажми Record, дождись и потом Stop.".to_string());
     }
+    *state.pending.lock().await = Some(rec.folder);
     Ok(rec.wav.to_string_lossy().into_owned())
 }
 
@@ -281,22 +287,52 @@ pub fn allowed_model_file(model: &str) -> Result<String, String> {
     }
 }
 
-#[tauri::command]
-async fn transcribe(
-    app: AppHandle,
-    wav: String,
-    model: String,
-) -> Result<String, String> {
-    let file = allowed_model_file(&model)?;
+fn model_path(app: &AppHandle, model: &str) -> Result<PathBuf, String> {
+    let file = allowed_model_file(model)?;
     let model_path = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("model-missing: {e}"))?
         .join("models")
         .join(&file);
-    if !model_path.exists() {
-        return Err("model-missing: модель распознавания не скачана. Нажми «Скачать модель» в настройках (нужен интернет один раз).".to_string());
+    if !model_path.is_file() {
+        return Err(format!("model-missing: нет {}. Для base запусти opencode-orchestra install; для small см. инструкцию в voice-overlay/README.md.", model_path.display()));
     }
+    Ok(model_path)
+}
+
+#[tauri::command]
+async fn cancel_transcription(state: State<'_, AppState>) -> Result<(), String> {
+    // Keep the slot occupied until the process has actually exited.
+    let slot = state.transcription.lock().await;
+    if let Some(sender) = slot.as_ref() {
+        let _ = sender.send(true);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn transcribe(app: AppHandle, state: State<'_, AppState>, wav: String, model: String) -> Result<String, String> {
+    let mut slot = state.transcription.lock().await;
+    if slot.is_some() { return Err("busy: распознавание уже выполняется".to_string()); }
+    let mut pending = state.pending.lock().await;
+    if pending.as_ref().map(|folder| folder.path().join("audio.wav")) != Some(PathBuf::from(&wav)) {
+        return Err("transcribe-failed: неизвестная запись".to_string());
+    }
+    let folder = pending.take().unwrap();
+    drop(pending);
+    let (sender, receiver) = watch::channel(false);
+    *slot = Some(sender);
+    drop(slot);
+    let result = transcribe_file(&app, &wav, &model, receiver).await;
+    // The process has exited before TempDir removes WAV, stderr and transcript.
+    drop(folder);
+    *state.transcription.lock().await = None;
+    result
+}
+
+async fn transcribe_file(app: &AppHandle, wav: &str, model: &str, mut cancel: watch::Receiver<bool>) -> Result<String, String> {
+    let model_path = model_path(app, model)?;
     let whisper = sidecar_path(&app, "whisper")?;
     let out_base = format!("{wav}.out");
     let args = vec![
@@ -305,24 +341,32 @@ async fn transcribe(
         "-l".to_string(),
         "ru".to_string(),
         "-f".to_string(),
-        wav.clone(),
+        wav.to_string(),
         "-otxt".to_string(),
         "-of".to_string(),
         out_base.clone(),
     ];
-    let output = tokio::time::timeout(std::time::Duration::from_secs(600), async {
-        tokio::process::Command::new(whisper)
-            .args(&args)
-            .output()
-            .await
-    })
-        .await
-        .map_err(|_| "transcribe-failed: превышено время ожидания распознавания".to_string())?
-        .map_err(|e| format!("transcribe-failed: не удалось запустить whisper: {e}"))?;
-    if !output.status.success() {
+    // Redirect output to files: wait() must not deadlock on full stderr pipes.
+    let stderr = std::fs::File::create(format!("{wav}.whisper.stderr")).map_err(|e| format!("transcribe-failed: {e}"))?;
+    let mut child = command(whisper).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(stderr)
+        .spawn().map_err(|e| format!("transcribe-failed: не удалось запустить whisper: {e}"))?;
+    let status = tokio::select! {
+        status = child.wait() => status.map_err(|e| format!("transcribe-failed: {e}"))?,
+        _ = cancel.changed() => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err("cancelled: распознавание отменено".to_string());
+        }
+        _ = tokio::time::sleep(Duration::from_secs(600)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err("transcribe-failed: превышено время ожидания распознавания".to_string());
+        }
+    };
+    if !status.success() {
         return Err(format!(
             "transcribe-failed: whisper завершился с кодом {}",
-            output.status.code().unwrap_or(-1)
+            status.code().unwrap_or(-1)
         ));
     }
     let text = std::fs::read_to_string(format!("{out_base}.txt"))
@@ -366,7 +410,7 @@ pub struct SessionInfo {
 
 #[tauri::command]
 async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
-    let mut req = reqwest::Client::new().get(session_url(&cfg.host, cfg.port));
+    let mut req = http_client()?.get(session_url(&cfg.host, cfg.port));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
     }
@@ -394,7 +438,7 @@ async fn send_to_session(cfg: ServerConfig, session_id: String, text: String) ->
     if session_id.is_empty() {
         return Err("session-not-found: выбери сессию в настройках.".to_string());
     }
-    let mut req = reqwest::Client::new()
+    let mut req = http_client()?
         .post(message_url(&cfg.host, cfg.port, &session_id))
         .json(&serde_json::json!({ "parts": [{ "type": "text", "text": text }] }));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
@@ -429,7 +473,8 @@ fn main() {
                 .map_err(|e| e.to_string())?;
             app.manage(AppState {
                 recording: Mutex::new(None),
-                next_id: Mutex::new(1),
+                pending: Mutex::new(None),
+                transcription: Mutex::new(None),
                 app_dir,
             });
             Ok(())
@@ -441,6 +486,7 @@ fn main() {
             start_recording,
             stop_recording,
             transcribe,
+            cancel_transcription,
             list_sessions,
             send_to_session
         ])
@@ -488,12 +534,12 @@ mod tests {
 
     #[test]
     fn ffmpeg_args_mirror_ts() {
-        assert_eq!(ffmpeg_input_args("linux", None), vec!["-f", "pulse", "-i", "default"]);
+        assert_eq!(ffmpeg_input_args("linux", None).unwrap(), vec!["-f", "pulse", "-i", "default"]);
         assert_eq!(
-            ffmpeg_input_args("windows", Some("Mic")),
+            ffmpeg_input_args("windows", Some("Mic")).unwrap(),
             vec!["-f", "dshow", "-i", "audio=Mic"]
         );
-        assert_eq!(ffmpeg_input_args("windows", None), vec!["-f", "wasapi", "-i", "default"]);
+        assert!(ffmpeg_input_args("windows", None).unwrap_err().starts_with("no-mic:"));
     }
 
     #[test]

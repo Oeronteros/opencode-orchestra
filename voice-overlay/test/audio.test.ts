@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_SECONDS, SAMPLE_RATE, ffmpegInputArgs, parseDshowDevices } from "../src/lib/audio.js";
+import { MAX_SECONDS, SAMPLE_RATE, ffmpegInputArgs, ffmpegOutputArgs, parseDshowDevices } from "../src/lib/audio.js";
 
 const DSHOW_SAMPLE = [
   "[dshow @ 0x123] DirectShow audio devices",
@@ -33,8 +33,8 @@ describe("ffmpegInputArgs", () => {
       "-f", "dshow", "-i", "audio=Microphone (Realtek Audio)",
     ]);
   });
-  it("windows wasapi fallback without device", () => {
-    assert.deepEqual(ffmpegInputArgs("win32", undefined), ["-f", "wasapi", "-i", "default"]);
+  it("requires a resolved Windows microphone instead of guessing an unsupported input", () => {
+    assert.throws(() => ffmpegInputArgs("win32", undefined), /no-mic/);
   });
 });
 
@@ -42,5 +42,6 @@ describe("recording profile", () => {
   it("16kHz mono with 120s cap", () => {
     assert.equal(SAMPLE_RATE, 16000);
     assert.equal(MAX_SECONDS, 120);
+    assert.deepEqual(ffmpegOutputArgs("audio.wav").slice(0, 2), ["-t", "120"]);
   });
 });

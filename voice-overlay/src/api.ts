@@ -15,8 +15,12 @@ export function listMicrophones(): Promise<string[]> {
   return invoke<string[]>("list_microphones");
 }
 
-export function startRecording(device?: string): Promise<boolean> {
-  return invoke<boolean>("start_recording", { device: device ?? null });
+export function startRecording(device: string | undefined, model: string): Promise<boolean> {
+  return invoke<boolean>("start_recording", { device: device ?? null, model });
+}
+
+export function cancelTranscription(): Promise<void> {
+  return invoke<void>("cancel_transcription");
 }
 
 export function stopRecording(): Promise<string> {

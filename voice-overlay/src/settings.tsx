@@ -74,7 +74,7 @@ export function SettingsView(props: {
         <label>
           Микрофон
           <select value={draft.device} onChange={(e) => set({ device: e.target.value })}>
-            <option value="">По умолчанию</option>
+            <option value="">Автоматически (Windows: первый доступный)</option>
             {props.devices.map((d) => (
               <option key={d} value={d}>
                 {d}

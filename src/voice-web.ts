@@ -12,7 +12,7 @@ export function injectVoice(html: string): string {
   return html.replace(/<\/head>/i, '<script src="/__orchestra_voice/client.js" defer></script></head>')
 }
 
-export async function transcribeWebAudio(audio: Buffer): Promise<string> {
+export async function transcribeWebAudio(audio: Buffer, signal?: AbortSignal): Promise<string> {
   if (audio.length < 46 || audio.length > 44 + 120 * 32000 || audio.toString('ascii', 0, 4) !== 'RIFF' || audio.toString('ascii', 8, 16) !== 'WAVEfmt ' || audio.readUInt32LE(16) !== 16 || audio.readUInt16LE(20) !== 1 || audio.readUInt16LE(22) !== 1 || audio.readUInt32LE(24) !== 16000 || audio.readUInt32LE(28) !== 32000 || audio.readUInt16LE(32) !== 2 || audio.readUInt16LE(34) !== 16 || audio.toString('ascii', 36, 40) !== 'data' || audio.readUInt32LE(40) !== audio.length - 44 || audio.readUInt32LE(4) !== audio.length - 8 || audio.length % 2) throw new Error('Invalid PCM WAV recording')
   const managed = voiceManagedDir(process.platform, process.env)
   const models = voiceModelDir(process.platform, process.env)
@@ -22,13 +22,13 @@ export async function transcribeWebAudio(audio: Buffer): Promise<string> {
   try {
     const wav = path.join(folder, 'audio.wav')
     await writeFile(wav, audio)
-    await run(path.join(managed, names[1]!), ['-m', path.join(models, VOICE_MODEL_FILE), '-l', 'ru', '-f', wav, '-otxt', '-of', wav], { timeout: 600_000, windowsHide: true })
+    await run(path.join(managed, names[1]!), ['-m', path.join(models, VOICE_MODEL_FILE), '-l', 'ru', '-f', wav, '-otxt', '-of', wav], { timeout: 600_000, windowsHide: true, signal })
     return (await readFile(`${wav}.txt`, 'utf8')).trim()
   } finally { await rm(folder, { recursive: true, force: true }) }
 }
 
 /** Loopback proxy keeps the web app and microphone API on the same origin. */
-export async function startVoiceWeb(options: { upstream?: string; port?: number; transcribe?: (audio: Buffer) => Promise<string> } = {}) {
+export async function startVoiceWeb(options: { upstream?: string; port?: number; transcribe?: (audio: Buffer, signal?: AbortSignal) => Promise<string> } = {}) {
   const upstream = new URL(options.upstream ?? 'http://127.0.0.1:4096')
   if (upstream.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(upstream.hostname) || upstream.username || upstream.password || upstream.pathname !== '/' || upstream.search || upstream.hash) {
     throw new Error('--upstream must be a local HTTP origin, for example http://127.0.0.1:4096')
@@ -51,6 +51,9 @@ export async function startVoiceWeb(options: { upstream?: string; port?: number;
       res.setHeader('Content-Type', 'application/json')
       if (busy) { res.writeHead(409).end(JSON.stringify({ error: 'Распознавание уже выполняется. Попробуйте позже.' })); return }
       busy = true
+      const controller = new AbortController()
+      req.once('aborted', () => controller.abort())
+      res.once('close', () => { if (!res.writableEnded) controller.abort() })
       try {
         const chunks: Buffer[] = []
         let size = 0
@@ -60,9 +63,11 @@ export async function startVoiceWeb(options: { upstream?: string; port?: number;
           chunks.push(Buffer.from(chunk))
         }
         if (!size) { res.writeHead(400).end(JSON.stringify({ error: 'Пустая запись.' })); return }
-        const text = await (options.transcribe ?? transcribeWebAudio)(Buffer.concat(chunks))
+        const text = await (options.transcribe ?? transcribeWebAudio)(Buffer.concat(chunks), controller.signal)
+        if (controller.signal.aborted || res.destroyed) return
         res.end(JSON.stringify({ text }))
       } catch (error) {
+        if (controller.signal.aborted || res.destroyed) return
         console.error('Voice transcription:', error)
         res.writeHead(500).end(JSON.stringify({ error: 'Не удалось распознать речь. Проверьте установку voice-overlay и модели ggml-base.bin. Подробности в терминале.' }))
       } finally { busy = false }

@@ -1,5 +1,7 @@
 import path from "node:path"
-import { chmod, copyFile, mkdir, readFile, readdir } from "node:fs/promises"
+import { createReadStream } from "node:fs"
+import { chmod, copyFile, mkdir, open, readFile, readdir, mkdtemp, rename, rm } from "node:fs/promises"
+import { createHash } from "node:crypto"
 
 const SCOPE = "@oeronteros-1/voice-overlay"
 
@@ -7,6 +9,51 @@ export const VOICE_MODEL_URL =
   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
 
 export const VOICE_MODEL_FILE = "ggml-base.bin"
+// Hugging Face LFS SHA-256 for ggml-base.bin (verified 2026-09-16).
+export const VOICE_MODEL_SHA256 = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+
+async function sha256File(file: string): Promise<string | null> {
+  const hash = createHash("sha256")
+  try {
+    for await (const chunk of createReadStream(file)) hash.update(chunk)
+    return hash.digest("hex")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+}
+
+/** Keep the installed model intact until a complete, verified download is ready. */
+export async function ensureVerifiedVoiceModel(dir: string, options: {
+  url?: string; sha256?: string; fetch?: typeof fetch
+} = {}): Promise<void> {
+  const target = path.join(dir, VOICE_MODEL_FILE)
+  const digest = options.sha256 ?? VOICE_MODEL_SHA256
+  if (await sha256File(target) === digest) return
+  const response = await (options.fetch ?? fetch)(options.url ?? VOICE_MODEL_URL, {
+    redirect: "follow", signal: AbortSignal.timeout(600_000),
+  })
+  if (!response.ok) throw new Error(`Failed to download voice model: HTTP ${response.status}`)
+  await mkdir(dir, { recursive: true })
+  const staging = await mkdtemp(path.join(dir, ".download-"))
+  try {
+    const downloaded = path.join(staging, VOICE_MODEL_FILE)
+    if (response.body === null) throw new Error("Voice model download returned an empty body.")
+    const hash = createHash("sha256")
+    const file = await open(downloaded, "wx")
+    try {
+      for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+        hash.update(chunk)
+        await file.write(chunk)
+      }
+      await file.sync()
+    } finally { await file.close() }
+    if (hash.digest("hex") !== digest) {
+      throw new Error("Voice model SHA-256 mismatch; existing model was preserved. Retry installation.")
+    }
+    await rename(downloaded, target)
+  } finally { await rm(staging, { recursive: true, force: true }) }
+}
 
 export function voiceOverlayPackageFor(platform: string, arch: string): string | null {
   if (platform === "linux" && arch === "x64") return `${SCOPE}-linux-x64`

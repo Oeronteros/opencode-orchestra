@@ -46,6 +46,10 @@ svg { width: 20px; height: 20px; display: block; }
 .overlay-footer { margin-top: auto; border-top: 1px solid #ffffff09; padding: 14px 16px; font-size: 11px; color: #8e9e93; text-align: center; }
 .transcript, .error-card, .notice { margin: 0 16px 16px; border: 1px solid #ffffff12; border-radius: 12px; padding: 13px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .transcript { background: #ffffff04; }
+.transcript textarea { display: block; width: 100%; resize: vertical; margin: 8px 0; padding: 8px; font: inherit; color: inherit; background: #141b17; border: 1px solid #39443c; border-radius: 8px; }
+.transcript textarea:focus-visible { outline: 2px solid #c2eda8; outline-offset: 2px; }
+.transcript-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.transcript-actions button { padding: 7px 10px; }
 .transcript p { margin: 6px 0 0; white-space: pre-wrap; max-height: 180px; overflow: auto; }
 .section-label { font-size: 10px; letter-spacing: .06em; color: #9cad9e; }
 .notice { background: #b8e49d09; color: #bed2b3; }

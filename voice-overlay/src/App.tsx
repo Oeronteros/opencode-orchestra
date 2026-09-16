@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   appendToPrompt,
+  cancelTranscription,
   listMicrophones,
   listSessions,
   sendToSession,
@@ -38,6 +39,8 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [sending, setSending] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [recognizing, setRecognizing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const operation = useRef(false);
   const timer = useRef<number | null>(null);
@@ -85,9 +88,8 @@ export function App() {
     setError(null);
     setErrorDetail(null);
     setNotice(null);
-    setPreview("");
     try {
-      await startRecording(settings.device === "" ? undefined : settings.device);
+      await startRecording(settings.device === "" ? undefined : settings.device, settings.model);
     } catch (e) {
       fail(String(e));
       return;
@@ -119,12 +121,21 @@ export function App() {
       }
       let text: string;
       try {
+        setRecognizing(true);
         text = await transcribe(wav, settings.model);
       } catch (e) {
+        if (String(e).startsWith("cancelled:")) {
+          setNotice("Распознавание отменено. Предыдущий текст сохранён.");
+          setStatus("idle");
+          return;
+        }
         fail(String(e));
         return;
+      } finally {
+        setRecognizing(false);
+        setCancelling(false);
       }
-      setPreview(text);
+      setPreview(previous => settings.target === "web" && previous ? `${previous}\n${text}` : text);
       if (settings.target === "web") {
         // No auto-send in web mode (spec Section 6): user confirms via send button.
         setNotice(auto ? "Достигнут лимит 120 секунд — нажми «Отправить в сессию»" : "Проверь текст и нажми «Отправить в сессию»");
@@ -133,7 +144,7 @@ export function App() {
       }
       try {
         await appendToPrompt(settings, text);
-        setNotice(auto ? "Достигнут лимит 120 секунд — вставлено в промпт" : "Вставлено в промпт");
+        setNotice((auto ? "Достигнут лимит 120 секунд. " : "") + "Передано серверу. Проверь текст в TUI; если он не появился — скопируй его ниже.");
         setStatus("idle");
       } catch (e) {
         const message = String(e);
@@ -155,13 +166,19 @@ export function App() {
   };
 
   const onSend = async () => {
-    if (settings.sessionId === "" || preview === "") return;
+    if (operation.current || !preview.trim() || (settings.target === "web" && settings.sessionId === "")) return;
+    operation.current = true;
     setSending(true);
     setError(null);
     try {
-      await sendToSession(settings, settings.sessionId, preview);
-      setNotice("Отправлено в сессию");
-      setPreview("");
+      if (settings.target === "web") {
+        await sendToSession(settings, settings.sessionId, preview);
+        setNotice("Отправлено в сессию");
+        setPreview("");
+      } else {
+        await appendToPrompt(settings, preview);
+        setNotice("Передано серверу. Проверь текст в TUI перед отправкой.");
+      }
       setStatus("idle");
     } catch (e) {
       const message = String(e);
@@ -177,8 +194,20 @@ export function App() {
       }
       fail(message);
     } finally {
+      operation.current = false;
       setSending(false);
     }
+  };
+
+  const onCopy = async () => {
+    try { await navigator.clipboard.writeText(preview); setNotice("Текст скопирован"); }
+    catch { setNotice("Не удалось открыть буфер обмена. Выдели и скопируй текст вручную."); }
+  };
+
+  const onCancel = async () => {
+    setCancelling(true);
+    try { await cancelTranscription(); }
+    catch (e) { setNotice(String(e)); setCancelling(false); }
   };
 
   if (showSettings) {
@@ -200,7 +229,7 @@ export function App() {
   }
 
   const busy = starting || sending || status === "recording" || status === "transcribing";
-  const canSend = preview !== "" && settings.target === "web" && status === "idle" && !sending;
+  const canSend = preview.trim() !== "" && !busy;
   return (
     <main className="overlay-shell" data-status={status}>
       <WindowHeader busy={busy} />
@@ -229,12 +258,18 @@ export function App() {
           <span className="meter-divider">·</span><span>Локально</span>
         </div>
       </section>
-      {preview !== "" && <section className="transcript"><span className="section-label">Распознанный текст</span><p>{preview}</p></section>}
-      {settings.target === "web" && preview !== "" && status === "idle" && (
-        <button className="primary-button send-button" type="button" disabled={!canSend || settings.sessionId === ""} onClick={() => void onSend()}>
-          Отправить в сессию
-        </button>
-      )}
+      {recognizing && <button type="button" className="send-button" disabled={cancelling} onClick={() => void onCancel()}>{cancelling ? "Отменяем…" : "Отменить распознавание"}</button>}
+      {preview !== "" && <section className="transcript">
+        <label className="section-label" htmlFor="voice-draft">Распознанный текст — можно исправить</label>
+        <textarea id="voice-draft" value={preview} disabled={busy} onChange={e => setPreview(e.target.value)} rows={4} />
+        <div className="transcript-actions">
+          <button type="button" onClick={() => void onCopy()}>Копировать</button>
+          <button type="button" disabled={busy} onClick={() => { setPreview(""); setNotice(null); }}>Удалить</button>
+          <button type="button" disabled={!canSend || (settings.target === "web" && settings.sessionId === "")} onClick={() => void onSend()}>
+            {settings.target === "web" ? "Отправить в сессию" : "Повторить вставку в TUI"}
+          </button>
+        </div>
+      </section>}
       {notice !== null && <p className="notice" role="status">{notice}</p>}
       {error !== null && <div className="error-card" role="alert"><p>{error}</p>{errorDetail && <details><summary>Подробности ошибки</summary><pre>{errorDetail}</pre></details>}</div>}
       <footer className="overlay-footer">{settings.target === "tui" ? "Текст появится в строке ввода" : "Отправка после вашего подтверждения"}</footer>

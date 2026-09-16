@@ -20,9 +20,9 @@ export function parseDshowDevices(ffmpegStderr: string): string[] {
 export function ffmpegInputArgs(os: OsKind, device: string | undefined): string[] {
   if (os === "linux") return ["-f", "pulse", "-i", device ?? "default"];
   if (device !== undefined) return ["-f", "dshow", "-i", `audio=${device}`];
-  return ["-f", "wasapi", "-i", "default"];
+  throw new Error("no-mic: выбери микрофон DirectShow в настройках.");
 }
 
 export function ffmpegOutputArgs(wavPath: string): string[] {
-  return ["-ar", String(SAMPLE_RATE), "-ac", String(CHANNELS), "-c:a", "pcm_s16le", "-y", wavPath];
+  return ["-t", String(MAX_SECONDS), "-ar", String(SAMPLE_RATE), "-ac", String(CHANNELS), "-c:a", "pcm_s16le", "-y", wavPath];
 }
