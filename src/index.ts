@@ -22,7 +22,7 @@ import { calcCost } from "./pricing/cost.js"
 import { resolvePricingSync, type ResolverConfig } from "./pricing/resolver.js"
 import { detectMcpPresence, resolvePluginVersion, PACKAGE_NAME, type PluginStatus } from "./plugin-status.js"
 import { createGitWorktreeAdapter } from "./orchestration/worktree-adapter.js"
-import { OrchestrationRunState, type DispatchLease } from "./orchestration/run-state.js"
+import { OrchestrationRunState } from "./orchestration/run-state.js"
 import { OrchestrationStateStore } from "./orchestration/state-store.js"
 import { OrchestrationActionInbox } from "./orchestration/action-inbox.js"
 import { releasePlanMode, type ReminderMessage } from "./routing/plan-reminder.js"
@@ -367,7 +367,6 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     },
   )
   if (orchestra.orchestration.persistence.enabled) actionInbox.start()
-  const nativeLeases = new Map<string, DispatchLease>()
   const verificationCalls = new Map<string, { sessionID: string; command: string }>()
   const autoAcceptLive = createLiveAutoAccept(directory, rawOptions)
   const prompts = await loadPrompts()
@@ -576,7 +575,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       mutable.command.orchestra ??= {
         description: "Classify a task and execute it through orch-lead",
         agent: "orch-lead",
-        template: "Call orchestra_route for this task: $ARGUMENTS. Execute only ready sealed nodes through orchestra_dispatch, passing each nodeId and unchanged TaskContract. For parallel implementation, call orchestration_prepare_edit_plan with baseSha plus non-overlapping file/resource ownership, run each orch-editor in its isolated workspace, validate each commit from the sealed plan, then call orch-integrator once. Always run aggregate verification before completion.",
+        template: "Call orchestra_route for this task: $ARGUMENTS. Execute only ready sealed nodes through orchestra_dispatch, passing each nodeId and unchanged TaskContract. For parallel implementation, call orchestration_prepare_edit_plan with baseSha plus non-overlapping file/resource ownership, dispatch each orch-editor through orchestra_dispatch so the runtime creates its isolated worktree, validate each commit from the sealed plan, then dispatch orch-integrator once through orchestra_dispatch. Always run aggregate verification before completion.",
       }
       mutable.command.loop ??= {
         description: "Drive one goal to completion through bounded orch-lead iterations",
@@ -632,7 +631,6 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       pendingMcpFailures.clear()
       await stateStore.flush().catch(() => undefined)
       coordinator.dispose()
-      nativeLeases.clear()
       verificationCalls.clear()
       sessionAgent.clear()
       sessionModel.clear()
@@ -691,20 +689,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         verificationCalls.set(callID, { sessionID, command: output.args.command })
       }
       if (tool === "task" && (output?.args?.subagent_type?.startsWith("orch-") || sessionAgent.get(sessionID)?.startsWith("orch-") || coordinator.snapshot(sessionID))) {
-        const args = output?.args
-        const node = typeof args?.description === "string" ? coordinator.sealedNode(sessionID, args.description) : undefined
-        if (coordinator.sessionContext(sessionID) || !node || !["orch-editor", "orch-integrator"].includes(node.agent)
-          || args?.subagent_type !== node.agent || args?.task_id) {
-          throw new Error("Orchestra native task requires a sealed editor/integrator nodeId as description, the assigned subagent_type, and a fresh task. Use orchestra_dispatch for evidence.")
-        }
-        const rootSessionID = coordinator.rootSessionID(sessionID)
-        const budget = coordinator.updateBudgetUsage(rootSessionID, await ledger.usageTotals(rootSessionID))
-        if (budget?.status === "exceeded") throw new Error(budget.reason ?? "The task budget is exhausted.")
-        const result = await coordinator.acquire({ parentSessionID: sessionID, nodeId: node.id, agent: node.agent, task: node.contract.objective, contract: node.contract })
-        if (!result.ok) throw new Error(result.error)
-        nativeLeases.set(callID, result.lease)
-        args.prompt = `Sealed TaskContract (do not widen):\n${JSON.stringify(node.contract)}\nValidated editor commits: ${JSON.stringify(coordinator.validatedCommits(sessionID))}\n\n${args.prompt ?? ""}`
-        if (node.agent === "orch-integrator") args.prompt += "\nUse one git cherry-pick invocation for the complete ordered commit list. On conflict run git cherry-pick --abort and report any rollback failure. Never cherry-pick commits in separate transactions."
+        throw new Error("Native task is disabled for Orchestra nodes because it cannot guarantee an isolated worktree or lifecycle accounting. Use orchestra_dispatch with the sealed nodeId and TaskContract.")
       }
       const server = mcpServerForTool(tool)
       if (!server) return
@@ -714,13 +699,18 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     "tool.execute.after": async ({ callID }, output) => {
       const verification = verificationCalls.get(callID)
       if (verification) {
-        coordinator.recordCommandVerification(verification.sessionID, verification.command, true, output.output)
+        const metadata = output.metadata && typeof output.metadata === "object"
+          ? output.metadata as { exit?: unknown; timeout?: unknown }
+          : undefined
+        const exit = typeof metadata?.exit === "number" ? metadata.exit : undefined
+        const succeeded = exit === 0 && metadata?.timeout !== true
+        const evidence = succeeded
+          ? output.output
+          : exit === undefined
+            ? "Command result did not include a trustworthy exit code."
+            : `Command exited with code ${exit}.${output.output ? ` ${output.output}` : ""}`
+        coordinator.recordCommandVerification(verification.sessionID, verification.command, succeeded, evidence)
         verificationCalls.delete(callID)
-      }
-      const lease = nativeLeases.get(callID)
-      if (lease) {
-        coordinator.complete(lease, true)
-        nativeLeases.delete(callID)
       }
       await recordMcpCompletion(callID, true, output.output.length)
     },
@@ -754,11 +744,6 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
           if (verification) {
             coordinator.recordCommandVerification(verification.sessionID, verification.command, false, "OpenCode reported a tool execution error.")
             verificationCalls.delete(part.callID)
-          }
-          const lease = nativeLeases.get(part.callID)
-          if (lease) {
-            coordinator.complete(lease, false, "Native worker task failed.")
-            nativeLeases.delete(part.callID)
           }
           await recordMcpCompletion(part.callID, false, 0, part.state.time)
         }

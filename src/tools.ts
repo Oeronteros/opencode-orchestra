@@ -10,7 +10,7 @@ import { createClassifierCache } from "./routing/classifier-cache.js"
 import { decideEscalation } from "./routing/escalation.js"
 import { planTask, validatePlan } from "./routing/planner.js"
 import { validateOwnership, validateChangedFiles } from "./orchestration/ownership.js"
-import { assertCommitDescendsFromBase, collectCommitChanges, systemGit } from "./orchestration/worktrees.js"
+import { assertCommitDescendsFromBase, collectCommitChanges, createEditorWorktree, systemGit, type GitRunner } from "./orchestration/worktrees.js"
 import type { TaskContract } from "./orchestration/contracts.js"
 import { OrchestrationRunState } from "./orchestration/run-state.js"
 import { ADAPTIVE_TRIGGERS, planAdaptiveExtension } from "./orchestration/adaptive.js"
@@ -49,6 +49,7 @@ export interface DispatchContext {
   agents: AgentSet
   directory: string
   coordinator?: OrchestrationRunState
+  git?: GitRunner
 }
 
 const NESTED_EVIDENCE_AGENTS = new Set([
@@ -93,6 +94,24 @@ function splitModelId(id: string): { providerID: string; modelID: string } {
     throw Object.assign(new Error("Model ID must use provider/model format"), { status: 400 })
   }
   return { providerID: id.slice(0, separator), modelID: id.slice(separator + 1) }
+}
+
+function assistantFailure(info: unknown, parts: unknown[]): Error | undefined {
+  if (info && typeof info === "object" && "error" in info && info.error && typeof info.error === "object") {
+    const failure = info.error as { name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; data?: unknown }
+    const data = failure.data && typeof failure.data === "object"
+      ? failure.data as { message?: unknown; status?: unknown; statusCode?: unknown }
+      : undefined
+    const message = String(data?.message ?? failure.message ?? failure.name ?? "Assistant generation failed")
+    const status = Number(data?.statusCode ?? data?.status ?? failure.statusCode ?? failure.status)
+    return Object.assign(new Error(message), Number.isFinite(status) ? { status } : {})
+  }
+  const failedTool = parts.find((part) => {
+    if (!part || typeof part !== "object" || !("type" in part) || part.type !== "tool" || !("state" in part)) return false
+    const state = part.state
+    return Boolean(state && typeof state === "object" && "status" in state && state.status === "error")
+  }) as { state?: { error?: unknown } } | undefined
+  return failedTool ? new Error(String(failedTool.state?.error ?? "Worker tool execution failed")) : undefined
 }
 
 interface LeadRouting {
@@ -230,7 +249,7 @@ export function createOrchestraTools(
           const message = error instanceof Error ? error.message : "Unable to seal the edit plan."
           return JSON.stringify({ ok: false, violations: [message], plan }, null, 2)
         }
-        return JSON.stringify({ ok: true, plan, ...(run ? { run } : {}), parallelEditors: Math.min(config.orchestration.parallelEditors, args.partitions.length), worktreeRoot: config.orchestration.worktreeRoot ?? ".orchestra/worktrees" }, null, 2)
+        return JSON.stringify({ ok: true, plan, ...(run ? { run } : {}), parallelEditors: Math.min(config.orchestration.parallelEditors, args.partitions.length), worktreeRoot: config.orchestration.worktreeRoot ?? ".orchestra/worktrees", next: "Dispatch each ready orch-editor through orchestra_dispatch. The runtime creates its isolated Git worktree from baseSha." }, null, 2)
       },
     }),
     orchestration_validate_commit: tool({
@@ -283,9 +302,7 @@ export function createOrchestraTools(
         if (!agent || agent.mode !== "subagent") {
           return JSON.stringify({ ok: false, error: "Unknown Orchestra subagent." })
         }
-        if (!supportsFallbackDispatch(args.agent)) {
-          return JSON.stringify({ ok: false, error: "This agent requires the native workspace-aware dispatch path." })
-        }
+        if (!supportsFallbackDispatch(args.agent)) return JSON.stringify({ ok: false, error: "This agent cannot be dispatched through Orchestra." })
         const context = rawContext as ToolContextLike
         if (!context.sessionID) return JSON.stringify({ ok: false, error: "A parent session is required." })
         const parentSessionID = context.sessionID
@@ -303,7 +320,7 @@ export function createOrchestraTools(
         if (models.length === 0) {
           return JSON.stringify({ ok: false, error: "No model is available for this agent." })
         }
-        const directory = context.directory || context.worktree || dispatch.directory
+        let directory = context.worktree || context.directory || dispatch.directory
         try {
           const budget = await syncTaskBudget(parentSessionID)
           if (budget?.status === "exceeded") {
@@ -326,8 +343,34 @@ export function createOrchestraTools(
         const lease = reservation.lease
         const dependencyResults = coordinator.dependencyOutputs(lease.rootSessionID, args.nodeId)
         const nodeLabel = args.nodeId.replace(/\s+/g, " ").trim().slice(0, 80) || args.agent
+        let worktree: { path: string; branch: string } | undefined
+        if (args.agent === "orch-editor") {
+          const sealed = coordinator.sealedNode(parentSessionID, args.nodeId)
+          if (sealed?.role !== "editor" || !sealed.baseRevision) {
+            const runtime = coordinator.complete(lease, false, "Editor node has no sealed base revision.")
+            return JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, code: "worktree_unavailable", error: "Editor node has no sealed base revision.", runtime }, null, 2)
+          }
+          try {
+            worktree = await createEditorWorktree(
+              dispatch.git ?? systemGit,
+              dispatch.directory,
+              lease.rootSessionID,
+              `${args.nodeId}-attempt-${lease.attempt}`,
+              sealed.baseRevision,
+              config.orchestration.worktreeRoot,
+            )
+            directory = path.resolve(dispatch.directory, worktree.path)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Unable to create editor worktree."
+            const runtime = coordinator.complete(lease, false, message)
+            return JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, code: "worktree_create_failed", error: message.replace(/\s+/g, " ").trim().slice(0, 240), runtime }, null, 2)
+          }
+        } else if (args.agent === "orch-integrator") {
+          directory = dispatch.directory
+        }
         try {
           const result = await dispatchWithFallback(models, async (model, attempt) => {
+            if (context.abort?.aborted) throw Object.assign(new Error("Dispatch cancelled."), { name: "AbortError" })
             const childResponse = await dispatch.client.session.create({
               body: {
                 parentID: parentSessionID,
@@ -339,16 +382,34 @@ export function createOrchestraTools(
             const child = childResponse.data
             coordinator.attachSession(lease, child.id)
             const modelRef = splitModelId(model)
-            const response = await dispatch.client.session.prompt({
-              path: { id: child.id },
-              query: { directory },
-              body: {
-                agent: args.agent,
-                model: modelRef,
-                parts: [{ type: "text", text: renderTaskContract(args.nodeId, args.task, lease.contract, lease.depth, dependencyResults) }],
-              },
-              throwOnError: true,
-            })
+            let aborted = false
+            const abortChild = () => {
+              aborted = true
+              void dispatch.client.session.abort({ path: { id: child.id }, query: { directory }, throwOnError: true }).catch(() => undefined)
+            }
+            context.abort?.addEventListener("abort", abortChild, { once: true })
+            let response
+            try {
+              const integratorContext = args.agent === "orch-integrator"
+                ? `\n\nValidated editor commits (use this exact deterministic set):\n${JSON.stringify(coordinator.validatedCommits(parentSessionID), null, 2)}`
+                : ""
+              response = await dispatch.client.session.prompt({
+                path: { id: child.id },
+                query: { directory },
+                body: {
+                  agent: args.agent,
+                  model: modelRef,
+                  parts: [{ type: "text", text: renderTaskContract(args.nodeId, args.task, lease.contract, lease.depth, dependencyResults) + integratorContext }],
+                },
+                ...(context.abort ? { signal: context.abort } : {}),
+                throwOnError: true,
+              })
+            } finally {
+              context.abort?.removeEventListener("abort", abortChild)
+            }
+            if (aborted || context.abort?.aborted) throw Object.assign(new Error("Dispatch cancelled."), { name: "AbortError" })
+            const failure = assistantFailure(response.data.info, response.data.parts)
+            if (failure) throw failure
             const output = response.data.parts
               .filter((part) => part.type === "text")
               .map((part) => part.text)
@@ -361,7 +422,7 @@ export function createOrchestraTools(
           })
           const runtime = coordinator.complete(lease, result.ok, result.ok ? undefined : result.errorKind, result.ok ? result.value : undefined)
           return result.ok
-            ? JSON.stringify({ ok: true, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, model: result.model, attempts: result.attempts, output: result.value, runtime }, null, 2)
+            ? JSON.stringify({ ok: true, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, model: result.model, attempts: result.attempts, output: result.value, ...(worktree ? { worktree: { ...worktree, path: directory } } : {}), runtime }, null, 2)
             : JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, errorKind: result.errorKind, attempts: result.attempts, runtime }, null, 2)
         } catch (error) {
           const message = "Unexpected dispatcher failure. Inspect local provider diagnostics."
@@ -594,7 +655,7 @@ export function createOrchestraTools(
               maxRetries: config.models.fallback.maxRetries,
               chains: fallbackChains,
               agents: fallbackAgentChains,
-              note: "orchestra_dispatch executes fallback for evidence/review/merge/judge subagents; lead and workspace editor calls remain native OpenCode dispatches.",
+              note: "orchestra_dispatch executes fallback and lifecycle accounting for every Orchestra subagent, including isolated editors and the integrator; only the primary lead remains native.",
             },
             escalation,
             ...(estimate ? { estimate } : {}),

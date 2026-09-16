@@ -233,7 +233,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install --dry-run
 
 `models.agents` 中的精确覆盖拥有最高优先级。遇到限流、超时或提供商 5xx 等可重试错误时，可以切换到下一个兼容模型。认证、权限和无效请求错误会立即停止 fallback 链。
 
-运行时会直接对 evidence、review、merge 和 judge 子智能体执行 fallback。主 `orch-lead` 以及工作区感知的 editor/integrator 仍使用 OpenCode 原生调度路径。
+运行时会直接对所有 Orchestra 子智能体执行 fallback 和生命周期记账。调度 editor 时，运行时会从已封存的基础版本创建独立 Git worktree；只有在每个 editor commit 都通过验证后，integrator 才会在主 checkout 中运行。只有主 `orch-lead` 保留在 OpenCode 原生路径上。
 
 ## 并行编辑
 

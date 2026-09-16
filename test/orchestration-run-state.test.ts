@@ -322,6 +322,7 @@ test("interrupted runs persist results and resume in a new session", async () =>
     assert.deepEqual(resumed.ready[0]?.dependencyResults, [{ nodeId: "investigate", agent: "orch-repo", output: "cause: stale cache" }])
     assert.equal(resumed.run.activeWorkers, 0)
     assert.equal(resumed.run.nodes.find((node) => node.id === "verify")?.status, "pending")
+    assert.equal(restored.snapshot("new-session")?.rootSessionID, "old-session")
 
     const retry = assertLease(await restored.acquire({
       parentSessionID: "new-session", nodeId: "verify", agent: "orch-tests", task: "Verify", contract: secondContract,

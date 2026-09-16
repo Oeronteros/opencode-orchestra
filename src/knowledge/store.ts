@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { systemGit, type GitRunner } from "../orchestration/worktrees.js"
 
@@ -117,7 +117,11 @@ export class VerifiedKnowledgeStore {
     if (entry.revision === "unversioned" || revision === "unversioned") return { status: "stale", staleReason: "repository revision unavailable" }
     if (entry.pathFingerprints) {
       for (const item of entry.paths) {
-        if (await this.fingerprint(item) !== entry.pathFingerprints[item]) return { status: "stale", staleReason: "referenced path content changed after verification" }
+        try {
+          if (await this.fingerprint(item) !== entry.pathFingerprints[item]) return { status: "stale", staleReason: "referenced path content changed after verification" }
+        } catch {
+          return { status: "stale", staleReason: "referenced path is missing, unreadable, or not a regular file" }
+        }
       }
       return { status: "valid" }
     }
@@ -134,10 +138,14 @@ export class VerifiedKnowledgeStore {
 
   private async fingerprint(item: string): Promise<string> {
     try {
-      const content = await readFile(path.resolve(this.projectDirectory, item))
+      const target = path.resolve(this.projectDirectory, item)
+      const info = await stat(target)
+      if (!info.isFile()) throw new Error(`Knowledge path must be a regular file: ${item}`)
+      const content = await readFile(target)
       return createHash("sha256").update(content).digest("hex")
-    } catch {
-      return "missing"
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Knowledge path must be a regular file:")) throw error
+      throw new Error(`Unable to fingerprint knowledge path ${item}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 

@@ -1,6 +1,6 @@
 import type { OrchestraConfig } from "../config/schema.js"
 import { resolveModel } from "../routing/model-resolver.js"
-import { readOnlyGitPermissions, safeBashPermissions, type AgentSet, type RuntimeAgentConfig } from "./types.js"
+import { guardedBashPermissions, readOnlyGitPermissions, type AgentSet, type RuntimeAgentConfig } from "./types.js"
 import type { PromptBundle } from "./build.js"
 
 interface WorkerSpec {
@@ -56,7 +56,7 @@ const WORKERS: Record<string, WorkerSpec> = {
     capability: "code",
     permission: {
       ...READ_ONLY,
-      bash: safeBashPermissions(),
+      bash: guardedBashPermissions(),
       "playwright_*": "allow",
     },
   },

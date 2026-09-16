@@ -59,5 +59,5 @@ export function fallbackModelsForAgent(config: OrchestraConfig, agent: string, a
 }
 
 export function supportsFallbackDispatch(agent: string): boolean {
-  return agent.startsWith("orch-") && agent !== "orch-lead" && !["orch-editor", "orch-integrator"].includes(agent)
+  return agent.startsWith("orch-") && agent !== "orch-lead"
 }

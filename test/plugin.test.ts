@@ -9,6 +9,8 @@ import { parseLiveSnapshot, type LiveSnapshot } from "../src/telemetry/live.js"
 import { Ledger } from "../src/telemetry/ledger.js"
 import { createOrchestraTools, type DispatchContext } from "../src/tools.js"
 import { createAgentSet, type PromptBundle } from "../src/agents/build.js"
+import { OrchestrationRunState } from "../src/orchestration/run-state.js"
+import type { GitRunner } from "../src/orchestration/worktrees.js"
 
 test("entrypoint exposes a stable id and server", () => {
   assert.equal(pluginModule.id, "opencode-orchestra")
@@ -23,25 +25,19 @@ test("MCP tool prefixes map to stable telemetry server names", () => {
   assert.equal(mcpServerForTool("bash"), undefined)
 })
 
-test("native Orchestra tasks require sealed editor nodes and consume shared capacity", async () => {
+test("native Orchestra tasks fail closed because they cannot guarantee worktree isolation", async () => {
   const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-native-guard-"))
   const initialize = OrchestraPlugin as unknown as (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, unknown>>
   const hooks = await initialize({ directory: project, client: { app: { log: async () => undefined } } }, { telemetry: { enabled: false }, orchestration: { parallelEditors: 2 } })
   const before = hooks["tool.execute.before"] as (input: { tool: string; sessionID: string; callID: string }, output: { args: Record<string, unknown> }) => Promise<void>
-  const after = hooks["tool.execute.after"] as (input: { callID: string }, output: { output: string }) => Promise<void>
   const tools = hooks.tool as Record<string, { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }>
   try {
-    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "bypass" }, { args: { subagent_type: "orch-repo", description: "unsealed" } }), /sealed editor/)
+    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "bypass" }, { args: { subagent_type: "orch-repo", description: "unsealed" } }), /Native task is disabled/)
     const prepared = JSON.parse(await tools.orchestration_prepare_edit_plan!.execute({
       task: "fix module", profile: "debug", baseSha: "0123456789abcdef", partitions: [{ id: "editor", description: "fix", ownership: ["src/**"] }],
     }, { sessionID: "native-root" }))
     assert.equal(prepared.ok, true)
-    const args = { subagent_type: "orch-editor", description: "editor", prompt: "Fix module" }
-    await before({ tool: "task", sessionID: "native-root", callID: "editor-call" }, { args })
-    assert.match(args.prompt, /Sealed TaskContract/)
-    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "duplicate" }, { args }), /already running/)
-    await after({ callID: "editor-call" }, { output: "completed" })
-    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "integrator" }, { args: { subagent_type: "orch-integrator", description: "integrator" } }), /validate_commit/)
+    await assert.rejects(before({ tool: "task", sessionID: "native-root", callID: "editor-call" }, { args: { subagent_type: "orch-editor", description: "editor", prompt: "Fix module", background: true } }), /Use orchestra_dispatch/)
   } finally {
     await (hooks.dispose as () => Promise<void>)()
   }
@@ -87,6 +83,112 @@ test("orchestra_dispatch retries a worker with its next configured model", async
   assert.equal(result.output, "secondary result")
   assert.deepEqual(promptModels, ["vendor/primary", "vendor/secondary"])
   assert.deepEqual(reliability.map((event) => event.outcome), ["failed", "retried"])
+})
+
+test("orchestra_dispatch treats an assistant error payload as failure and falls back", async () => {
+  const config = withDefaults({
+    models: {
+      strategy: "manual",
+      agents: { "orch-repo": "vendor/primary" },
+      fallback: { enabled: true, maxRetries: 1, agents: { "orch-repo": ["vendor/secondary"] } },
+    },
+  })
+  const agents = createAgentSet(config, { lead: "lead", judge: "judge" })
+  const prompted: string[] = []
+  const client = {
+    session: {
+      create: async () => ({ data: { id: `child-${prompted.length}` } }),
+      abort: async () => undefined,
+      prompt: async (options: { body: { model: { providerID: string; modelID: string } } }) => {
+        const model = `${options.body.model.providerID}/${options.body.model.modelID}`
+        prompted.push(model)
+        return model === "vendor/primary"
+          ? { data: { info: { error: { name: "APIError", data: { statusCode: 503, message: "overloaded" } } }, parts: [] } }
+          : { data: { info: {}, parts: [{ type: "text", text: "recovered" }] } }
+      },
+    },
+  } as unknown as DispatchContext["client"]
+  const tools = createOrchestraTools(config, { recordReliabilityEvent: async () => undefined } as unknown as Ledger, undefined, undefined, { client, agents, directory: process.cwd() })
+  const dispatch = tools.orchestra_dispatch as unknown as { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }
+  const result = JSON.parse(await dispatch.execute(
+    { agent: "orch-repo", task: "Inspect", nodeId: "inspect" },
+    { sessionID: "root" },
+  )) as { ok: boolean; model: string; output: string }
+  assert.equal(result.ok, true)
+  assert.equal(result.model, "vendor/secondary")
+  assert.equal(result.output, "recovered")
+  assert.deepEqual(prompted, ["vendor/primary", "vendor/secondary"])
+})
+
+test("orchestra_dispatch creates an editor worktree and binds its child session to the run", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-editor-dispatch-"))
+  const config = withDefaults({
+    orchestration: { parallelEditors: 1 },
+    models: { strategy: "manual", agents: { "orch-editor": "vendor/editor" } },
+  })
+  const agents = createAgentSet(config, { lead: "lead", judge: "judge" })
+  const coordinator = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  const gitCalls: string[][] = []
+  const git: GitRunner = { async run(args) { gitCalls.push(args); return { stdout: "", stderr: "", exitCode: 0 } } }
+  let promptDirectory = ""
+  const client = {
+    session: {
+      create: async () => ({ data: { id: "editor-child" } }),
+      abort: async () => undefined,
+      prompt: async (options: { query?: { directory?: string } }) => {
+        promptDirectory = options.query?.directory ?? ""
+        return { data: { info: {}, parts: [{ type: "text", text: "committed" }] } }
+      },
+    },
+  } as unknown as DispatchContext["client"]
+  const ledger = { usageTotals: async () => ({ costUSD: 0, tokens: 0, unknownPriceCalls: 0 }), recordReliabilityEvent: async () => undefined } as unknown as Ledger
+  const tools = createOrchestraTools(config, ledger, undefined, undefined, { client, agents, directory: project, coordinator, git })
+  const prepare = tools.orchestration_prepare_edit_plan as unknown as { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }
+  const dispatch = tools.orchestra_dispatch as unknown as { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }
+  try {
+    const prepared = JSON.parse(await prepare.execute({
+      task: "fix", profile: "debug", baseSha: "0123456789abcdef",
+      partitions: [{ id: "editor", description: "fix", ownership: ["src"] }],
+    }, { sessionID: "edit-root" })) as { plan: { nodes: Array<{ id: string; contract: unknown }> } }
+    const editor = prepared.plan.nodes.find((node) => node.id === "editor")!
+    const result = JSON.parse(await dispatch.execute({
+      agent: "orch-editor", task: "Fix", nodeId: "editor", contract: editor.contract,
+    }, { sessionID: "edit-root" })) as { ok: boolean; worktree: { path: string; branch: string } }
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(promptDirectory, path.resolve(project, ".orchestra", "worktrees", "edit-root-editor-attempt-1"))
+    assert.equal(result.worktree.path, promptDirectory)
+    assert.equal(result.worktree.branch, "orch/edit-root/editor-attempt-1")
+    assert.deepEqual(gitCalls[0], ["worktree", "add", "-b", result.worktree.branch, path.join(".orchestra", "worktrees", "edit-root-editor-attempt-1"), "0123456789abcdef"])
+    assert.equal(coordinator.rootSessionID("editor-child"), "edit-root")
+  } finally {
+    await rm(project, { recursive: true, force: true })
+  }
+})
+
+test("orchestra_dispatch aborts an active child and cannot report it as succeeded", async () => {
+  const config = withDefaults({ models: { strategy: "manual", agents: { "orch-repo": "vendor/model" } } })
+  const agents = createAgentSet(config, { lead: "lead", judge: "judge" })
+  const controller = new AbortController()
+  let abortCalls = 0
+  const client = {
+    session: {
+      create: async () => ({ data: { id: "cancelled-child" } }),
+      abort: async () => { abortCalls += 1 },
+      prompt: async () => {
+        controller.abort()
+        return { data: { info: {}, parts: [{ type: "text", text: "late result" }] } }
+      },
+    },
+  } as unknown as DispatchContext["client"]
+  const tools = createOrchestraTools(config, {} as Ledger, undefined, undefined, { client, agents, directory: process.cwd() })
+  const dispatch = tools.orchestra_dispatch as unknown as { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }
+  const result = JSON.parse(await dispatch.execute(
+    { agent: "orch-repo", task: "Inspect", nodeId: "inspect" },
+    { sessionID: "cancel-root", abort: controller.signal },
+  )) as { ok: boolean; runtime: { nodes: Array<{ status: string }> } }
+  assert.equal(result.ok, false)
+  assert.equal(abortCalls, 1)
+  assert.equal(result.runtime.nodes[0]?.status, "failed")
 })
 
 test("MCP execution hooks persist successful usage metrics", async () => {
@@ -270,7 +372,7 @@ test("plugin verifies completion from observed bash and artifact gates", async (
   const hooks = await initialize({ directory: project, client: { app: { log: async () => undefined } } }, { telemetry: { enabled: false } })
   const tools = hooks.tool as Record<string, { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }>
   const before = hooks["tool.execute.before"] as (input: { tool: string; sessionID: string; callID: string }, output: { args: Record<string, unknown> }) => Promise<void>
-  const after = hooks["tool.execute.after"] as (input: { callID: string }, output: { output: string }) => Promise<void>
+  const after = hooks["tool.execute.after"] as (input: { callID: string }, output: { output: string; metadata: Record<string, unknown> }) => Promise<void>
   try {
     const registered = JSON.parse(await tools.orchestration_set_verification!.execute({
       commands: [{ id: "tests", label: "Tests", command: "npm test" }],
@@ -285,7 +387,15 @@ test("plugin verifies completion from observed bash and artifact gates", async (
     assert.equal(early.completion.status, "failed")
 
     await before({ tool: "bash", sessionID: "verify-session", callID: "verify-call" }, { args: { command: "npm test" } })
-    await after({ callID: "verify-call" }, { output: "all tests passed" })
+    await after({ callID: "verify-call" }, { output: "tests failed", metadata: { exit: 1 } })
+    const failed = JSON.parse(await tools.orchestration_complete!.execute(
+      { summary: "finished" }, { sessionID: "verify-session" },
+    )) as { ok: boolean; completion: { gates: Array<{ status: string }> } }
+    assert.equal(failed.ok, false)
+    assert.equal(failed.completion.gates[0]?.status, "failed")
+
+    await before({ tool: "bash", sessionID: "verify-session", callID: "verify-call-2" }, { args: { command: "npm test" } })
+    await after({ callID: "verify-call-2" }, { output: "all tests passed", metadata: { exit: 0 } })
     await mkdir(path.join(project, "out"), { recursive: true })
     await writeFile(path.join(project, "out", "report.txt"), "report")
     const completed = JSON.parse(await tools.orchestration_complete!.execute(

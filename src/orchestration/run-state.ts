@@ -526,9 +526,7 @@ export class OrchestrationRunState {
   }
 
   snapshot(sessionID: string): RunSnapshot | undefined {
-    const link = this.sessions.get(sessionID)
-    const rootSessionID = link?.rootSessionID ?? sessionID
-    const run = this.runs.get(rootSessionID)
+    const run = this.runs.get(this.rootSessionID(sessionID))
     return run ? this.snapshotForRun(run) : undefined
   }
 

@@ -246,7 +246,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install --dry-run
 
 Точное переопределение в `models.agents` имеет наивысший приоритет. При rate limit, timeout и provider 5xx Orchestra может перейти к следующей совместимой модели. Ошибки аутентификации, разрешений и невалидного запроса останавливают цепочку.
 
-Runtime-fallback выполняется напрямую для evidence-, review-, merge- и judge-subagents. Primary lead и workspace-aware editor/integrator остаются на нативном dispatch OpenCode.
+Runtime-fallback и учёт жизненного цикла выполняются напрямую для всех subagent Orchestra. При запуске editor создаётся изолированный Git worktree от зафиксированной базовой ревизии; integrator работает в основном checkout только после проверки каждого editor commit. Только primary lead остаётся на нативном пути OpenCode.
 
 ## Параллельное редактирование
 

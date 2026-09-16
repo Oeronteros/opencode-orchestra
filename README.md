@@ -246,7 +246,7 @@ Budget modes affect model choice, paid-call limits, and escalation. They do not 
 
 An exact `models.agents` override has the highest priority. Retryable failures such as rate limits, timeouts, and provider 5xx errors may advance to the next compatible model. Authentication, permission, and invalid-request failures stop the chain.
 
-Runtime fallback is performed directly for evidence, review, merge, and judge subagents. The primary lead and workspace-aware editor/integrator calls remain on OpenCode's native dispatch path.
+Runtime fallback and lifecycle accounting are performed directly for every Orchestra subagent. Editor dispatch creates an isolated Git worktree from the sealed base revision; the integrator runs in the primary checkout only after every editor commit passes validation. The primary lead remains on OpenCode's native path.
 
 ## Parallel editing
 

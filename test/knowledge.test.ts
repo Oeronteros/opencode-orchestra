@@ -28,6 +28,8 @@ test("verified knowledge keeps provenance and becomes stale when referenced path
     assert.equal((await store.query("cache"))[0]?.status, "valid")
     await writeFile(path.join(directory, "src", "cache.ts"), "export const cache = false\n")
     assert.equal((await store.query("cache"))[0]?.staleReason, "referenced path content changed after verification")
+    await assert.rejects(store.record({ kind: "decision", value: "directory", evidence: ["x"], paths: ["src"], sourceRun: "run", sourcePlanVersion: 1 }), /regular file/)
+    await assert.rejects(store.record({ kind: "decision", value: "missing", evidence: ["x"], paths: ["src/missing.ts"], sourceRun: "run", sourcePlanVersion: 1 }), /fingerprint/)
     await assert.rejects(store.record({ kind: "decision", value: "bad", evidence: ["x"], paths: ["../outside"], sourceRun: "run", sourcePlanVersion: 1 }), /inside the repository/)
   } finally {
     await rm(directory, { recursive: true, force: true })

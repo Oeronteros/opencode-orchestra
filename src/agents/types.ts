@@ -18,6 +18,40 @@ export function safeBashPermissions(defaultAction: PermissionAction = "allow"): 
   }
 }
 
+/** Shell policy for agents whose declared boundary forbids autonomous writes. */
+export function guardedBashPermissions(): Record<string, PermissionAction> {
+  return safeBashPermissions("ask")
+}
+
+/** The integrator may inspect Git and run one reviewed cherry-pick transaction. */
+export function integratorBashPermissions(): Record<string, PermissionAction> {
+  return {
+    ...guardedBashPermissions(),
+    "git status*": "allow",
+    "git diff*": "allow",
+    "git log*": "allow",
+    "git show*": "allow",
+    "git rev-parse*": "allow",
+    "git merge-base*": "allow",
+    "git cherry-pick *": "allow",
+    "git cherry-pick --abort*": "allow",
+  }
+}
+
+/** Editors may inspect and commit inside their isolated worktree; other shell use is reviewed. */
+export function editorBashPermissions(): Record<string, PermissionAction> {
+  return {
+    ...guardedBashPermissions(),
+    "git status*": "allow",
+    "git diff*": "allow",
+    "git log*": "allow",
+    "git show*": "allow",
+    "git rev-parse*": "allow",
+    "git add *": "allow",
+    "git commit *": "allow",
+  }
+}
+
 const GIT_READ_TOOL_NAMES = [
   "git_status",
   "git_diff_unstaged",
