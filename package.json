@@ -29,12 +29,12 @@
   "files": [
     "dist",
     "dashboard-dist",
+    "docs/assets",
     "prompts",
     "schema",
-    "CHANGELOG.md",
-    "GITHUB_RELEASE_1.0.0.md",
-    "GITHUB_RELEASE_1.0.7.md",
     "README.md",
+    "README.ru.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "exports": {

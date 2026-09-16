@@ -92,10 +92,17 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri $env:FFMPEG_WINDOWS_URL -OutFile C:\Windows\Temp\ffmpeg.zip
+          function Invoke-Download([string] $Uri, [string] $OutFile) {
+            curl.exe --fail --location --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --output $OutFile $Uri
+            if ($LASTEXITCODE -ne 0) {
+              throw "Download failed after retries: $Uri"
+            }
+          }
+
+          Invoke-Download $env:FFMPEG_WINDOWS_URL C:\Windows\Temp\ffmpeg.zip
           Expand-Archive C:\Windows\Temp\ffmpeg.zip -DestinationPath C:\Windows\Temp\ffmpeg
           Copy-Item C:\Windows\Temp\ffmpeg\ffmpeg-*-essentials_build\bin\ffmpeg.exe voice-overlay\src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe
-          Invoke-WebRequest -Uri $env:WHISPER_WINDOWS_URL -OutFile C:\Windows\Temp\whisper.zip
+          Invoke-Download $env:WHISPER_WINDOWS_URL C:\Windows\Temp\whisper.zip
           Expand-Archive C:\Windows\Temp\whisper.zip -DestinationPath C:\Windows\Temp\whisper
           Copy-Item C:\Windows\Temp\whisper\Release\whisper-cli.exe voice-overlay\src-tauri\binaries\whisper-x86_64-pc-windows-msvc.exe
           Copy-Item C:\Windows\Temp\whisper\Release\*.dll voice-overlay\src-tauri\binaries\
