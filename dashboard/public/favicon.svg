@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="orchestra-gradient" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a78bfa"/>
+      <stop offset=".48" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#5b21b6"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="url(#orchestra-gradient)"/>
+  <path fill="#fff" d="M17 38.5a3 3 0 0 1 6 0V47a3 3 0 0 1-6 0v-8.5Zm12-18a3 3 0 0 1 6 0V47a3 3 0 0 1-6 0V20.5Zm12 9a3 3 0 0 1 6 0V47a3 3 0 0 1-6 0V29.5Z"/>
+  <path fill="#fff" fill-opacity=".22" d="M4 18C4 9.163 11.163 2 20 2h24c8.837 0 16 7.163 16 16v7C52.793 17.366 43.399 13 33 13 21.404 13 11.047 18.428 4 26.88V18Z"/>
+</svg>
