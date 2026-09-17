@@ -43,6 +43,8 @@ export function App() {
   const [settings, setSettings] = useState<OverlaySettings>(loadSettings);
   const [devices, setDevices] = useState<string[]>([]);
   const [sessions, setSessions] = useState<SessionRef[]>([]);
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [sessionListError, setSessionListError] = useState<string | null>(null);
   const [status, setStatus] = useState<OverlayStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
@@ -81,16 +83,24 @@ export function App() {
 
   const loadSessions = async (cfg: OverlaySettings) => {
     try {
+      setSessionListError(null);
       setSessions(await listSessions(cfg));
-    } catch {
-      setSessions([]);
+    } catch (e) {
+      setSessionListError(String(e));
+    }
+  };
+
+  const loadMicrophones = async () => {
+    try {
+      setDeviceError(null);
+      setDevices(await listMicrophones());
+    } catch (e) {
+      setDeviceError(String(e));
     }
   };
 
   useEffect(() => {
-    listMicrophones()
-      .then(setDevices)
-      .catch(() => setDevices([]));
+    void loadMicrophones();
     if (settings.target === "web") void loadSessions(settings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -312,6 +322,10 @@ export function App() {
         settings={settings}
         devices={devices}
         sessions={sessions}
+        deviceError={deviceError}
+        sessionError={sessionListError}
+        onRefreshDevices={() => void loadMicrophones()}
+        onRefreshSessions={(next) => void loadSessions(next)}
         onChange={(next) => {
           setSettings(next);
           setError(null);
@@ -327,6 +341,9 @@ export function App() {
   const busy =
     starting || sending || status === "recording" || status === "transcribing";
   const canSend = preview.trim() !== "" && !busy;
+  const selectedSessionMissing =
+    settings.sessionId !== "" &&
+    !sessions.some((session) => session.id === settings.sessionId);
   return (
     <main className="overlay-shell" data-status={status}>
       <WindowHeader busy={busy} />
@@ -376,6 +393,11 @@ export function App() {
             }}
           >
             <option value="">Выберите сессию</option>
+            {selectedSessionMissing && (
+              <option value={settings.sessionId}>
+                Недоступна — {settings.sessionId}
+              </option>
+            )}
             {sessions.map((session) => (
               <option key={session.id} value={session.id}>
                 {session.title}
@@ -389,6 +411,17 @@ export function App() {
           >
             Обновить
           </button>
+          {selectedSessionMissing && (
+            <small className="field-note" role="alert">
+              Сервер больше не возвращает выбранную сессию. Выберите другую или
+              откройте актуальную вкладку через команду web.
+            </small>
+          )}
+          {sessionListError && (
+            <small className="field-note" role="alert">
+              Не удалось обновить сессии: {sessionListError}
+            </small>
+          )}
         </label>
       )}
       <section className="recorder" aria-label="Голосовая запись">

@@ -64,6 +64,7 @@ svg { width: 20px; height: 20px; display: block; }
 .settings-content h1 { margin: 0 0 6px; font-size: 22px; font-weight: 550; letter-spacing: -.03em; }
 .settings-subtitle { margin: 0 0 22px; color: #99aa9d; font-size: 12px; }
 .settings-content label { display: grid; gap: 7px; font-size: 12px; color: #b5c2b8; margin-bottom: 15px; }
+.field-note { display: block; color: #e4b59f; line-height: 1.45; }
 .settings-content input:not([type="radio"]), .settings-content select { width: 100%; min-width: 0; background: #141b17; border: 1px solid #39443c; border-radius: 8px; padding: 10px; color: #e9ede9; }
 .settings-content fieldset { border: 1px solid #39443c; border-radius: 10px; margin: 0 0 18px; padding: 12px; }
 .settings-content legend { color: #9aab9e; padding: 0 5px; font-size: 11px; }

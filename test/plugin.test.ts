@@ -191,6 +191,60 @@ test("orchestra_dispatch aborts an active child and cannot report it as succeede
   assert.equal(result.runtime.nodes[0]?.status, "failed")
 })
 
+test("orchestration_relay_context makes an active worker revise its result before completion", async () => {
+  const config = withDefaults({ models: { strategy: "manual", agents: { "orch-repo": "vendor/model" } } })
+  const agents = createAgentSet(config, { lead: "lead", judge: "judge" })
+  const coordinator = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  let releaseInitial!: () => void
+  let signalInitialStarted!: () => void
+  const initialStarted = new Promise<void>((resolve) => { signalInitialStarted = resolve })
+  const initialRelease = new Promise<void>((resolve) => { releaseInitial = resolve })
+  const prompts: string[] = []
+  const client = {
+    session: {
+      create: async () => ({ data: { id: "relay-child" } }),
+      abort: async () => undefined,
+      prompt: async (options: { body: { parts: Array<{ text: string }> } }) => {
+        prompts.push(options.body.parts[0]?.text ?? "")
+        if (prompts.length === 1) {
+          signalInitialStarted()
+          await initialRelease
+          return { data: { info: {}, parts: [{ type: "text", text: "initial finding" }] } }
+        }
+        return { data: { info: {}, parts: [{ type: "text", text: "revised with the parent constraint" }] } }
+      },
+    },
+  } as unknown as DispatchContext["client"]
+  const ledger = {
+    usageTotals: async () => ({ costUSD: 0, tokens: 0, unknownPriceCalls: 0 }),
+    recordReliabilityEvent: async () => undefined,
+  } as unknown as Ledger
+  const tools = createOrchestraTools(config, ledger, undefined, undefined, { client, agents, directory: process.cwd(), coordinator })
+  const dispatch = tools.orchestra_dispatch as unknown as { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }
+  const relay = tools.orchestration_relay_context as unknown as { execute(args: Record<string, unknown>, context: Record<string, unknown>): Promise<string> }
+
+  const dispatched = dispatch.execute(
+    { agent: "orch-repo", task: "Inspect", nodeId: "inspect" },
+    { sessionID: "relay-root" },
+  )
+  await initialStarted
+  const relayed = JSON.parse(await relay.execute(
+    { nodeId: "inspect", message: "Only accept evidence from the current branch." },
+    { sessionID: "relay-root" },
+  )) as { ok: boolean; delivery: string }
+  assert.equal(relayed.ok, true)
+  assert.equal(relayed.delivery, "active")
+  releaseInitial()
+
+  const result = JSON.parse(await dispatched) as { ok: boolean; output: string; runtime: { nodes: Array<{ status: string }> } }
+  assert.equal(result.ok, true)
+  assert.match(result.output, /initial finding/)
+  assert.match(result.output, /revised with the parent constraint/)
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1] ?? "", /Only accept evidence from the current branch/)
+  assert.equal(result.runtime.nodes[0]?.status, "succeeded")
+})
+
 test("MCP execution hooks persist successful usage metrics", async () => {
   const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-mcp-hook-"))
   const initialize = OrchestraPlugin as unknown as (

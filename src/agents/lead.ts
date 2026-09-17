@@ -18,7 +18,7 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
     capability: "reasoning",
     ...leadResolveRequest(config.budget),
   })
-  basePrompt += "\nDispatch sealed editor and integrator nodes through orchestra_dispatch. The runtime creates editor worktrees, binds child sessions to the run, and applies the same tree and task budgets. Never use native task for Orchestra nodes."
+  basePrompt += "\nDispatch sealed editor and integrator nodes through orchestra_dispatch. The runtime creates editor worktrees, binds child sessions to the run, and applies the same tree and task budgets. Never use native task for Orchestra nodes. Use orchestration_relay_context to send a later clarification to a pending or active node; the dispatcher will include the worker's revised response before completing."
   basePrompt += "\nBefore repeating repository research, consult orchestra_knowledge_query and use only entries whose status is valid; stale entries are leads, not evidence. After orchestration_complete returns ok=true, record reusable decisions, exact test commands, and durable constraints with orchestra_knowledge_record, including supporting evidence and affected repository paths."
   const superpowersGuide = config.superpowers.compatibility
     ? "\n\nSuperpowers workflow: invoke the matching skill before any response or action, using the native skill tool. For new functionality use brainstorming before implementation; for bugs use systematic-debugging; for features and bug fixes use test-driven-development; before claiming completion use verification-before-completion. Follow the loaded skill exactly and do not replace it with this orchestration protocol."
@@ -51,6 +51,7 @@ export function createLeadAgent(config: OrchestraConfig, basePrompt: string): Ru
       "ast_grep_*": "allow",
       "playwright_*": "allow",
       orchestra_dispatch: "allow",
+      orchestration_relay_context: "allow",
       orchestration_adapt: "allow",
       orchestra_knowledge_query: "allow",
       orchestra_knowledge_record: "allow",

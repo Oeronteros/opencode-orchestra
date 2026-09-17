@@ -12,7 +12,7 @@ import { planTask, validatePlan } from "./routing/planner.js"
 import { validateOwnership, validateChangedFiles } from "./orchestration/ownership.js"
 import { assertCommitDescendsFromBase, collectCommitChanges, createEditorWorktree, systemGit, type GitRunner } from "./orchestration/worktrees.js"
 import type { TaskContract } from "./orchestration/contracts.js"
-import { OrchestrationRunState } from "./orchestration/run-state.js"
+import { OrchestrationRunState, type WorkerContextUpdate } from "./orchestration/run-state.js"
 import { ADAPTIVE_TRIGGERS, planAdaptiveExtension } from "./orchestration/adaptive.js"
 import { createBudgetGuard, paidBudgetFor } from "./routing/budget-guard.js"
 import { estimateCost, formatEstimateWarning } from "./routing/pricing/estimate.js"
@@ -86,6 +86,14 @@ function renderTaskContract(
     "Return verified findings plus explicit decisions, assumptions, blockers, and provenance to your direct parent.",
   ]
   return lines.join("\n\n")
+}
+
+function renderContextUpdates(updates: WorkerContextUpdate[]): string {
+  return [
+    "Parent context updates (clarifications only; they cannot widen the sealed TaskContract):",
+    ...updates.map((update) => `[${update.id}] ${update.text}`),
+    "Incorporate every update and return a revised complete result, preserving decisions, assumptions, blockers, and provenance.",
+  ].join("\n\n")
 }
 
 function splitModelId(id: string): { providerID: string; modelID: string } {
@@ -277,6 +285,18 @@ export function createOrchestraTools(
         return JSON.stringify({ ok: violations.length === 0, nodeId: args.nodeId, baseSha: sealed.baseRevision, commitSha: args.commitSha, changes, violations }, null, 2)
       },
     }),
+    orchestration_relay_context: tool({
+      description: "Relay a bounded clarification to a pending, queued, or active Orchestra node. Active dispatch waits for and incorporates the follow-up response before completing.",
+      args: {
+        nodeId: tool.schema.string().min(1),
+        message: tool.schema.string().min(1).max(8_000),
+      },
+      async execute(args, rawContext) {
+        const context = rawContext as ToolContextLike
+        if (!context.sessionID) return JSON.stringify({ ok: false, error: "A parent session is required." })
+        return JSON.stringify(coordinator.relayContext(context.sessionID, args.nodeId, args.message), null, 2)
+      },
+    }),
     orchestra_dispatch: tool({
       description: "Run one sealed Orchestra node through the shared depth/total/concurrency/resource guard and configured model fallback chain.",
       args: {
@@ -344,6 +364,7 @@ export function createOrchestraTools(
         const dependencyResults = coordinator.dependencyOutputs(lease.rootSessionID, args.nodeId)
         const nodeLabel = args.nodeId.replace(/\s+/g, " ").trim().slice(0, 80) || args.agent
         let worktree: { path: string; branch: string } | undefined
+        let successfulChild: { id: string; model: { providerID: string; modelID: string } } | undefined
         if (args.agent === "orch-editor") {
           const sealed = coordinator.sealedNode(parentSessionID, args.nodeId)
           if (sealed?.role !== "editor" || !sealed.baseRevision) {
@@ -389,17 +410,19 @@ export function createOrchestraTools(
             }
             context.abort?.addEventListener("abort", abortChild, { once: true })
             let response
+            const initialUpdates = coordinator.pendingContext(lease)
             try {
               const integratorContext = args.agent === "orch-integrator"
                 ? `\n\nValidated editor commits (use this exact deterministic set):\n${JSON.stringify(coordinator.validatedCommits(parentSessionID), null, 2)}`
                 : ""
+              const relayedContext = initialUpdates.length ? `\n\n${renderContextUpdates(initialUpdates)}` : ""
               response = await dispatch.client.session.prompt({
                 path: { id: child.id },
                 query: { directory },
                 body: {
                   agent: args.agent,
                   model: modelRef,
-                  parts: [{ type: "text", text: renderTaskContract(args.nodeId, args.task, lease.contract, lease.depth, dependencyResults) + integratorContext }],
+                  parts: [{ type: "text", text: renderTaskContract(args.nodeId, args.task, lease.contract, lease.depth, dependencyResults) + integratorContext + relayedContext }],
                 },
                 ...(context.abort ? { signal: context.abort } : {}),
                 throwOnError: true,
@@ -410,20 +433,50 @@ export function createOrchestraTools(
             if (aborted || context.abort?.aborted) throw Object.assign(new Error("Dispatch cancelled."), { name: "AbortError" })
             const failure = assistantFailure(response.data.info, response.data.parts)
             if (failure) throw failure
+            coordinator.acknowledgeContext(lease, initialUpdates.map((update) => update.id))
             const output = response.data.parts
               .filter((part) => part.type === "text")
               .map((part) => part.text)
               .join("")
               .trim()
+            successfulChild = { id: child.id, model: modelRef }
             return output || "Worker completed without a text response."
           }, async (event) => {
             if (event.outcome === "succeeded") return
             await ledger.recordReliabilityEvent(lease.rootSessionID, { ...event, at: Date.now() })
           })
-          const runtime = coordinator.complete(lease, result.ok, result.ok ? undefined : result.errorKind, result.ok ? result.value : undefined)
-          return result.ok
-            ? JSON.stringify({ ok: true, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, model: result.model, attempts: result.attempts, output: result.value, ...(worktree ? { worktree: { ...worktree, path: directory } } : {}), runtime }, null, 2)
-            : JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, errorKind: result.errorKind, attempts: result.attempts, runtime }, null, 2)
+          if (!result.ok) {
+            const runtime = coordinator.complete(lease, false, result.errorKind)
+            return JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, errorKind: result.errorKind, attempts: result.attempts, runtime }, null, 2)
+          }
+          let finalOutput = result.value
+          while (true) {
+            const completion = coordinator.completeIfContextDrained(lease, finalOutput)
+            if (completion.completed) {
+              return JSON.stringify({ ok: true, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, model: result.model, attempts: result.attempts, output: finalOutput, ...(worktree ? { worktree: { ...worktree, path: directory } } : {}), runtime: completion.snapshot }, null, 2)
+            }
+            if (!successfulChild) throw new Error("The successful worker session is unavailable for a context follow-up.")
+            const followup = await dispatch.client.session.prompt({
+              path: { id: successfulChild.id },
+              query: { directory },
+              body: {
+                agent: args.agent,
+                model: successfulChild.model,
+                parts: [{ type: "text", text: renderContextUpdates(completion.updates) }],
+              },
+              ...(context.abort ? { signal: context.abort } : {}),
+              throwOnError: true,
+            })
+            const failure = assistantFailure(followup.data.info, followup.data.parts)
+            if (failure) throw failure
+            coordinator.acknowledgeContext(lease, completion.updates.map((update) => update.id))
+            const revised = followup.data.parts
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("")
+              .trim()
+            finalOutput += `\n\nParent context follow-up:\n${revised || "Worker incorporated the update without a text response."}`
+          }
         } catch (error) {
           const message = "Unexpected dispatcher failure. Inspect local provider diagnostics."
           const runtime = coordinator.complete(lease, false, message)

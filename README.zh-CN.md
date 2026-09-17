@@ -140,6 +140,8 @@ Orchestra 会把密封计划、节点状态、依赖结果和已验证的 Git �
 
 Dashboard 的 **Runs** 页面会显示持久化的依赖图、节点合同、输出、失败、完成 gate 和任务预算。可以取消运行中的分支，也可以重试失败、阻塞或已取消的分支；重试会使下游结果失效，旧尝试的延迟响应不能覆盖新结果。
 
+节点处于等待或运行状态时，lead 可以通过 `orchestration_relay_context` 发送有界补充说明。补充说明在进程重启和分支重试后仍会保留；对于正在运行的 dispatch，系统会要求同一个 worker 会话返回完整修订结果，然后才把节点标记为成功。
+
 Orchestra 默认从两个专家和一个综合节点开始，并保留其余 worker 名额。只有出现带证据的运行时信号时，`orchestration_adapt` 才会创建新版本计划，例如复现失败、证据矛盾、授权边界、文档缺口、性能或视觉回归、低置信度或无进展。可通过 `orchestration.adaptive.initialWorkers`、`maxExtensions` 和 `minEvidenceItems` 配置。
 
 Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展；仅改写 `MORE` 的措辞不会重置无进展限制。

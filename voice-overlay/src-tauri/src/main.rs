@@ -79,6 +79,26 @@ pub fn parse_dshow_devices(stderr: &str) -> Vec<String> {
     out
 }
 
+/// Parse `ffmpeg -sources pulse`, excluding sink monitor/loopback sources.
+pub fn parse_pulse_sources(output: &str) -> Vec<String> {
+    let mut devices = Vec::new();
+    for line in output.lines() {
+        let entry = line.trim().strip_prefix('*').unwrap_or(line.trim()).trim();
+        let Some((name, description)) = entry.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if !description.trim_start().starts_with('[')
+            || !description.trim_end().ends_with(')')
+            || name.ends_with(".monitor")
+            || devices.iter().any(|device| device == name)
+        {
+            continue;
+        }
+        devices.push(name.to_string());
+    }
+    devices
+}
+
 pub fn ffmpeg_input_args(os: &str, device: Option<&str>) -> Result<Vec<String>, String> {
     match (os, device) {
         ("linux", d) => Ok(vec![
@@ -231,21 +251,33 @@ async fn submit_prompt(cfg: ServerConfig) -> Result<bool, String> {
 
 #[tauri::command]
 async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
-    if std::env::consts::OS != "windows" {
+    if std::env::consts::OS != "windows" && std::env::consts::OS != "linux" {
         return Ok(Vec::new());
     }
-    let ffmpeg = recording_ffmpeg(&app, false).await?;
+    let linux = std::env::consts::OS == "linux";
+    let ffmpeg = recording_ffmpeg(&app, linux).await?;
+    let args: &[&str] = if linux {
+        &["-hide_banner", "-sources", "pulse"]
+    } else {
+        &["-list_devices", "true", "-f", "dshow", "-i", "dummy"]
+    };
     let out = tokio::time::timeout(
         Duration::from_secs(5),
-        command(ffmpeg)
-            .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-            .output(),
+        command(ffmpeg).args(args).output(),
     )
     .await
     .map_err(|_| "no-mic: превышено время поиска микрофонов".to_string())?
     .map_err(|e| format!("no-mic: {e}"))?;
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    let devices = parse_dshow_devices(&stderr);
+    let output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let devices = if linux {
+        parse_pulse_sources(&output)
+    } else {
+        parse_dshow_devices(&output)
+    };
     if devices.is_empty() {
         return Err(
             "no-mic: микрофон не найден. Подключи устройство и попробуй снова.".to_string(),
@@ -725,6 +757,15 @@ mod tests {
             vec!["Microphone (Realtek Audio)".to_string()]
         );
         assert!(parse_dshow_devices("dummy").is_empty());
+    }
+
+    #[test]
+    fn pulse_parser_lists_inputs_but_not_sink_monitors() {
+        let sample = "Auto-detected sources for pulse:\n  RDPSink.monitor [Monitor of RDP Sink] (none)\n* RDPSource [RDP Source] (none)\n  alsa_input.usb-GK50 [GK50 microphone] (none)\n";
+        assert_eq!(
+            parse_pulse_sources(sample),
+            vec!["RDPSource".to_string(), "alsa_input.usb-GK50".to_string()]
+        );
     }
 
     #[test]

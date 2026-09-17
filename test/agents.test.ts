@@ -48,6 +48,7 @@ test("evidence workers delegate only through the guarded dispatcher", () => {
   assert.equal(agents["orch-lead"]?.permission.git_git_reset, "deny")
   assert.equal(agents["orch-lead"]?.permission["ast-grep_*"], "allow")
   assert.equal(agents["orch-lead"]?.permission["ast_grep_*"], "allow")
+  assert.equal(agents["orch-lead"]?.permission.orchestration_relay_context, "allow")
   assert.equal(agents["orch-repo"]?.permission["codebase_memory_*"], "allow")
   assert.equal(agents["orch-repo"]?.permission["ast-grep_*"], "allow")
   assert.equal(agents["orch-repo"]?.permission["git_*"], "deny")

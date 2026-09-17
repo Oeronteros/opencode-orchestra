@@ -957,8 +957,9 @@ async function main(): Promise<void> {
     console.log(`ast-grep: ${dependencyLine(result.dependencies.astGrep)}`)
     console.log(`Voice overlay: ${dependencyLine(result.dependencies.voice)}`)
     if (result.dependencies.voice.status === "installed" || result.dependencies.voice.status === "existing") {
-      console.log("Голосовая кнопка установлена: запусти voice-overlay.")
-      console.log("TUI — вставка в промпт, Web — отправка в сессию (переключатель — кнопка ⚙ в окне).")
+      console.log("TUI или отдельное окно: запусти voice-overlay.")
+      console.log("Web с текущей вкладкой и выбором микрофона: запусти bunx @oeronteros-1/opencode-orchestra@latest web и открой http://127.0.0.1:4097.")
+      console.log("Отдельное окно не может определить активную вкладку браузера; Web-сессия в нём выбирается вручную через ⚙.")
     }
     if (result.changed.length > 0) console.log(`Changed: ${result.changed.join(", ")}`)
     if (result.preserved.length > 0) console.log(`Preserved: ${result.preserved.join(", ")}`)

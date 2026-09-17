@@ -335,6 +335,29 @@ test("interrupted runs persist results and resume in a new session", async () =>
   }
 })
 
+test("pending parent context survives restart until a worker acknowledges it", async () => {
+  const state = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  const taskContract = contract()
+  const plan: TaskPlan = {
+    nodes: [{ id: "inspect", description: "Inspect", worker: "orch-repo", dependsOn: [], role: "specialist", contract: taskContract }],
+    levels: [["inspect"]],
+    maxParallel: 1,
+  }
+  state.registerPlan("root", plan)
+  const relayed = state.relayContext("root", "inspect", "Check the current branch only.")
+  assert.equal(relayed.ok, true)
+
+  const restored = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
+  assert.equal(restored.restore(state.exportState()), 1)
+  const lease = assertLease(await restored.acquire({
+    parentSessionID: "root", nodeId: "inspect", agent: "orch-repo", task: "Inspect", contract: taskContract,
+  }))
+  assert.deepEqual(restored.pendingContext(lease).map((update) => update.text), ["Check the current branch only."])
+  restored.acknowledgeContext(lease, restored.pendingContext(lease).map((update) => update.id))
+  assert.equal(restored.pendingContext(lease).length, 0)
+  restored.complete(lease, true, undefined, "done")
+})
+
 test("completion claims remain distinct from runtime-verified completion", async () => {
   const state = new OrchestrationRunState({ maxWorkers: 8, parallelWorkers: 8, maxDelegationDepth: 2 })
   const lease = assertLease(await state.acquire({
@@ -420,6 +443,7 @@ test("dashboard actions cancel a branch and retry invalidates downstream results
   state.registerPlan("root", plan)
   const lease = assertLease(await state.acquire({ parentSessionID: "root", nodeId: "first", agent: "orch-repo", task: "first", contract: firstContract }))
   state.attachSession(lease, "child")
+  state.relayContext("root", "first", "Preserve this clarification across retry.")
   const cancelled = state.cancelBranch("root", "first")
   assert.deepEqual(cancelled.affected, ["first", "second"])
   assert.deepEqual(cancelled.childSessionIDs, ["child"])
@@ -428,6 +452,8 @@ test("dashboard actions cancel a branch and retry invalidates downstream results
   const retried = state.retryBranch("root", "first")
   assert.ok(retried.run.nodes.every((node) => node.status === "pending"))
   const retryLease = assertLease(await state.acquire({ parentSessionID: "root", nodeId: "first", agent: "orch-repo", task: "first", contract: firstContract }))
+  assert.deepEqual(state.pendingContext(retryLease).map((update) => update.text), ["Preserve this clarification across retry."])
+  state.acknowledgeContext(retryLease, state.pendingContext(retryLease).map((update) => update.id))
   state.complete(lease, true, undefined, "stale result")
   assert.equal(state.snapshot("root")?.nodes.find((node) => node.id === "first")?.status, "running")
   state.complete(retryLease, true, undefined, "new result")

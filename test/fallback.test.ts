@@ -227,6 +227,21 @@ test("per-agent fallback removes a duplicate primary", () => {
   assert.deepEqual(fallbackModelsForAgent(config, "orch-repo"), ["vendor/primary", "vendor/second"])
 })
 
+test("required internal stages inherit an explicit lead when manual pools are empty", () => {
+  const config = orchestraConfigSchema.parse({
+    models: {
+      strategy: "manual",
+      agents: { "orch-lead": "vendor/lead", "orch-repo": "vendor/repo" },
+      lead: [],
+      worker: { code: [], reasoning: [], research: [], vision: [], image: [] },
+    },
+  })
+  assert.deepEqual(fallbackModelsForAgent(config, "orch-merge"), ["vendor/lead"])
+  assert.deepEqual(fallbackModelsForAgent(config, "orch-integrator"), ["vendor/lead"])
+  assert.deepEqual(fallbackModelsForAgent(config, "orch-editor"), ["vendor/lead"])
+  assert.deepEqual(fallbackModelsForAgent(config, "orch-docs"), [])
+})
+
 test("dispatchWithFallback switches after retryable failures", async () => {
   const called: string[] = []
   const result = await dispatchWithFallback(["vendor/first", "vendor/second"], async (model) => {

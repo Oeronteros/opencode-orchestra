@@ -153,6 +153,8 @@ Before execution, Orchestra estimates and reserves the whole DAG budget. A plan 
 
 The dashboard **Runs** page renders the persisted dependency graph, node contracts, outputs, failures, completion gates, and task budget. A running branch can be cancelled and a failed, blocked, or cancelled branch can be retried. Retry invalidates downstream results and stale worker responses cannot overwrite the new attempt.
 
+While a node is pending or active, the lead can send a bounded clarification through `orchestration_relay_context`. The update survives restart and retry, and an active dispatch asks the same worker session for a revised complete result before marking the node successful.
+
 By default Orchestra starts with two specialists plus synthesis and keeps the remaining worker slots available. `orchestration_adapt` can add a versioned branch only for a concrete runtime trigger such as a failed reproduction, contradictory evidence, an authorization boundary, a documentation gap, a performance or visual regression, low confidence, or evidence-backed lack of progress. Every trigger needs evidence, repeated triggers are ignored, and the dashboard shows the resulting plan version. Configure this with `orchestration.adaptive.initialWorkers`, `maxExtensions`, and `minEvidenceItems`.
 
 Loop progress uses successful nodes, validated commits, and passed verification gates. Rephrasing the same `MORE` reason no longer resets the no-progress limit.

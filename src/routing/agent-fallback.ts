@@ -48,7 +48,14 @@ function automaticModels(config: OrchestraConfig, agent: string): string[] {
 /** Resolve one agent's effective primary + fallback order without duplicates. */
 export function fallbackModelsForAgent(config: OrchestraConfig, agent: string, assignedModel?: string): string[] {
   const automatic = automaticModels(config, agent)
-  const primary = assignedModel ?? config.models.agents[agent] ?? automatic[0]
+  // These internal execution stages are required by plans but older/manual
+  // configs often name only the public lead and evidence workers. The lead is
+  // already selected for implementation and synthesis, so it is the safe
+  // inherited primary when the stage has neither an override nor a pool.
+  const inheritedLead = agent === "orch-merge" || agent === "orch-integrator" || agent === "orch-editor"
+    ? config.models.agents["orch-lead"]
+    : undefined
+  const primary = assignedModel ?? config.models.agents[agent] ?? automatic[0] ?? inheritedLead
   if (!primary) return []
   if (!config.models.fallback.enabled) return [primary]
 

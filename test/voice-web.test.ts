@@ -198,6 +198,21 @@ test('settings are saved and restored by the browser client', () => {
   )
 })
 
+test('voice settings keep native select menus legible without hover', () => {
+  const browser = voiceBrowser()
+  const microphone = browser.elements.find(
+    (el) => el.tag === 'label' && el.textContent === 'Микрофон'
+  )!.children[0]!
+  assert.match(microphone.style.cssText ?? '', /color:#f8fafc/)
+  assert.match(microphone.style.cssText ?? '', /background:#161b22/)
+  assert.match(microphone.style.cssText ?? '', /color-scheme:dark/)
+  assert.match(microphone.children[0]!.style.cssText ?? '', /color:#f8fafc/)
+  assert.match(
+    microphone.children[0]!.style.cssText ?? '',
+    /background:#161b22/
+  )
+})
+
 test('voice web rejects remote upstreams and invalid audio', async () => {
   await assert.rejects(
     startVoiceWeb({ upstream: 'http://example.com' }),

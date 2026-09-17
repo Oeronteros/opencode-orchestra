@@ -17,6 +17,19 @@ export function parseDshowDevices(ffmpegStderr: string): string[] {
   return out;
 }
 
+/** Parse `ffmpeg -sources pulse`, excluding monitor/loopback outputs. */
+export function parsePulseSources(ffmpegOutput: string): string[] {
+  const out: string[] = [];
+  for (const line of ffmpegOutput.split(/\r?\n/)) {
+    const entry = line.trim().replace(/^\*\s*/, "");
+    const match = /^(\S+)\s+\[.+\]\s+\(.+\)$/.exec(entry);
+    const name = match?.[1];
+    if (name === undefined || name.endsWith(".monitor") || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out;
+}
+
 export function ffmpegInputArgs(os: OsKind, device: string | undefined): string[] {
   if (os === "linux") return ["-f", "pulse", "-i", device ?? "default"];
   if (device !== undefined) return ["-f", "dshow", "-i", `audio=${device}`];

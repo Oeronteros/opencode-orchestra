@@ -1,6 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_SECONDS, SAMPLE_RATE, ffmpegInputArgs, ffmpegOutputArgs, parseDshowDevices } from "../src/lib/audio.js";
+import {
+  MAX_SECONDS,
+  SAMPLE_RATE,
+  ffmpegInputArgs,
+  ffmpegOutputArgs,
+  parseDshowDevices,
+  parsePulseSources,
+} from "../src/lib/audio.js";
 
 const DSHOW_SAMPLE = [
   "[dshow @ 0x123] DirectShow audio devices",
@@ -18,6 +25,20 @@ describe("parseDshowDevices", () => {
   });
   it("returns empty array when no audio devices", () => {
     assert.deepEqual(parseDshowDevices("dummy output"), []);
+  });
+});
+
+describe("parsePulseSources", () => {
+  it("returns recording sources and skips output monitors", () => {
+    assert.deepEqual(
+      parsePulseSources([
+        "Auto-detected sources for pulse:",
+        "  RDPSink.monitor [Monitor of RDP Sink] (none)",
+        "* RDPSource [RDP Source] (none)",
+        "  alsa_input.usb-GK50 [GK50 microphone] (none)",
+      ].join("\n")),
+      ["RDPSource", "alsa_input.usb-GK50"],
+    );
   });
 });
 

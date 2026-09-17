@@ -96,7 +96,21 @@ export interface PersistedRunNode {
   attempt?: number
   error?: string
   output?: string
+  contextUpdates?: WorkerContextUpdate[]
 }
+
+export interface WorkerContextUpdate {
+  id: number
+  text: string
+}
+
+export type RelayContextResult =
+  | { ok: true; rootSessionID: string; nodeId: string; update: WorkerContextUpdate; delivery: "pending" | "active" }
+  | { ok: false; error: string }
+
+export type ContextAwareCompletion =
+  | { completed: true; snapshot: RunSnapshot }
+  | { completed: false; updates: WorkerContextUpdate[] }
 
 export interface PersistedRun {
   rootSessionID: string
@@ -189,6 +203,8 @@ interface MutableRunNode {
   error?: string
   /** Successful text output retained only for the lifetime of this in-memory run. */
   output?: string
+  /** Parent clarifications retained until the worker successfully incorporates them. */
+  contextUpdates: WorkerContextUpdate[]
 }
 
 interface PendingDispatch {
@@ -303,6 +319,7 @@ function fromPlanNode(node: PlanNode): MutableRunNode {
     started: false,
     attempt: 0,
     active: false,
+    contextUpdates: [],
   }
 }
 
@@ -500,6 +517,59 @@ export class OrchestrationRunState {
     node.currentSessionID = childSessionID
     run.touchedAt = Date.now()
     this.changed()
+  }
+
+  /** Queue a bounded clarification for a node that has not finished yet. */
+  relayContext(sessionID: string, nodeId: string, text: string): RelayContextResult {
+    const rootSessionID = this.rootSessionID(sessionID)
+    const run = this.runs.get(rootSessionID)
+    const node = run?.nodes.get(nodeId)
+    if (!run || !node) return { ok: false, error: `Orchestration node ${nodeId} was not found.` }
+    if (node.status !== "pending" && node.status !== "queued" && node.status !== "running") {
+      return { ok: false, error: `Node ${nodeId} is ${node.status}; context can only be relayed before completion.` }
+    }
+    const normalized = text.replace(/\r\n/g, "\n").trim().slice(0, 8_000)
+    if (!normalized) return { ok: false, error: "Context update is empty." }
+    if (node.contextUpdates.length >= 16) return { ok: false, error: `Node ${nodeId} already has 16 pending context updates.` }
+    const update = {
+      id: (node.contextUpdates.at(-1)?.id ?? 0) + 1,
+      text: normalized,
+    }
+    node.contextUpdates.push(update)
+    run.touchedAt = Date.now()
+    this.changed()
+    return {
+      ok: true,
+      rootSessionID,
+      nodeId,
+      update: { ...update },
+      delivery: node.status === "running" ? "active" : "pending",
+    }
+  }
+
+  pendingContext(lease: DispatchLease): WorkerContextUpdate[] {
+    const run = this.runs.get(lease.rootSessionID)
+    const node = run?.nodes.get(lease.nodeId)
+    if (!run || !node || node.status !== "running" || node.attempt !== lease.attempt) return []
+    return node.contextUpdates.map((update) => ({ ...update }))
+  }
+
+  acknowledgeContext(lease: DispatchLease, updateIds: number[]): void {
+    if (updateIds.length === 0) return
+    const run = this.runs.get(lease.rootSessionID)
+    const node = run?.nodes.get(lease.nodeId)
+    if (!run || !node || node.status !== "running" || node.attempt !== lease.attempt) return
+    const delivered = new Set(updateIds)
+    node.contextUpdates = node.contextUpdates.filter((update) => !delivered.has(update.id))
+    run.touchedAt = Date.now()
+    this.changed()
+  }
+
+  /** Atomically finish only when no parent clarification is waiting. */
+  completeIfContextDrained(lease: DispatchLease, output: string): ContextAwareCompletion {
+    const updates = this.pendingContext(lease)
+    if (updates.length > 0) return { completed: false, updates }
+    return { completed: true, snapshot: this.complete(lease, true, undefined, output) }
   }
 
   complete(lease: DispatchLease, succeeded: boolean, error?: string, output?: string): RunSnapshot {
@@ -927,6 +997,7 @@ export class OrchestrationRunState {
           attempt: node.attempt,
           ...(node.error ? { error: node.error } : {}),
           ...(node.output ? { output: node.output } : {}),
+          ...(node.contextUpdates.length ? { contextUpdates: node.contextUpdates.map((update) => ({ ...update })) } : {}),
         })),
       })),
     }
@@ -960,6 +1031,9 @@ export class OrchestrationRunState {
           active: false,
           ...(raw.error && !interrupted ? { error: raw.error } : {}),
           ...(raw.output ? { output: raw.output } : {}),
+          contextUpdates: Array.isArray(raw.contextUpdates)
+            ? raw.contextUpdates.filter((update) => update && Number.isInteger(update.id) && typeof update.text === "string").map((update) => ({ id: update.id, text: update.text }))
+            : [],
         })
       }
       if (nodes.size === 0) continue
@@ -1080,6 +1154,7 @@ export class OrchestrationRunState {
       started: false,
       attempt: 0,
       active: false,
+      contextUpdates: [],
     }
     run.nodes.set(node.id, node)
     return { ok: true, node }

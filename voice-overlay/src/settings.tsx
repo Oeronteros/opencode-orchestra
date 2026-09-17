@@ -23,6 +23,10 @@ export function SettingsView(props: {
   settings: OverlaySettings;
   devices: string[];
   sessions: SessionRef[];
+  deviceError: string | null;
+  sessionError: string | null;
+  onRefreshDevices: () => void;
+  onRefreshSessions: (settings: OverlaySettings) => void;
   onChange: (next: OverlaySettings) => void;
   onBack: () => void;
 }) {
@@ -30,6 +34,9 @@ export function SettingsView(props: {
   const [error, setError] = useState("");
   const set = (patch: Partial<OverlaySettings>) =>
     setDraft((d) => ({ ...d, ...patch }));
+  const selectedSessionMissing =
+    draft.sessionId !== "" &&
+    !props.sessions.some((session) => session.id === draft.sessionId);
   return (
     <main className="overlay-shell settings-shell">
       <WindowHeader />
@@ -53,6 +60,14 @@ export function SettingsView(props: {
               </option>
             ))}
           </select>
+          <button type="button" onClick={props.onRefreshDevices}>
+            Обновить микрофоны
+          </button>
+          {props.deviceError && (
+            <small className="field-note" role="alert">
+              {props.deviceError}
+            </small>
+          )}
         </label>
         <label>
           Модель
@@ -164,12 +179,33 @@ export function SettingsView(props: {
                 onChange={(e) => set({ sessionId: e.target.value })}
               >
                 <option value="">Выбери сессию</option>
+                {selectedSessionMissing && (
+                  <option value={draft.sessionId}>
+                    Недоступна — {draft.sessionId}
+                  </option>
+                )}
                 {props.sessions.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.title}
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                onClick={() => props.onRefreshSessions(draft)}
+              >
+                Обновить сессии
+              </button>
+              {selectedSessionMissing && (
+                <small className="field-note" role="alert">
+                  Сервер больше не возвращает выбранную сессию.
+                </small>
+              )}
+              {props.sessionError && (
+                <small className="field-note" role="alert">
+                  {props.sessionError}
+                </small>
+              )}
             </label>
           )}
         </details>

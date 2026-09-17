@@ -228,7 +228,14 @@ export function voiceWebClient(
   settingsButton.setAttribute('aria-label', 'Настройки голоса')
   const settingsPanel = document.createElement('section')
   settingsPanel.setAttribute('aria-label', 'Голос')
-  settingsPanel.style.cssText = panel.style.cssText
+  settingsPanel.style.cssText = `${panel.style.cssText};color-scheme:dark`
+  const createSelectOption = (value: string, text: string) => {
+    const option = document.createElement('option')
+    option.value = value
+    option.textContent = text
+    option.style.cssText = 'color:#f8fafc;background:#161b22'
+    return option
+  }
   const addSelect = (
     title: string,
     choices: [string, string][],
@@ -238,11 +245,10 @@ export function voiceWebClient(
     label.textContent = title
     label.style.cssText = 'display:grid;gap:6px;margin:12px 0'
     const select = document.createElement('select')
+    select.style.cssText =
+      'width:100%;padding:8px;color:#f8fafc;background:#161b22;border:1px solid #8885;border-radius:6px;color-scheme:dark'
     for (const [id, text] of choices) {
-      const option = document.createElement('option')
-      option.value = id
-      option.textContent = text
-      select.append(option)
+      select.append(createSelectOption(id, text))
     }
     select.value = value
     label.append(select)
@@ -310,11 +316,12 @@ export function voiceWebClient(
           (d) => d.kind === 'audioinput' && d.deviceId !== 'default'
         )
       ]) {
-        const option = document.createElement('option')
-        option.value = device.deviceId
-        option.textContent =
-          device.label || 'Микрофон (разрешите доступ для названия)'
-        devicePicker.append(option)
+        devicePicker.append(
+          createSelectOption(
+            device.deviceId,
+            device.label || 'Микрофон (разрешите доступ для названия)'
+          )
+        )
       }
       devicePicker.value = preferences.device
     } catch {
@@ -340,17 +347,15 @@ export function voiceWebClient(
         throw new Error('Некорректный список сессий')
       if (active || sending) return
       sessionPicker.replaceChildren()
-      const empty = document.createElement('option')
-      empty.value = ''
-      empty.textContent = 'Выберите сессию'
-      sessionPicker.append(empty)
+      sessionPicker.append(createSelectOption('', 'Выберите сессию'))
       for (const item of sessions) {
         if (!item || typeof item.id !== 'string') continue
-        const option = document.createElement('option')
-        option.value = item.id
-        option.textContent =
-          typeof item.title === 'string' ? item.title : item.id
-        sessionPicker.append(option)
+        sessionPicker.append(
+          createSelectOption(
+            item.id,
+            typeof item.title === 'string' ? item.title : item.id
+          )
+        )
       }
       sessionPicker.value = preferences.sessionId
       preferences.sessionId = sessionPicker.value
