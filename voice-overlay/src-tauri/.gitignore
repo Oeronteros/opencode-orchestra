@@ -1,2 +1,6 @@
 target/
 binaries/*.wav
+# Downloaded build inputs and Tauri-generated schemas.
+binaries/ffmpeg-*
+binaries/whisper-*
+gen/

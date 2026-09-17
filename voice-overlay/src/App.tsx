@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   appendToPrompt,
+  submitPrompt,
   cancelTranscription,
   listMicrophones,
   listSessions,
@@ -15,16 +16,27 @@ import { MAX_SECONDS } from "./lib/audio";
 import type { SessionRef } from "./lib/opencode";
 import { loadSettings, SettingsView, type OverlaySettings } from "./settings";
 import { WindowHeader } from "./WindowHeader";
+import { createVoicePolicy } from "../../src/voice-context";
 
 function codeOf(message: string): OverlayErrorCode | null {
   const head = message.split(": ")[0];
   const codes: OverlayErrorCode[] = [
-    "no-mic", "no-ffmpeg", "no-audio-server", "model-missing",
-    "server-unreachable", "unauthorized", "empty-transcript",
-    "empty-recording", "too-long", "transcribe-failed",
-    "no-session", "session-not-found",
+    "no-mic",
+    "no-ffmpeg",
+    "no-audio-server",
+    "model-missing",
+    "server-unreachable",
+    "unauthorized",
+    "empty-transcript",
+    "empty-recording",
+    "too-long",
+    "transcribe-failed",
+    "no-session",
+    "session-not-found",
   ];
-  return (codes as string[]).includes(head ?? "") ? (head as OverlayErrorCode) : null;
+  return (codes as string[]).includes(head ?? "")
+    ? (head as OverlayErrorCode)
+    : null;
 }
 
 export function App() {
@@ -44,12 +56,26 @@ export function App() {
   const [elapsed, setElapsed] = useState(0);
   const operation = useRef(false);
   const timer = useRef<number | null>(null);
+  const invocation = useRef<OverlaySettings>(settings);
+  const destination = createVoicePolicy().resolve(
+    settings.target,
+    { source: "tui" },
+    settings.sessionId,
+  );
+  const manual =
+    destination.type === "session" || destination.type === "picker";
 
   useEffect(() => {
     if (status !== "recording") return;
     const started = Date.now();
     setElapsed(0);
-    const interval = window.setInterval(() => setElapsed(Math.min(MAX_SECONDS, Math.floor((Date.now() - started) / 1000))), 250);
+    const interval = window.setInterval(
+      () =>
+        setElapsed(
+          Math.min(MAX_SECONDS, Math.floor((Date.now() - started) / 1000)),
+        ),
+      250,
+    );
     return () => window.clearInterval(interval);
   }, [status]);
 
@@ -62,8 +88,10 @@ export function App() {
   };
 
   useEffect(() => {
-    listMicrophones().then(setDevices).catch(() => setDevices([]));
-    void loadSessions(settings);
+    listMicrophones()
+      .then(setDevices)
+      .catch(() => setDevices([]));
+    if (settings.target === "web") void loadSessions(settings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -77,7 +105,9 @@ export function App() {
   const fail = (message: string) => {
     const code = codeOf(message);
     setError(code !== null ? errorCopy(code) : message);
-    setErrorDetail(code !== null ? message.slice(message.indexOf(":") + 1).trim() : null);
+    setErrorDetail(
+      code !== null ? message.slice(message.indexOf(":") + 1).trim() : null,
+    );
     setStatus("error");
   };
 
@@ -88,8 +118,12 @@ export function App() {
     setError(null);
     setErrorDetail(null);
     setNotice(null);
+    invocation.current = { ...settings };
     try {
-      await startRecording(settings.device === "" ? undefined : settings.device, settings.model);
+      await startRecording(
+        settings.device === "" ? undefined : settings.device,
+        settings.model,
+      );
     } catch (e) {
       fail(String(e));
       return;
@@ -106,6 +140,12 @@ export function App() {
   const onStop = async (auto = false) => {
     if (operation.current) return;
     operation.current = true;
+    const settings = invocation.current;
+    const destination = createVoicePolicy().resolve(
+      settings.target,
+      { source: "tui" },
+      settings.sessionId,
+    );
     try {
       if (timer.current !== null) {
         window.clearTimeout(timer.current);
@@ -135,20 +175,58 @@ export function App() {
         setRecognizing(false);
         setCancelling(false);
       }
-      setPreview(previous => settings.target === "web" && previous ? `${previous}\n${text}` : text);
+      setPreview((previous) =>
+        settings.target === "web" && previous ? `${previous}\n${text}` : text,
+      );
       if (settings.target === "web") {
-        // No auto-send in web mode (spec Section 6): user confirms via send button.
-        setNotice(auto ? "Достигнут лимит 120 секунд — нажми «Отправить в сессию»" : "Проверь текст и нажми «Отправить в сессию»");
+        if (
+          settings.postTranscriptionAction === "insert-and-submit" &&
+          destination.type === "session"
+        ) {
+          try {
+            await sendToSession(settings, destination.sessionId, text);
+            // Only this recording was submitted; retain any older unsent draft.
+            setPreview(preview);
+            setNotice("Отправлено в выбранную сессию");
+            setStatus("idle");
+          } catch (e) {
+            fail(String(e));
+          }
+          return;
+        }
+        setNotice(
+          auto
+            ? "Достигнут лимит 120 секунд — нажми «Отправить в сессию»"
+            : "Проверь текст и нажми «Отправить в сессию»",
+        );
         setStatus("idle");
         return;
       }
       try {
         await appendToPrompt(settings, text);
-        setNotice((auto ? "Достигнут лимит 120 секунд. " : "") + "Передано серверу. Проверь текст в TUI; если он не появился — скопируй его ниже.");
+        if (settings.postTranscriptionAction === "insert-and-submit") {
+          // A failed submit must not trigger a second append or lose the draft.
+          try {
+            await submitPrompt(settings);
+          } catch (e) {
+            setNotice(
+              `Текст вставлен; отправьте его из TUI вручную. ${String(e)}`,
+            );
+            setStatus("idle");
+            return;
+          }
+        }
+        setNotice(
+          (auto ? "Достигнут лимит 120 секунд. " : "") +
+            "Передано серверу. Проверь текст в TUI; если он не появился — скопируй его ниже.",
+        );
         setStatus("idle");
       } catch (e) {
         const message = String(e);
-        if (message.startsWith("fallback:") || message.startsWith("server-unreachable:")) {
+        if (
+          message.startsWith("fallback:") ||
+          message.startsWith("server-unreachable:")
+        ) {
           try {
             await navigator.clipboard.writeText(text);
             setNotice("Сервер недоступен — текст скопирован в буфер обмена");
@@ -166,7 +244,12 @@ export function App() {
   };
 
   const onSend = async () => {
-    if (operation.current || !preview.trim() || (settings.target === "web" && settings.sessionId === "")) return;
+    if (
+      operation.current ||
+      !preview.trim() ||
+      (settings.target === "web" && settings.sessionId === "")
+    )
+      return;
     operation.current = true;
     setSending(true);
     setError(null);
@@ -182,7 +265,10 @@ export function App() {
       setStatus("idle");
     } catch (e) {
       const message = String(e);
-      if (message.startsWith("fallback:") || message.startsWith("server-unreachable:")) {
+      if (
+        message.startsWith("fallback:") ||
+        message.startsWith("server-unreachable:")
+      ) {
         try {
           await navigator.clipboard.writeText(preview);
           setNotice("Сервер недоступен — текст скопирован в буфер обмена");
@@ -200,14 +286,24 @@ export function App() {
   };
 
   const onCopy = async () => {
-    try { await navigator.clipboard.writeText(preview); setNotice("Текст скопирован"); }
-    catch { setNotice("Не удалось открыть буфер обмена. Выдели и скопируй текст вручную."); }
+    try {
+      await navigator.clipboard.writeText(preview);
+      setNotice("Текст скопирован");
+    } catch {
+      setNotice(
+        "Не удалось открыть буфер обмена. Выдели и скопируй текст вручную.",
+      );
+    }
   };
 
   const onCancel = async () => {
     setCancelling(true);
-    try { await cancelTranscription(); }
-    catch (e) { setNotice(String(e)); setCancelling(false); }
+    try {
+      await cancelTranscription();
+    } catch (e) {
+      setNotice(String(e));
+      setCancelling(false);
+    }
   };
 
   if (showSettings) {
@@ -220,7 +316,7 @@ export function App() {
           setSettings(next);
           setError(null);
           setStatus("idle");
-          void loadSessions(next);
+          if (next.target === "web") void loadSessions(next);
           setShowSettings(false);
         }}
         onBack={() => setShowSettings(false)}
@@ -228,51 +324,210 @@ export function App() {
     );
   }
 
-  const busy = starting || sending || status === "recording" || status === "transcribing";
+  const busy =
+    starting || sending || status === "recording" || status === "transcribing";
   const canSend = preview.trim() !== "" && !busy;
   return (
     <main className="overlay-shell" data-status={status}>
       <WindowHeader busy={busy} />
       <div className="toolbar">
-        <span className="target-tag">{settings.target === "web" ? "Web-сессия" : "Промпт OpenCode"}</span>
-        <button className="icon-button" type="button" disabled={busy} onClick={() => setShowSettings(true)} aria-label="Настройки" title="Настройки">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>
+        <span className="target-tag">
+          {settings.target === "web" ? "Web-сессия" : "Промпт OpenCode"}
+        </span>
+        <button
+          className="icon-button"
+          type="button"
+          disabled={busy}
+          onClick={() => setShowSettings(true)}
+          aria-label="Настройки"
+          title="Настройки"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            aria-hidden="true"
+          >
+            <path d="M4 7h16M4 17h16" />
+            <circle cx="9" cy="7" r="3" />
+            <circle cx="15" cy="17" r="3" />
+          </svg>
         </button>
       </div>
+      {manual && (
+        <label className="transcript">
+          Сессия
+          <select
+            aria-label="Сессия"
+            value={settings.sessionId}
+            disabled={busy}
+            onChange={(e) => {
+              const next = { ...settings, sessionId: e.target.value };
+              setSettings(next);
+              try {
+                localStorage.setItem(
+                  "voice-overlay-settings:v1",
+                  JSON.stringify(next),
+                );
+              } catch {
+                setNotice("Выбор сессии не сохранён.");
+              }
+            }}
+          >
+            <option value="">Выберите сессию</option>
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {session.title}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void loadSessions(settings)}
+          >
+            Обновить
+          </button>
+        </label>
+      )}
       <section className="recorder" aria-label="Голосовая запись">
         <div className="record-ring">
-          <button className={`record-button ${status === "recording" ? "is-recording" : ""}`} type="button"
+          <button
+            className={`record-button ${status === "recording" ? "is-recording" : ""}`}
+            type="button"
             disabled={starting || sending || status === "transcribing"}
-            aria-label={status === "recording" ? "Остановить запись" : "Начать запись"}
-            onClick={() => status === "recording" ? void onStop(false) : void onRecord()}>
-            {status === "transcribing" || starting ? <span className="spinner" aria-hidden="true" /> : status === "recording" ? <span className="stop-icon" aria-hidden="true" /> : (
-              <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><rect x="11" y="4" width="10" height="16" rx="5"/><path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M12 29h8"/></svg>
+            aria-label={
+              status === "recording" ? "Остановить запись" : "Начать запись"
+            }
+            onClick={() =>
+              status === "recording" ? void onStop(false) : void onRecord()
+            }
+          >
+            {status === "transcribing" || starting ? (
+              <span className="spinner" aria-hidden="true" />
+            ) : status === "recording" ? (
+              <span className="stop-icon" aria-hidden="true" />
+            ) : (
+              <svg
+                viewBox="0 0 32 32"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <rect x="11" y="4" width="10" height="16" rx="5" />
+                <path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4M12 29h8" />
+              </svg>
             )}
           </button>
         </div>
-        <h1>{starting ? "Подключаем микрофон" : status === "recording" ? "Слушаю вас" : status === "transcribing" ? "Распознаю речь" : "Скажите, что сделать"}</h1>
-        <p className="record-hint" role="status">{starting ? "Ещё немного…" : status === "recording" ? "Нажмите, чтобы завершить запись" : status === "transcribing" ? "Обрабатываю запись на устройстве" : "Нажмите на микрофон и начните говорить"}</p>
-        <div className={`record-meter ${status === "recording" ? "is-active" : ""}`}>
+        <h1>
+          {starting
+            ? "Подключаем микрофон"
+            : status === "recording"
+              ? "Слушаю вас"
+              : status === "transcribing"
+                ? "Распознаю речь"
+                : "Скажите, что сделать"}
+        </h1>
+        <p className="record-hint" role="status">
+          {starting
+            ? "Ещё немного…"
+            : status === "recording"
+              ? "Нажмите, чтобы завершить запись"
+              : status === "transcribing"
+                ? "Обрабатываю запись на устройстве"
+                : "Нажмите на микрофон и начните говорить"}
+        </p>
+        <div
+          className={`record-meter ${status === "recording" ? "is-active" : ""}`}
+        >
           <span className="status-dot" aria-hidden="true" />
-          <span>{status === "recording" ? `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}` : "До 2 минут"}</span>
-          <span className="meter-divider">·</span><span>Локально</span>
+          <span>
+            {status === "recording"
+              ? `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`
+              : "До 2 минут"}
+          </span>
+          <span className="meter-divider">·</span>
+          <span>Локально</span>
         </div>
       </section>
-      {recognizing && <button type="button" className="send-button" disabled={cancelling} onClick={() => void onCancel()}>{cancelling ? "Отменяем…" : "Отменить распознавание"}</button>}
-      {preview !== "" && <section className="transcript">
-        <label className="section-label" htmlFor="voice-draft">Распознанный текст — можно исправить</label>
-        <textarea id="voice-draft" value={preview} disabled={busy} onChange={e => setPreview(e.target.value)} rows={4} />
-        <div className="transcript-actions">
-          <button type="button" onClick={() => void onCopy()}>Копировать</button>
-          <button type="button" disabled={busy} onClick={() => { setPreview(""); setNotice(null); }}>Удалить</button>
-          <button type="button" disabled={!canSend || (settings.target === "web" && settings.sessionId === "")} onClick={() => void onSend()}>
-            {settings.target === "web" ? "Отправить в сессию" : "Повторить вставку в TUI"}
-          </button>
+      {recognizing && (
+        <button
+          type="button"
+          className="send-button"
+          disabled={cancelling}
+          onClick={() => void onCancel()}
+        >
+          {cancelling ? "Отменяем…" : "Отменить распознавание"}
+        </button>
+      )}
+      {preview !== "" && (
+        <section className="transcript">
+          <label className="section-label" htmlFor="voice-draft">
+            Распознанный текст — можно исправить
+          </label>
+          <textarea
+            id="voice-draft"
+            value={preview}
+            disabled={busy}
+            onChange={(e) => setPreview(e.target.value)}
+            rows={4}
+          />
+          <div className="transcript-actions">
+            <button type="button" onClick={() => void onCopy()}>
+              Копировать
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setPreview("");
+                setNotice(null);
+              }}
+            >
+              Удалить
+            </button>
+            <button
+              type="button"
+              disabled={
+                !canSend ||
+                (settings.target === "web" && settings.sessionId === "")
+              }
+              onClick={() => void onSend()}
+            >
+              {settings.target === "web"
+                ? "Отправить в сессию"
+                : "Повторить вставку в TUI"}
+            </button>
+          </div>
+        </section>
+      )}
+      {notice !== null && (
+        <p className="notice" role="status">
+          {notice}
+        </p>
+      )}
+      {error !== null && (
+        <div className="error-card" role="alert">
+          <p>{error}</p>
+          {errorDetail && (
+            <details>
+              <summary>Подробности ошибки</summary>
+              <pre>{errorDetail}</pre>
+            </details>
+          )}
         </div>
-      </section>}
-      {notice !== null && <p className="notice" role="status">{notice}</p>}
-      {error !== null && <div className="error-card" role="alert"><p>{error}</p>{errorDetail && <details><summary>Подробности ошибки</summary><pre>{errorDetail}</pre></details>}</div>}
-      <footer className="overlay-footer">{settings.target === "tui" ? "Текст появится в строке ввода" : "Отправка после вашего подтверждения"}</footer>
+      )}
+      <footer className="overlay-footer">
+        {settings.postTranscriptionAction === "insert-and-submit"
+          ? "Вставка и отправка после распознавания"
+          : !manual
+            ? "Текст появится в строке ввода"
+            : "Отправка после вашего подтверждения"}
+      </footer>
     </main>
   );
 }

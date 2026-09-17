@@ -7,15 +7,25 @@ export function healthCheck(cfg: ServerConfig): Promise<boolean> {
   return invoke<boolean>("health_check", { host: cfg.host, port: cfg.port });
 }
 
-export function appendToPrompt(cfg: ServerConfig, text: string): Promise<boolean> {
+export function appendToPrompt(
+  cfg: ServerConfig,
+  text: string,
+): Promise<boolean> {
   return invoke<boolean>("append_to_prompt", { cfg, text });
+}
+
+export function submitPrompt(cfg: ServerConfig): Promise<boolean> {
+  return invoke<boolean>("submit_prompt", { cfg });
 }
 
 export function listMicrophones(): Promise<string[]> {
   return invoke<string[]>("list_microphones");
 }
 
-export function startRecording(device: string | undefined, model: string): Promise<boolean> {
+export function startRecording(
+  device: string | undefined,
+  model: string,
+): Promise<boolean> {
   return invoke<boolean>("start_recording", { device: device ?? null, model });
 }
 
@@ -35,6 +45,14 @@ export function listSessions(cfg: ServerConfig): Promise<SessionRef[]> {
   return invoke<SessionRef[]>("list_sessions", { cfg });
 }
 
-export function sendToSession(cfg: ServerConfig, sessionId: string, text: string): Promise<boolean> {
-  return invoke<boolean>("send_to_session", { cfg, sessionId, text });
+export function sendToSession(
+  cfg: ServerConfig,
+  sessionId: string,
+  text: string,
+): Promise<boolean> {
+  return invoke<boolean>("send_to_session", {
+    cfg,
+    sessionId: encodeURIComponent(sessionId),
+    text,
+  });
 }

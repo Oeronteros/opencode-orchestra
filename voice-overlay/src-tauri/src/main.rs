@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::sync::{watch, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
+use tokio::sync::{watch, Mutex};
 mod sidecars;
 pub use sidecars::sidecar_file;
 
@@ -35,6 +35,10 @@ pub fn append_url(host: &str, port: u16) -> String {
     format!("http://{host}:{port}/tui/append-prompt")
 }
 
+pub fn submit_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}/tui/submit-prompt")
+}
+
 pub fn basic_auth_value(username: &str, password: &str) -> Option<String> {
     if username.is_empty() {
         return None;
@@ -62,7 +66,9 @@ pub fn parse_dshow_devices(stderr: &str) -> Vec<String> {
     let mut rest = stderr;
     while let Some(q1) = rest.find('"') {
         let after_open = &rest[q1 + 1..];
-        let Some(q2) = after_open.find('"') else { break };
+        let Some(q2) = after_open.find('"') else {
+            break;
+        };
         let name = &after_open[..q2];
         let after_close = &after_open[q2 + 1..];
         if after_close.trim_start().starts_with("(audio)") && !out.iter().any(|n| n == name) {
@@ -75,8 +81,18 @@ pub fn parse_dshow_devices(stderr: &str) -> Vec<String> {
 
 pub fn ffmpeg_input_args(os: &str, device: Option<&str>) -> Result<Vec<String>, String> {
     match (os, device) {
-        ("linux", d) => Ok(vec!["-f".to_string(), "pulse".to_string(), "-i".to_string(), d.unwrap_or("default").to_string()]),
-        (_, Some(d)) => Ok(vec!["-f".to_string(), "dshow".to_string(), "-i".to_string(), format!("audio={d}")]),
+        ("linux", d) => Ok(vec![
+            "-f".to_string(),
+            "pulse".to_string(),
+            "-i".to_string(),
+            d.unwrap_or("default").to_string(),
+        ]),
+        (_, Some(d)) => Ok(vec![
+            "-f".to_string(),
+            "dshow".to_string(),
+            "-i".to_string(),
+            format!("audio={d}"),
+        ]),
         _ => Err("no-mic: выбери микрофон DirectShow в настройках.".to_string()),
     }
 }
@@ -90,13 +106,18 @@ fn command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder().connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15)).build().map_err(|e| format!("server-unreachable: {e}"))
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("server-unreachable: {e}"))
 }
 
 fn sidecar_path(app: &AppHandle, base: &str) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("transcribe-failed: {e}"))?;
-    let dir = exe.parent().ok_or("transcribe-failed: executable directory missing")?;
+    let dir = exe
+        .parent()
+        .ok_or("transcribe-failed: executable directory missing")?;
     sidecars::resolve(base, dir, app.path().resource_dir().ok().as_deref())
 }
 
@@ -108,18 +129,38 @@ async fn recording_ffmpeg(app: &AppHandle, needs_pulse: bool) -> Result<PathBuf,
     candidates.push(PathBuf::from("ffmpeg"));
     let mut details = Vec::new();
     for path in candidates {
-        let probe = tokio::time::timeout(std::time::Duration::from_secs(5),
-            command(&path).args(["-hide_banner", "-devices"]).output()).await;
+        let probe = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            command(&path).args(["-hide_banner", "-devices"]).output(),
+        )
+        .await;
         match probe {
             Ok(Ok(output)) if output.status.success() => {
-                let devices = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-                let input = if needs_pulse { "pulse" } else if cfg!(target_os = "windows") { "dshow" } else { "lavfi" };
+                let devices = format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let input = if needs_pulse {
+                    "pulse"
+                } else if cfg!(target_os = "windows") {
+                    "dshow"
+                } else {
+                    "lavfi"
+                };
                 if sidecars::supports_input(&devices, input) {
                     return Ok(path);
                 }
-                details.push(format!("{}: нет входа {input}; установи ffmpeg с поддержкой {input}", path.display()));
+                details.push(format!(
+                    "{}: нет входа {input}; установи ffmpeg с поддержкой {input}",
+                    path.display()
+                ));
             }
-            Ok(Ok(output)) => details.push(format!("{}: {}", path.display(), String::from_utf8_lossy(&output.stderr).trim())),
+            Ok(Ok(output)) => details.push(format!(
+                "{}: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
             Ok(Err(error)) => details.push(format!("{}: {error}", path.display())),
             Err(_) => details.push(format!("{}: проверка превысила 5 секунд", path.display())),
         }
@@ -129,7 +170,9 @@ async fn recording_ffmpeg(app: &AppHandle, needs_pulse: bool) -> Result<PathBuf,
 
 #[tauri::command]
 async fn health_check(host: String, port: u16) -> Result<bool, String> {
-    let resp = http_client()?.get(format!("http://{host}:{port}/global/health")).send()
+    let resp = http_client()?
+        .get(format!("http://{host}:{port}/global/health"))
+        .send()
         .await
         .map_err(|e| format!("server-unreachable: {e}"))?;
     if !resp.status().is_success() {
@@ -157,9 +200,31 @@ async fn append_to_prompt(cfg: ServerConfig, text: String) -> Result<bool, Strin
     if !resp.status().is_success() {
         return Err(format!("fallback: http {}", resp.status()));
     }
-    let ack = resp.json::<bool>().await.map_err(|e| format!("fallback: {e}"))?;
+    let ack = resp
+        .json::<bool>()
+        .await
+        .map_err(|e| format!("fallback: {e}"))?;
     if append_outcome(status, ack) != "inserted" {
         return Err("fallback: сервер не подтвердил вставку".to_string());
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+async fn submit_prompt(cfg: ServerConfig) -> Result<bool, String> {
+    let mut req = http_client()?.post(submit_url(&cfg.host, cfg.port));
+    if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
+        req = req.header("Authorization", auth);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|_| "server-unreachable: отправка не подтверждена".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("submit-failed: http {}", resp.status()));
+    }
+    if !resp.json::<bool>().await.unwrap_or(false) {
+        return Err("submit-failed: сервер не подтвердил отправку".to_string());
     }
     Ok(true)
 }
@@ -170,16 +235,21 @@ async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
     let ffmpeg = recording_ffmpeg(&app, false).await?;
-    let out = tokio::time::timeout(Duration::from_secs(5), command(ffmpeg)
-        .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-        .output())
-        .await
-        .map_err(|_| "no-mic: превышено время поиска микрофонов".to_string())?
-        .map_err(|e| format!("no-mic: {e}"))?;
+    let out = tokio::time::timeout(
+        Duration::from_secs(5),
+        command(ffmpeg)
+            .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+            .output(),
+    )
+    .await
+    .map_err(|_| "no-mic: превышено время поиска микрофонов".to_string())?
+    .map_err(|e| format!("no-mic: {e}"))?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let devices = parse_dshow_devices(&stderr);
     if devices.is_empty() {
-        return Err("no-mic: микрофон не найден. Подключи устройство и попробуй снова.".to_string());
+        return Err(
+            "no-mic: микрофон не найден. Подключи устройство и попробуй снова.".to_string(),
+        );
     }
     Ok(devices)
 }
@@ -200,28 +270,55 @@ async fn start_recording(
     }
     model_path(&app, &model)?;
     sidecar_path(&app, "whisper")?;
-    let device = if cfg!(target_os = "windows") && device.as_deref().unwrap_or("").is_empty()
-        && std::env::var("VOICE_FFMPEG_TEST_INPUT").is_err() {
-        Some(list_microphones(app.clone()).await?.into_iter().next()
-            .ok_or("no-mic: микрофон не найден")?)
-    } else { device };
+    let device = if cfg!(target_os = "windows")
+        && device.as_deref().unwrap_or("").is_empty()
+        && std::env::var("VOICE_FFMPEG_TEST_INPUT").is_err()
+    {
+        Some(
+            list_microphones(app.clone())
+                .await?
+                .into_iter()
+                .next()
+                .ok_or("no-mic: микрофон не найден")?,
+        )
+    } else {
+        device
+    };
     std::fs::create_dir_all(&state.app_dir)
         .map_err(|e| format!("transcribe-failed: нет доступа к каталогу данных: {e}"))?;
-    let folder = tempfile::Builder::new().prefix("record-").tempdir_in(&state.app_dir)
+    let folder = tempfile::Builder::new()
+        .prefix("record-")
+        .tempdir_in(&state.app_dir)
         .map_err(|e| format!("transcribe-failed: {e}"))?;
     let wav = folder.path().join("audio.wav");
     let mut args = if let Ok(test_input) = std::env::var("VOICE_FFMPEG_TEST_INPUT") {
-        vec!["-f".to_string(), "lavfi".to_string(), "-i".to_string(), test_input]
+        vec![
+            "-f".to_string(),
+            "lavfi".to_string(),
+            "-i".to_string(),
+            test_input,
+        ]
     } else {
         ffmpeg_input_args(std::env::consts::OS, device.as_deref())?
     };
     args.extend(
-        ["-t", "120", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y"]
-            .into_iter()
-            .map(str::to_string),
+        [
+            "-t",
+            "120",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-y",
+        ]
+        .into_iter()
+        .map(str::to_string),
     );
     args.push(wav.to_string_lossy().into_owned());
-    let needs_pulse = std::env::consts::OS == "linux" && std::env::var("VOICE_FFMPEG_TEST_INPUT").is_err();
+    let needs_pulse =
+        std::env::consts::OS == "linux" && std::env::var("VOICE_FFMPEG_TEST_INPUT").is_err();
     let ffmpeg = recording_ffmpeg(&app, needs_pulse).await?;
     let stderr_file = std::fs::File::create(wav.with_extension("stderr"))
         .map_err(|e| format!("no-ffmpeg: {e}"))?;
@@ -237,7 +334,15 @@ async fn start_recording(
     if let Some(exit) = child.try_wait().map_err(|e| format!("no-mic: {e}"))? {
         if !exit.success() {
             let detail = std::fs::read_to_string(wav.with_extension("stderr")).unwrap_or_default();
-            return Err(format!("{}: {}", if needs_pulse { "no-audio-server" } else { "no-mic" }, detail.trim()));
+            return Err(format!(
+                "{}: {}",
+                if needs_pulse {
+                    "no-audio-server"
+                } else {
+                    "no-mic"
+                },
+                detail.trim()
+            ));
         }
     }
     // FFmpeg owns the duration limit and finalizes the WAV itself (-t).
@@ -258,20 +363,21 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
             let _ = stdin.shutdown().await;
         }
         rec.child.wait().await
-    }).await;
+    })
+    .await;
     if finished.is_err() {
         let _ = rec.child.kill().await;
         let _ = rec.child.wait().await;
-        return Err("empty-recording: ffmpeg не завершил запись вовремя. Попробуй снова.".to_string());
+        return Err(
+            "empty-recording: ffmpeg не завершил запись вовремя. Попробуй снова.".to_string(),
+        );
     }
     let exit = finished.unwrap().map_err(|e| format!("no-mic: {e}"))?;
     if !exit.success() {
         let detail = std::fs::read_to_string(rec.wav.with_extension("stderr")).unwrap_or_default();
         return Err(format!("no-mic: {}", detail.trim()));
     }
-    let size = std::fs::metadata(&rec.wav)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let size = std::fs::metadata(&rec.wav).map(|m| m.len()).unwrap_or(0);
     if size < MIN_WAV_BYTES {
         return Err("empty-recording: запись пустая (короче полсекунды). Нажми Record, дождись и потом Stop.".to_string());
     }
@@ -312,11 +418,22 @@ async fn cancel_transcription(state: State<'_, AppState>) -> Result<(), String> 
 }
 
 #[tauri::command]
-async fn transcribe(app: AppHandle, state: State<'_, AppState>, wav: String, model: String) -> Result<String, String> {
+async fn transcribe(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    wav: String,
+    model: String,
+) -> Result<String, String> {
     let mut slot = state.transcription.lock().await;
-    if slot.is_some() { return Err("busy: распознавание уже выполняется".to_string()); }
+    if slot.is_some() {
+        return Err("busy: распознавание уже выполняется".to_string());
+    }
     let mut pending = state.pending.lock().await;
-    if pending.as_ref().map(|folder| folder.path().join("audio.wav")) != Some(PathBuf::from(&wav)) {
+    if pending
+        .as_ref()
+        .map(|folder| folder.path().join("audio.wav"))
+        != Some(PathBuf::from(&wav))
+    {
         return Err("transcribe-failed: неизвестная запись".to_string());
     }
     let folder = pending.take().unwrap();
@@ -331,9 +448,14 @@ async fn transcribe(app: AppHandle, state: State<'_, AppState>, wav: String, mod
     result
 }
 
-async fn transcribe_file(app: &AppHandle, wav: &str, model: &str, mut cancel: watch::Receiver<bool>) -> Result<String, String> {
+async fn transcribe_file(
+    app: &AppHandle,
+    wav: &str,
+    model: &str,
+    mut cancel: watch::Receiver<bool>,
+) -> Result<String, String> {
     let model_path = model_path(app, model)?;
-    let whisper = sidecar_path(&app, "whisper")?;
+    let whisper = sidecar_path(app, "whisper")?;
     let out_base = format!("{wav}.out");
     let args = vec![
         "-m".to_string(),
@@ -347,9 +469,15 @@ async fn transcribe_file(app: &AppHandle, wav: &str, model: &str, mut cancel: wa
         out_base.clone(),
     ];
     // Redirect output to files: wait() must not deadlock on full stderr pipes.
-    let stderr = std::fs::File::create(format!("{wav}.whisper.stderr")).map_err(|e| format!("transcribe-failed: {e}"))?;
-    let mut child = command(whisper).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(stderr)
-        .spawn().map_err(|e| format!("transcribe-failed: не удалось запустить whisper: {e}"))?;
+    let stderr = std::fs::File::create(format!("{wav}.whisper.stderr"))
+        .map_err(|e| format!("transcribe-failed: {e}"))?;
+    let mut child = command(whisper)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .map_err(|e| format!("transcribe-failed: не удалось запустить whisper: {e}"))?;
     let status = tokio::select! {
         status = child.wait() => status.map_err(|e| format!("transcribe-failed: {e}"))?,
         _ = cancel.changed() => {
@@ -374,7 +502,10 @@ async fn transcribe_file(app: &AppHandle, wav: &str, model: &str, mut cancel: wa
         .trim()
         .to_string();
     if text.is_empty() {
-        return Err("empty-transcript: речь не распознана. Попробуй говорить громче и ближе к микрофону.".to_string());
+        return Err(
+            "empty-transcript: речь не распознана. Попробуй говорить громче и ближе к микрофону."
+                .to_string(),
+        );
     }
     Ok(text)
 }
@@ -414,7 +545,10 @@ async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
     }
-    let resp = req.send().await.map_err(|e| format!("server-unreachable: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("server-unreachable: {e}"))?;
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {
         return Err("unauthorized: проверь пароль сервера (OPENCODE_SERVER_PASSWORD)".to_string());
@@ -422,19 +556,38 @@ async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
     if !resp.status().is_success() {
         return Err(format!("fallback: http {}", resp.status()));
     }
-    let items = resp.json::<Vec<serde_json::Value>>().await.map_err(|e| format!("fallback: {e}"))?;
+    let items = resp
+        .json::<Vec<serde_json::Value>>()
+        .await
+        .map_err(|e| format!("fallback: {e}"))?;
     let mut out: Vec<SessionInfo> = Vec::new();
     for item in &items {
-        let Some(id) = item.get("id").and_then(|v| v.as_str()) else { continue };
-        if id.is_empty() || out.iter().any(|s: &SessionInfo| s.id == id) { continue; }
-        let title = item.get("title").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).unwrap_or(id).to_string();
-        out.push(SessionInfo { id: id.to_string(), title });
+        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if id.is_empty() || out.iter().any(|s: &SessionInfo| s.id == id) {
+            continue;
+        }
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .filter(|t| !t.is_empty())
+            .unwrap_or(id)
+            .to_string();
+        out.push(SessionInfo {
+            id: id.to_string(),
+            title,
+        });
     }
     Ok(out)
 }
 
 #[tauri::command]
-async fn send_to_session(cfg: ServerConfig, session_id: String, text: String) -> Result<bool, String> {
+async fn send_to_session(
+    cfg: ServerConfig,
+    session_id: String,
+    text: String,
+) -> Result<bool, String> {
     if session_id.is_empty() {
         return Err("session-not-found: выбери сессию в настройках.".to_string());
     }
@@ -444,14 +597,22 @@ async fn send_to_session(cfg: ServerConfig, session_id: String, text: String) ->
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
     }
-    let resp = req.send().await.map_err(|e| format!("server-unreachable: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("server-unreachable: {e}"))?;
     let status = resp.status().as_u16();
     if send_outcome(status) != "sent" {
         if status == 401 || status == 403 {
-            return Err("unauthorized: проверь пароль сервера (OPENCODE_SERVER_PASSWORD)".to_string());
+            return Err(
+                "unauthorized: проверь пароль сервера (OPENCODE_SERVER_PASSWORD)".to_string(),
+            );
         }
         if status == 404 {
-            return Err("session-not-found: сессия не найдена (удалена?). Обнови список и выбери снова.".to_string());
+            return Err(
+                "session-not-found: сессия не найдена (удалена?). Обнови список и выбери снова."
+                    .to_string(),
+            );
         }
         return Err(format!("fallback: http {}", resp.status()));
     }
@@ -467,10 +628,7 @@ fn main() {
     }
     tauri::Builder::default()
         .setup(|app| {
-            let app_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| e.to_string())?;
+            let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             app.manage(AppState {
                 recording: Mutex::new(None),
                 pending: Mutex::new(None),
@@ -482,6 +640,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             health_check,
             append_to_prompt,
+            submit_prompt,
             list_microphones,
             start_recording,
             stop_recording,
@@ -504,6 +663,39 @@ mod tests {
             append_url("127.0.0.1", 4096),
             "http://127.0.0.1:4096/tui/append-prompt"
         );
+        assert_eq!(
+            submit_url("127.0.0.1", 4096),
+            "http://127.0.0.1:4096/tui/submit-prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn tui_submission_checks_server_acknowledgement() {
+        use std::io::{Read, Write};
+        for (body, expected) in [("true", true), ("false", false)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let size = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+                assert!(request.starts_with("post /tui/submit-prompt "));
+                assert!(request.contains("authorization: basic"));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            });
+            let cfg = ServerConfig {
+                host: "127.0.0.1".into(),
+                port,
+                username: "test".into(),
+                password: "test".into(),
+            };
+            assert_eq!(submit_prompt(cfg).await.is_ok(), expected);
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -528,18 +720,26 @@ mod tests {
     #[test]
     fn dshow_parser_mirrors_ts() {
         let sample = "[dshow @ 0x123] DirectShow audio devices\n[dshow @ 0x123]  \"Microphone (Realtek Audio)\" (audio)\n[dshow @ 0x123]  \"Integrated Camera\" (video)\n";
-        assert_eq!(parse_dshow_devices(sample), vec!["Microphone (Realtek Audio)".to_string()]);
+        assert_eq!(
+            parse_dshow_devices(sample),
+            vec!["Microphone (Realtek Audio)".to_string()]
+        );
         assert!(parse_dshow_devices("dummy").is_empty());
     }
 
     #[test]
     fn ffmpeg_args_mirror_ts() {
-        assert_eq!(ffmpeg_input_args("linux", None).unwrap(), vec!["-f", "pulse", "-i", "default"]);
+        assert_eq!(
+            ffmpeg_input_args("linux", None).unwrap(),
+            vec!["-f", "pulse", "-i", "default"]
+        );
         assert_eq!(
             ffmpeg_input_args("windows", Some("Mic")).unwrap(),
             vec!["-f", "dshow", "-i", "audio=Mic"]
         );
-        assert!(ffmpeg_input_args("windows", None).unwrap_err().starts_with("no-mic:"));
+        assert!(ffmpeg_input_args("windows", None)
+            .unwrap_err()
+            .starts_with("no-mic:"));
     }
 
     #[test]
@@ -551,14 +751,20 @@ mod tests {
     #[test]
     fn model_allowlist_maps_to_ggml_files() {
         assert_eq!(allowed_model_file("base"), Ok("ggml-base.bin".to_string()));
-        assert_eq!(allowed_model_file("small"), Ok("ggml-small.bin".to_string()));
+        assert_eq!(
+            allowed_model_file("small"),
+            Ok("ggml-small.bin".to_string())
+        );
         assert!(allowed_model_file("../../etc/passwd").is_err());
         assert!(allowed_model_file("large").is_err());
     }
 
     #[test]
     fn session_urls_match_docs_contract() {
-        assert_eq!(session_url("127.0.0.1", 4096), "http://127.0.0.1:4096/session");
+        assert_eq!(
+            session_url("127.0.0.1", 4096),
+            "http://127.0.0.1:4096/session"
+        );
         assert_eq!(
             message_url("127.0.0.1", 4096, "ses_123"),
             "http://127.0.0.1:4096/session/ses_123/prompt_async"

@@ -13,24 +13,48 @@ pub fn sidecar_file(base: &str) -> Result<String, String> {
 
 // npm ships original names next to the executable. Tauri bundles strip the
 // target triple; older layouts put the original files under resources/binaries.
-pub fn candidates(base: &str, exe_dir: &Path, resource_dir: Option<&Path>) -> Result<Vec<PathBuf>, String> {
+pub fn candidates(
+    base: &str,
+    exe_dir: &Path,
+    resource_dir: Option<&Path>,
+) -> Result<Vec<PathBuf>, String> {
     let name = sidecar_file(base)?;
     let bundled = format!("{base}{}", std::env::consts::EXE_SUFFIX);
     let mut paths = vec![exe_dir.join(&name), exe_dir.join(&bundled)];
     if let Some(dir) = resource_dir {
-        paths.extend([dir.join("binaries").join(&name), dir.join(&name), dir.join(&bundled)]);
+        paths.extend([
+            dir.join("binaries").join(&name),
+            dir.join(&name),
+            dir.join(&bundled),
+        ]);
     }
     Ok(paths)
 }
 
 pub fn resolve(base: &str, exe_dir: &Path, resource_dir: Option<&Path>) -> Result<PathBuf, String> {
     let paths = candidates(base, exe_dir, resource_dir)?;
-    paths.iter().find(|path| path.is_file()).cloned().ok_or_else(|| {
-        let code = if base == "ffmpeg" { "no-ffmpeg" } else { "transcribe-failed" };
-        format!("{code}: {base} missing; searched: {}", paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "))
-    })
+    paths
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .ok_or_else(|| {
+            let code = if base == "ffmpeg" {
+                "no-ffmpeg"
+            } else {
+                "transcribe-failed"
+            };
+            format!(
+                "{code}: {base} missing; searched: {}",
+                paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
 }
 
+#[cfg(test)]
 pub fn supports_pulse(devices: &str) -> bool {
     supports_input(devices, "pulse")
 }
@@ -55,7 +79,11 @@ mod tests {
         std::fs::create_dir_all(&exe).unwrap();
         for base in ["ffmpeg", "whisper"] {
             let error = resolve(base, &exe, Some(&resources)).unwrap_err();
-            assert!(error.starts_with(if base == "ffmpeg" { "no-ffmpeg:" } else { "transcribe-failed:" }));
+            assert!(error.starts_with(if base == "ffmpeg" {
+                "no-ffmpeg:"
+            } else {
+                "transcribe-failed:"
+            }));
             let paths = candidates(base, &exe, Some(&resources)).unwrap();
             for candidate in paths.iter().rev() {
                 std::fs::write(candidate, "binary").unwrap();
@@ -70,7 +98,9 @@ mod tests {
     fn pulse_requires_an_input_device_not_just_an_output_or_configuration_flag() {
         assert!(supports_pulse("Devices:\n DE pulse Pulse audio output\n"));
         assert!(supports_pulse(" D  pulse Pulse audio input\n"));
-        assert!(!supports_pulse(" E pulse Pulse audio output\n--enable-libpulse\n"));
+        assert!(!supports_pulse(
+            " E pulse Pulse audio output\n--enable-libpulse\n"
+        ));
         assert!(!supports_pulse(" D alsa ALSA audio input\n"));
     }
 }
