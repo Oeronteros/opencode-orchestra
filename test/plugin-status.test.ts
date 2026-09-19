@@ -1,10 +1,14 @@
 import assert from "node:assert/strict"
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { formatPluginStatus, type PluginStatus } from "../src/plugin-status.js"
 import { OrchestraPlugin } from "../src/index.js"
+
+const testConfigDirectory = await mkdtemp(path.join(os.tmpdir(), "orchestra-test-config-"))
+process.env.OPENCODE_CONFIG_DIR = testConfigDirectory
+test.after(async () => { await rm(testConfigDirectory, { recursive: true, force: true }) })
 
 test("formatPluginStatus renders the plugin identity and runtime fields", async () => {
   const report = await formatPluginStatus({

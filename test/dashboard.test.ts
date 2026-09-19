@@ -1,10 +1,24 @@
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { startDashboard } from "../src/dashboard/server.js"
-import { projectId, registerProject } from "../src/dashboard/registry.js"
+import { projectId, readProjects, registerProject } from "../src/dashboard/registry.js"
+
+test("project registry drops directories that no longer exist", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-registry-"))
+  const config = path.join(root, "config")
+  const removed = path.join(root, "removed")
+  const active = path.join(root, "active")
+  await Promise.all([mkdir(removed), mkdir(active)])
+  await registerProject(removed, config)
+  await rm(removed, { recursive: true })
+  await registerProject(active, config)
+
+  const projects = await readProjects(config)
+  assert.deepEqual(projects.map((project) => project.directory), [active])
+})
 
 test("dashboard serves local telemetry and saves validated config", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-dashboard-"))

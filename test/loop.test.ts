@@ -7,6 +7,10 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
+const testConfigDirectory = await mkdtemp(path.join(os.tmpdir(), "orchestra-test-config-"))
+process.env.OPENCODE_CONFIG_DIR = testConfigDirectory
+test.after(async () => { await rm(testConfigDirectory, { recursive: true, force: true }) })
+
 test("loop protocol only accepts an unquoted final line", () => {
   for (const text of ["DONE: example\nStill working", "> DONE: quoted", "```\nDONE: quoted", "DONE: ", "Question?"]) assert.equal(classifyLoopReply(text).kind, "unknown")
   assert.equal(classifyLoopReply("Tests passed\nDONE: finished").kind, "done")

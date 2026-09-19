@@ -22,6 +22,9 @@ interface DiscoveredRunResult {
 }
 
 const EMPTY_CONFIG = path.join(process.cwd(), "test", "fixtures", "empty-orchestra.jsonc")
+const testConfigDirectory = await mkdtemp(path.join(tmpdir(), "orchestra-test-config-"))
+process.env.OPENCODE_CONFIG_DIR = testConfigDirectory
+test.after(async () => { await rm(testConfigDirectory, { recursive: true, force: true }) })
 
 /** Build a mock provider catalog that yields one reasoning model and one code model. */
 const MOCK_CATALOG = {

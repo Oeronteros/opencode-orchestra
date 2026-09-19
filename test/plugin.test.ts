@@ -12,6 +12,10 @@ import { createAgentSet, type PromptBundle } from "../src/agents/build.js"
 import { OrchestrationRunState } from "../src/orchestration/run-state.js"
 import type { GitRunner } from "../src/orchestration/worktrees.js"
 
+const testConfigDirectory = await mkdtemp(path.join(os.tmpdir(), "orchestra-test-config-"))
+process.env.OPENCODE_CONFIG_DIR = testConfigDirectory
+test.after(async () => { await rm(testConfigDirectory, { recursive: true, force: true }) })
+
 test("entrypoint exposes a stable id and server", () => {
   assert.equal(pluginModule.id, "opencode-orchestra")
   assert.equal(pluginModule.server, OrchestraPlugin)
