@@ -73,6 +73,9 @@ export function normalizeOverlaySettings(value: unknown) {
       raw.port <= 65535
         ? raw.port
         : 4096,
+    browserPort:
+      typeof raw.browserPort === 'number' && Number.isInteger(raw.browserPort) &&
+      raw.browserPort > 0 && raw.browserPort <= 65535 ? raw.browserPort : 4097,
     username: typeof raw.username === 'string' ? raw.username : '',
     password: typeof raw.password === 'string' ? raw.password : ''
   }

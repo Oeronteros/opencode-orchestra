@@ -6,7 +6,7 @@ import {
 } from "../../src/voice-context";
 import { WindowHeader } from "./WindowHeader";
 
-export interface OverlaySettings extends ServerConfig, VoicePreferences {}
+export interface OverlaySettings extends ServerConfig, VoicePreferences { browserPort: number }
 
 const KEY = "voice-overlay-settings:v1";
 
@@ -90,25 +90,28 @@ export function SettingsView(props: {
         </label>
         <fieldset>
           <legend>После распознавания</legend>
+          {draft.target === "auto" && <p className="field-note">В открытую вкладку текст только вставляется. Отправку вы нажимаете в OpenCode.</p>}
           <label>
             <input
               type="radio"
               name="action"
-              checked={draft.postTranscriptionAction === "insert"}
+              disabled={draft.target === "auto"}
+              checked={draft.target === "auto" || draft.postTranscriptionAction === "insert"}
               onChange={() => set({ postTranscriptionAction: "insert" })}
             />
-            Вставить текст
+            {draft.target !== "web" ? "Вставить текст" : "Проверить текст перед отправкой"}
           </label>
           <label>
             <input
               type="radio"
               name="action"
-              checked={draft.postTranscriptionAction === "insert-and-submit"}
+              disabled={draft.target === "auto"}
+              checked={draft.target !== "auto" && draft.postTranscriptionAction === "insert-and-submit"}
               onChange={() =>
                 set({ postTranscriptionAction: "insert-and-submit" })
               }
             />
-            Вставить и отправить
+            {draft.target === "tui" ? "Вставить и отправить" : "Сразу отправить в сессию"}
           </label>
         </fieldset>
         <details>
@@ -132,6 +135,12 @@ export function SettingsView(props: {
             />
           </label>
           <label>
+            Порт вкладки (voice-web)
+            <input type="number" min="1" max="65535" value={draft.browserPort}
+              onChange={(e) => set({ browserPort: Number(e.target.value) || 4097 })} />
+            <small className="field-note">Откройте OpenCode через opencode-orchestra voice-web, обычно на http://127.0.0.1:4097.</small>
+          </label>
+          <label>
             Пользователь
             <input
               value={draft.username}
@@ -153,9 +162,9 @@ export function SettingsView(props: {
                 type="radio"
                 name="target"
                 checked={draft.target === "auto"}
-                onChange={() => set({ target: "auto" })}
+                onChange={() => set({ target: "auto", postTranscriptionAction: "insert" })}
               />
-              Автоматически
+              Открытая вкладка браузера
             </label>
             <label>
               <input

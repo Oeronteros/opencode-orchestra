@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ServerConfig, SessionRef } from "./lib/opencode";
+export interface BrowserTarget { id: string; route: string; title: string }
+
+export function browserTarget(cfg: ServerConfig): Promise<BrowserTarget> {
+  return invoke<BrowserTarget>("browser_target", { cfg });
+}
+
+export function insertInBrowser(cfg: ServerConfig, target: BrowserTarget, text: string): Promise<void> {
+  return invoke<void>("insert_in_browser", { cfg, target, text });
+}
 
 export type OverlayStatus = "idle" | "recording" | "transcribing" | "error";
 

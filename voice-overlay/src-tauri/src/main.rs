@@ -3,6 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::{watch, Mutex};
+mod browser_bridge;
 mod sidecars;
 pub use sidecars::sidecar_file;
 
@@ -733,6 +734,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            browser_bridge::browser_target,
+            browser_bridge::insert_in_browser,
             health_check,
             append_to_prompt,
             submit_prompt,

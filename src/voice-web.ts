@@ -13,6 +13,8 @@ import {
 import { voiceWebClient } from './voice-web-client.js'
 import { createVoicePolicy } from './voice-context.js'
 import { createOpenCodeAdapter } from './voice-opencode-adapter.js'
+import { createVoiceBridge } from './voice-bridge.js'
+import { voiceBridgeClient } from './voice-bridge-client.js'
 
 export function voiceClientScript(): string {
   return `(${voiceWebClient.toString()})((${createVoicePolicy.toString()})(), (${createOpenCodeAdapter.toString()})());`
@@ -22,7 +24,7 @@ const run = promisify(execFile)
 export function injectVoice(html: string): string {
   return html.replace(
     /<\/head>/i,
-    '<script src="/__orchestra_voice/client.js" defer></script></head>'
+    '<script src="/__orchestra_voice/client.js" defer></script><script src="/__orchestra_voice/bridge.js" defer></script></head>'
   )
 }
 
@@ -110,6 +112,7 @@ export async function startVoiceWeb(
     )
   }
   let busy = false
+  const bridge = createVoiceBridge()
   const target = (url: string) =>
     new URL(upstream.origin + (url.startsWith('/') ? url : '/'))
   const server = http.createServer(async (req, res) => {
@@ -146,6 +149,15 @@ export async function startVoiceWeb(
     }
     if (req.url?.startsWith('/__orchestra_voice/')) {
       res.setHeader('Cache-Control', 'no-store')
+      if (req.url === '/__orchestra_voice/bridge.js' && req.method === 'GET') {
+        res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
+        res.end(`(${voiceBridgeClient.toString()})((${createOpenCodeAdapter.toString()})());`)
+        return
+      }
+      if (req.url.startsWith('/__orchestra_voice/bridge/')) {
+        await bridge(req, res)
+        return
+      }
       if (req.url === '/__orchestra_voice/client.js' && req.method === 'GET') {
         res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
         res.end(voiceClientScript())

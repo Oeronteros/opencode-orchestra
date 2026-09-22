@@ -280,6 +280,7 @@ test('overlay config migration retains credentials and legacy destination, sanit
   }
   assert.deepEqual(normalizeOverlaySettings(old), {
     ...old,
+    browserPort: 4097,
     postTranscriptionAction: 'insert'
   })
   assert.equal(normalizeOverlaySettings({ destination: 'web' }).target, 'web')

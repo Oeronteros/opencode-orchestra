@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   appendToPrompt,
+  browserTarget,
+  insertInBrowser,
+  type BrowserTarget,
   submitPrompt,
   cancelTranscription,
   listMicrophones,
@@ -16,7 +19,6 @@ import { MAX_SECONDS } from "./lib/audio";
 import type { SessionRef } from "./lib/opencode";
 import { loadSettings, SettingsView, type OverlaySettings } from "./settings";
 import { WindowHeader } from "./WindowHeader";
-import { createVoicePolicy } from "../../src/voice-context";
 
 function codeOf(message: string): OverlayErrorCode | null {
   const head = message.split(": ")[0];
@@ -59,14 +61,12 @@ export function App() {
   const operation = useRef(false);
   const timer = useRef<number | null>(null);
   const invocation = useRef<OverlaySettings>(settings);
+  const draftDestination = useRef<OverlaySettings | null>(null);
+  const [detectedSession, setDetectedSession] = useState<BrowserTarget | null>(null);
+  const recordingTab = useRef<BrowserTarget | null>(null);
+  const draftTab = useRef<BrowserTarget | null>(null);
   const sessionRequest = useRef(0);
-  const destination = createVoicePolicy().resolve(
-    settings.target,
-    { source: "tui" },
-    settings.sessionId,
-  );
-  const manual =
-    destination.type === "session" || destination.type === "picker";
+  const manual = settings.target === "web";
 
   useEffect(() => {
     if (status !== "recording") return;
@@ -148,7 +148,18 @@ export function App() {
     setErrorDetail(null);
     setNotice(null);
     invocation.current = { ...settings };
+    recordingTab.current = null;
     try {
+      if (preview.trim() && draftTab.current) {
+        throw new Error("Сначала вставьте или удалите предыдущий текст — его вкладка сохранена.");
+      }
+      if (settings.target === "auto") {
+        setDetectedSession(null);
+        const session = await browserTarget({ ...settings, port: settings.browserPort });
+        setDetectedSession(session);
+        recordingTab.current = session;
+        setNotice(`Поле ввода: ${session.title || session.route}`);
+      }
       await startRecording(
         settings.device === "" ? undefined : settings.device,
         settings.model,
@@ -170,11 +181,6 @@ export function App() {
     if (operation.current) return;
     operation.current = true;
     const settings = invocation.current;
-    const destination = createVoicePolicy().resolve(
-      settings.target,
-      { source: "tui" },
-      settings.sessionId,
-    );
     try {
       if (timer.current !== null) {
         window.clearTimeout(timer.current);
@@ -204,16 +210,30 @@ export function App() {
         setRecognizing(false);
         setCancelling(false);
       }
+      draftDestination.current = settings.target === "auto" ? { ...settings } : null;
+      draftTab.current = recordingTab.current;
       setPreview((previous) =>
         settings.target === "web" && previous ? `${previous}\n${text}` : text,
       );
+      if (settings.target === "auto") {
+        try {
+          if (!recordingTab.current) throw new Error("Исходная вкладка не определена. Текст сохранён.");
+          await insertInBrowser({ ...settings, port: settings.browserPort }, recordingTab.current, text);
+          setPreview("");
+          draftDestination.current = null;
+          draftTab.current = null;
+          setNotice("Текст вставлен в поле ввода открытой вкладки. Нажмите отправку в OpenCode, когда будете готовы.");
+          setStatus("idle");
+        } catch (e) { fail(String(e)); }
+        return;
+      }
       if (settings.target === "web") {
         if (
           settings.postTranscriptionAction === "insert-and-submit" &&
-          destination.type === "session"
+          settings.sessionId !== ""
         ) {
           try {
-            await sendToSession(settings, destination.sessionId, text);
+            await sendToSession(settings, settings.sessionId, text);
             // Only this recording was submitted; retain any older unsent draft.
             setPreview(preview);
             setNotice("Отправлено в выбранную сессию");
@@ -273,22 +293,32 @@ export function App() {
   };
 
   const onSend = async () => {
+    // Retrying a recording must keep its original server and session.
+    const target = draftDestination.current ?? settings;
     if (
       operation.current ||
       !preview.trim() ||
-      (settings.target === "web" && settings.sessionId === "")
+      (target.target === "web" && target.sessionId === "") ||
+      (target.target === "auto" && !draftTab.current)
     )
       return;
     operation.current = true;
     setSending(true);
     setError(null);
     try {
-      if (settings.target === "web") {
-        await sendToSession(settings, settings.sessionId, preview);
+      if (target.target === "auto" && draftTab.current) {
+        await insertInBrowser({ ...target, port: target.browserPort }, draftTab.current, preview);
+        setNotice("Текст вставлен в исходную вкладку. Отправьте его из OpenCode.");
+        setPreview("");
+        draftDestination.current = null;
+        draftTab.current = null;
+      } else if (target.target === "web") {
+        await sendToSession(target, target.sessionId, preview);
         setNotice("Отправлено в сессию");
         setPreview("");
+        draftDestination.current = null;
       } else {
-        await appendToPrompt(settings, preview);
+        await appendToPrompt(target, preview);
         setNotice("Передано серверу. Проверь текст в TUI перед отправкой.");
       }
       setStatus("idle");
@@ -367,7 +397,7 @@ export function App() {
       <WindowHeader busy={busy} />
       <div className="toolbar">
         <span className="target-tag">
-          {settings.target === "web" ? "Web-сессия" : "Промпт OpenCode"}
+          {settings.target === "auto" ? "Открытая вкладка" : settings.target === "web" ? "Web-сессия" : "Промпт OpenCode"}
         </span>
         <button
           className="icon-button"
@@ -390,6 +420,13 @@ export function App() {
           </svg>
         </button>
       </div>
+      {settings.target === "auto" && (
+        <p className="notice" role="status">
+          {detectedSession
+            ? `Вкладка записи: ${detectedSession.title || detectedSession.route}`
+            : "Откройте нужную вкладку OpenCode через voice-web, затем нажмите микрофон. Текст появится в её поле ввода."}
+        </p>
+      )}
       {manual && (
         <label className="transcript">
           Сессия
@@ -536,6 +573,8 @@ export function App() {
               disabled={busy}
               onClick={() => {
                 setPreview("");
+                draftDestination.current = null;
+                draftTab.current = null;
                 setNotice(null);
               }}
             >
@@ -545,11 +584,14 @@ export function App() {
               type="button"
               disabled={
                 !canSend ||
-                (settings.target === "web" && settings.sessionId === "")
+                ((draftDestination.current ?? settings).target === "web" &&
+                  (draftDestination.current ?? settings).sessionId === "")
               }
               onClick={() => void onSend()}
             >
-              {settings.target === "web"
+              {(draftDestination.current ?? settings).target === "auto"
+                ? "Повторить вставку в исходную вкладку"
+                : (draftDestination.current ?? settings).target === "web"
                 ? "Отправить в сессию"
                 : "Повторить вставку в TUI"}
             </button>
@@ -573,9 +615,10 @@ export function App() {
         </div>
       )}
       <footer className="overlay-footer">
-        {settings.postTranscriptionAction === "insert-and-submit"
+        {settings.target === "auto" ? "Текст вставится в открытую вкладку. Отправку нажимаете вы."
+          : settings.postTranscriptionAction === "insert-and-submit"
           ? "Вставка и отправка после распознавания"
-          : !manual
+          : settings.target === "tui"
             ? "Текст появится в строке ввода"
             : "Отправка после вашего подтверждения"}
       </footer>

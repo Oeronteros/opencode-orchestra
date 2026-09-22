@@ -8,7 +8,12 @@ InsertAndSubmit clicks the ordinary Send control after another route/editor chec
 A changed route retains a recoverable, editable transcript instead of inserting it
 into the newly selected session. Recovery never automatically submits.
 
-Desktop Auto preserves the existing TUI append endpoint. Explicit Web destination
+Desktop Auto now discovers the focused visible page through the local voice-web
+bridge, snapshots its tab ID and route, and inserts through the existing composer
+adapter without submitting. Route changes, hidden/closed pages, bridge failures,
+and missing acknowledgements retain the transcript in the overlay. The bridge
+uses a separate configurable `browserPort` (4097 by default). Explicit TUI retains
+the existing append endpoint. Explicit Web destination
 retains the session picker and preview. `/voice`, absent in the original checkout,
 is now a fallback page using the existing browser recording/STT implementation and
 the proxied session API. The proxy remains loopback-only.
@@ -38,6 +43,21 @@ Browser settings are separate, because Tauri and browsers have distinct device I
 and storage origins. Browser settings persist under `orchestra-voice-settings:v1`.
 
 ## Evidence collected
+
+### Active-tab overlay bridge
+
+- Validation: `npm run check` (430 tests), overlay typecheck/frontend build and
+  24 overlay tests, `cargo test` (20 tests), and the Linux release build passed.
+- `test/voice-bridge.test.ts` checks tab focus, retained selection when the overlay
+  takes focus, no fallback to an older visible window, exact route binding,
+  acknowledgements, duplicate delivery, hidden/expired jobs and cross-origin rejection.
+- Rust bridge tests check the native GET/POST contract and require the browser's
+  insertion acknowledgement; HTTP success alone is insufficient.
+- Real browser smoke on port 4197: an existing draft was preserved and the overlay
+  transcript appended through the input event. The Send counter remained zero.
+  Switching from session A to B before delivery returned 409; B remained empty.
+- Use `node dist/cli.js voice-web` from this checkout after `npm run build:plugin`
+  to run the updated bridge locally; an older installed CLI cannot supply it.
 
 - Full project check: 415 passing tests, no failures; root TypeScript checks passed.
 - Later focused Web suite: 24 passing tests, including config normalization, persistence, new-session draftId isolation, microphone errors and cancellation of late STT responses.
