@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ServerConfig, SessionRef } from "./lib/opencode";
 import {
   normalizeOverlaySettings,
@@ -32,6 +32,13 @@ export function SettingsView(props: {
 }) {
   const [draft, setDraft] = useState<OverlaySettings>(props.settings);
   const [error, setError] = useState("");
+  const refresh = useRef(props.onRefreshSessions);
+  refresh.current = props.onRefreshSessions;
+  useEffect(() => {
+    if (draft.target !== "web") return;
+    const timer = window.setTimeout(() => refresh.current(draft), 300);
+    return () => window.clearTimeout(timer);
+  }, [draft.host, draft.port, draft.username, draft.password, draft.target]);
   const set = (patch: Partial<OverlaySettings>) =>
     setDraft((d) => ({ ...d, ...patch }));
   const selectedSessionMissing =
@@ -186,7 +193,7 @@ export function SettingsView(props: {
                 )}
                 {props.sessions.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {s.title}
+                    {s.title}{s.directory ? ` — ${s.directory}` : ""}
                   </option>
                 ))}
               </select>

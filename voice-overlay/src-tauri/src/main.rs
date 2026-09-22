@@ -261,13 +261,10 @@ async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
     } else {
         &["-list_devices", "true", "-f", "dshow", "-i", "dummy"]
     };
-    let out = tokio::time::timeout(
-        Duration::from_secs(5),
-        command(ffmpeg).args(args).output(),
-    )
-    .await
-    .map_err(|_| "no-mic: превышено время поиска микрофонов".to_string())?
-    .map_err(|e| format!("no-mic: {e}"))?;
+    let out = tokio::time::timeout(Duration::from_secs(5), command(ffmpeg).args(args).output())
+        .await
+        .map_err(|_| "no-mic: превышено время поиска микрофонов".to_string())?
+        .map_err(|e| format!("no-mic: {e}"))?;
     let output = format!(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
@@ -543,7 +540,7 @@ async fn transcribe_file(
 }
 
 pub fn session_url(host: &str, port: u16) -> String {
-    format!("http://{host}:{port}/session")
+    format!("http://{host}:{port}/experimental/session?roots=true&limit=1000")
 }
 
 // NOTE: `session_id` is inserted raw — the TS side `encodeURIComponent`s it
@@ -569,6 +566,7 @@ pub fn send_outcome(status: u16) -> &'static str {
 pub struct SessionInfo {
     pub id: String,
     pub title: String,
+    pub directory: Option<String>,
 }
 
 #[tauri::command]
@@ -577,10 +575,24 @@ async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
     }
-    let resp = req
+    let mut resp = req
         .send()
         .await
         .map_err(|e| format!("server-unreachable: {e}"))?;
+    // Older servers do not expose the cross-project session API.
+    if resp.status().as_u16() == 404 {
+        let mut req = http_client()?.get(format!(
+            "http://{}:{}/session?roots=true&limit=1000",
+            cfg.host, cfg.port
+        ));
+        if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
+            req = req.header("Authorization", auth);
+        }
+        resp = req
+            .send()
+            .await
+            .map_err(|e| format!("server-unreachable: {e}"))?;
+    }
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {
         return Err("unauthorized: проверь пароль сервера (OPENCODE_SERVER_PASSWORD)".to_string());
@@ -588,12 +600,30 @@ async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
     if !resp.status().is_success() {
         return Err(format!("fallback: http {}", resp.status()));
     }
-    let items = resp
+    let mut items = resp
         .json::<Vec<serde_json::Value>>()
         .await
         .map_err(|e| format!("fallback: {e}"))?;
+    items.sort_by_key(|item| {
+        std::cmp::Reverse(
+            item.pointer("/time/updated")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        )
+    });
     let mut out: Vec<SessionInfo> = Vec::new();
     for item in &items {
+        if item
+            .get("parentID")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| !id.is_empty())
+            || item
+                .pointer("/time/archived")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|time| time > 0)
+        {
+            continue;
+        }
         let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
             continue;
         };
@@ -609,6 +639,10 @@ async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
         out.push(SessionInfo {
             id: id.to_string(),
             title,
+            directory: item
+                .get("directory")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
         });
     }
     Ok(out)
@@ -623,8 +657,37 @@ async fn send_to_session(
     if session_id.is_empty() {
         return Err("session-not-found: выбери сессию в настройках.".to_string());
     }
+    // Resolve afresh, including when the selection was restored from settings.
+    // Session lookup is global; prompt execution needs the session's directory.
+    let mut lookup = http_client()?.get(format!(
+        "http://{}:{}/session/{}",
+        cfg.host, cfg.port, session_id
+    ));
+    if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
+        lookup = lookup.header("Authorization", auth);
+    }
+    let response = lookup
+        .send()
+        .await
+        .map_err(|e| format!("server-unreachable: {e}"))?;
+    match send_outcome(response.status().as_u16()) {
+        "unauthorized" => return Err("unauthorized: проверь пароль сервера".to_string()),
+        "session-not-found" => return Err("session-not-found: обнови список сессий".to_string()),
+        "sent" => {}
+        _ => return Err(format!("fallback: http {}", response.status())),
+    }
+    let session: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("fallback: {e}"))?;
+    let directory = session
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "fallback: сервер не вернул каталог сессии".to_string())?;
     let mut req = http_client()?
         .post(message_url(&cfg.host, cfg.port, &session_id))
+        .query(&[("directory", directory)])
         .json(&serde_json::json!({ "parts": [{ "type": "text", "text": text }] }));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
@@ -688,6 +751,130 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_server(
+        responses: Vec<(&'static str, u16, &'static str)>,
+    ) -> (ServerConfig, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for (route, status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let count = stream.read(&mut buf).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buf[..count]);
+                    if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
+                assert!(request.starts_with(route), "{request}");
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: basic"));
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (
+            ServerConfig {
+                host: "127.0.0.1".into(),
+                port,
+                username: "test".into(),
+                password: "test".into(),
+            },
+            server,
+        )
+    }
+
+    #[tokio::test]
+    async fn discovers_recent_root_sessions_across_projects() {
+        let (cfg, server) = session_server(vec![(
+            "GET /experimental/session?roots=true&limit=1000 ",
+            200,
+            r#"[{"id":"old","directory":"/home/oe","time":{"updated":1}},
+                {"id":"child","parentID":"new","time":{"updated":5}},
+                {"id":"archived","time":{"updated":4,"archived":4}},
+                {"id":"new","title":"Current project","directory":"/project","time":{"updated":3}},
+                {"id":"new","time":{"updated":2}},{"title":"invalid"}]"#,
+        )]);
+        let sessions = list_sessions(cfg).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["new", "old"]
+        );
+        assert_eq!(sessions[0].directory.as_deref(), Some("/project"));
+        assert_eq!(sessions[0].title, "Current project");
+        assert_eq!(sessions[1].title, "old");
+    }
+
+    #[tokio::test]
+    async fn legacy_session_api_fallback_preserves_auth() {
+        let (cfg, server) = session_server(vec![
+            (
+                "GET /experimental/session?roots=true&limit=1000 ",
+                404,
+                "{}",
+            ),
+            (
+                "GET /session?roots=true&limit=1000 ",
+                200,
+                r#"[{"id":"legacy"}]"#,
+            ),
+        ]);
+        assert_eq!(list_sessions(cfg).await.unwrap()[0].id, "legacy");
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_auth_failure_is_not_hidden_by_fallback() {
+        let (cfg, server) = session_server(vec![(
+            "GET /experimental/session?roots=true&limit=1000 ",
+            401,
+            "{}",
+        )]);
+        assert!(list_sessions(cfg)
+            .await
+            .unwrap_err()
+            .starts_with("unauthorized:"));
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn sends_in_selected_session_directory() {
+        let (cfg, server) = session_server(vec![
+            (
+                "GET /session/ses_project ",
+                200,
+                r#"{"directory":"/project with spaces"}"#,
+            ),
+            (
+                "POST /session/ses_project/prompt_async?directory=%2Fproject+with+spaces ",
+                204,
+                "",
+            ),
+        ]);
+        assert!(send_to_session(cfg, "ses_project".into(), "hello".into())
+            .await
+            .unwrap());
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_session_directory_prevents_wrong_project_send() {
+        let (cfg, server) = session_server(vec![("GET /session/ses_project ", 200, "{}")]);
+        assert!(send_to_session(cfg, "ses_project".into(), "hello".into())
+            .await
+            .is_err());
+        server.join().unwrap();
+    }
 
     #[test]
     fn url_matches_live_verified_contract() {
@@ -804,7 +991,7 @@ mod tests {
     fn session_urls_match_docs_contract() {
         assert_eq!(
             session_url("127.0.0.1", 4096),
-            "http://127.0.0.1:4096/session"
+            "http://127.0.0.1:4096/experimental/session?roots=true&limit=1000"
         );
         assert_eq!(
             message_url("127.0.0.1", 4096, "ses_123"),

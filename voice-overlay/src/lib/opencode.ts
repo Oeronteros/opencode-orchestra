@@ -43,6 +43,7 @@ export type Target = "tui" | "web";
 export interface SessionRef {
   id: string;
   title: string;
+  directory?: string | null;
 }
 
 export interface SessionHttpRequest {
@@ -60,7 +61,7 @@ function authHeaders(cfg: ServerConfig): Record<string, string> {
 
 export function sessionListRequest(cfg: ServerConfig): SessionHttpRequest {
   return {
-    url: `http://${cfg.host}:${cfg.port}/session`,
+    url: `http://${cfg.host}:${cfg.port}/experimental/session?roots=true&limit=1000`,
     method: "GET",
     headers: authHeaders(cfg),
   };

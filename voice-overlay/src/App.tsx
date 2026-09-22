@@ -59,6 +59,7 @@ export function App() {
   const operation = useRef(false);
   const timer = useRef<number | null>(null);
   const invocation = useRef<OverlaySettings>(settings);
+  const sessionRequest = useRef(0);
   const destination = createVoicePolicy().resolve(
     settings.target,
     { source: "tui" },
@@ -82,11 +83,16 @@ export function App() {
   }, [status]);
 
   const loadSessions = async (cfg: OverlaySettings) => {
+    const request = ++sessionRequest.current;
     try {
       setSessionListError(null);
-      setSessions(await listSessions(cfg));
+      const result = await listSessions(cfg);
+      if (request === sessionRequest.current) setSessions(result);
     } catch (e) {
-      setSessionListError(String(e));
+      if (request === sessionRequest.current) {
+        setSessions([]);
+        setSessionListError(String(e));
+      }
     }
   };
 
@@ -101,9 +107,22 @@ export function App() {
 
   useEffect(() => {
     void loadMicrophones();
-    if (settings.target === "web") void loadSessions(settings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setSessions([]);
+    if (settings.target !== "web" || showSettings) return;
+    const refresh = () => { void loadSessions(settings); };
+    refresh();
+    const interval = window.setInterval(refresh, 15000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      ++sessionRequest.current;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [settings.host, settings.port, settings.username, settings.password, settings.target, showSettings]);
 
   useEffect(
     () => () => {
@@ -330,7 +349,6 @@ export function App() {
           setSettings(next);
           setError(null);
           setStatus("idle");
-          if (next.target === "web") void loadSessions(next);
           setShowSettings(false);
         }}
         onBack={() => setShowSettings(false)}
@@ -400,7 +418,7 @@ export function App() {
             )}
             {sessions.map((session) => (
               <option key={session.id} value={session.id}>
-                {session.title}
+                {session.title}{session.directory ? ` — ${session.directory}` : ""}
               </option>
             ))}
           </select>

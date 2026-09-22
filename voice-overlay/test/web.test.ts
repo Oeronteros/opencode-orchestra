@@ -10,9 +10,9 @@ import {
 const CFG = { host: "127.0.0.1", port: 4096, username: "", password: "" };
 
 describe("sessionListRequest", () => {
-  it("GETs /session with JSON content type", () => {
+  it("GETs root sessions across projects with JSON content type", () => {
     const req = sessionListRequest(CFG);
-    assert.equal(req.url, "http://127.0.0.1:4096/session");
+    assert.equal(req.url, "http://127.0.0.1:4096/experimental/session?roots=true&limit=1000");
     assert.equal(req.method, "GET");
     assert.equal(req.headers["Content-Type"], "application/json");
   });
