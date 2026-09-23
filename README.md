@@ -297,12 +297,15 @@ Bounded-loop state itself is in memory and is lost when OpenCode restarts. A non
 
 ## Voice input
 
-The standard installer provisions a prebuilt local voice overlay for Linux x64 and Windows x64 and downloads the `ggml-base.bin` Whisper model. No audio is sent to a remote transcription service.
+The standard installer provisions local ffmpeg and Whisper binaries for Linux x64 and Windows x64 and downloads the `ggml-base.bin` model. No audio is sent to a remote transcription service.
 
-For the terminal UI, start:
+In **OpenCode 1.x**, run `opencode-orchestra voice-tui`. Press **Ctrl+X, then E** or run `/editor`, speak, and press the same shortcut again (or Enter). OpenCode restores the transcript to that session's draft without submitting it. `Ctrl+C` cancels recording and preserves the draft. The launcher sets `EDITOR` and `VISUAL` for that OpenCode process; no separate window or fixed port is needed. Run plain `opencode` when you want a regular text editor.
+
+Set `ORCHESTRA_VOICE_MODEL=small` to use the small model or `ORCHESTRA_VOICE_DEVICE` to select a microphone. The old manual TUI window remains available:
 
 ```bash
-voice-overlay
+opencode --port 4096
+# in another terminal: voice-overlay
 ```
 
 For OpenCode Web, run OpenCode and the local voice proxy in separate terminals:

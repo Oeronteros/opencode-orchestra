@@ -40,10 +40,10 @@ test('voice web injects the UI, proxies API bodies and gates transcription to it
     }
   })
   try {
-    assert.match(
-      await (await fetch(web.url)).text(),
-      /script src="\/__orchestra_voice\/client.js"/
-    )
+    const page = await (await fetch(web.url)).text()
+    assert.match(page, /script src="\/__orchestra_voice\/client.js"/)
+    assert.doesNotMatch(page, /bridge.js/)
+    assert.equal((await fetch(web.url + '/__orchestra_voice/bridge.js')).status, 404)
     const remote = await (await fetch(web.url + '/voice')).text()
     assert.match(remote, /Remote Voice/)
     assert.match(remote, /id="orchestra-remote"/)

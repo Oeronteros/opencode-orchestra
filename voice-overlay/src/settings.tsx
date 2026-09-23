@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { ServerConfig, SessionRef } from "./lib/opencode";
 import {
   normalizeOverlaySettings,
@@ -13,9 +13,9 @@ const KEY = "voice-overlay-settings:v1";
 export function loadSettings(): OverlaySettings {
   try {
     const raw = localStorage.getItem(KEY);
-    return normalizeOverlaySettings(JSON.parse(raw ?? "null"));
+    return { ...normalizeOverlaySettings(JSON.parse(raw ?? "null")), target: "tui", postTranscriptionAction: "insert" };
   } catch {
-    return normalizeOverlaySettings(null);
+    return { ...normalizeOverlaySettings(null), target: "tui", postTranscriptionAction: "insert" };
   }
 }
 
@@ -32,18 +32,8 @@ export function SettingsView(props: {
 }) {
   const [draft, setDraft] = useState<OverlaySettings>(props.settings);
   const [error, setError] = useState("");
-  const refresh = useRef(props.onRefreshSessions);
-  refresh.current = props.onRefreshSessions;
-  useEffect(() => {
-    if (draft.target !== "web") return;
-    const timer = window.setTimeout(() => refresh.current(draft), 300);
-    return () => window.clearTimeout(timer);
-  }, [draft.host, draft.port, draft.username, draft.password, draft.target]);
   const set = (patch: Partial<OverlaySettings>) =>
     setDraft((d) => ({ ...d, ...patch }));
-  const selectedSessionMissing =
-    draft.sessionId !== "" &&
-    !props.sessions.some((session) => session.id === draft.sessionId);
   return (
     <main className="overlay-shell settings-shell">
       <WindowHeader />
@@ -88,36 +78,11 @@ export function SettingsView(props: {
             <option value="small">small — точнее (~460 МБ)</option>
           </select>
         </label>
-        <fieldset>
-          <legend>После распознавания</legend>
-          {draft.target === "auto" && <p className="field-note">В открытую вкладку текст только вставляется. Отправку вы нажимаете в OpenCode.</p>}
-          <label>
-            <input
-              type="radio"
-              name="action"
-              disabled={draft.target === "auto"}
-              checked={draft.target === "auto" || draft.postTranscriptionAction === "insert"}
-              onChange={() => set({ postTranscriptionAction: "insert" })}
-            />
-            {draft.target !== "web" ? "Вставить текст" : "Проверить текст перед отправкой"}
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="action"
-              disabled={draft.target === "auto"}
-              checked={draft.target !== "auto" && draft.postTranscriptionAction === "insert-and-submit"}
-              onChange={() =>
-                set({ postTranscriptionAction: "insert-and-submit" })
-              }
-            />
-            {draft.target === "tui" ? "Вставить и отправить" : "Сразу отправить в сессию"}
-          </label>
-        </fieldset>
+        <p className="field-note">Текст добавляется в промпт TUI. Отправку вы нажимаете в OpenCode.</p>
         <details>
           <summary>Дополнительно</summary>
           <p className="settings-subtitle">
-            Подключение к OpenCode и ручное назначение
+            Подключение к TUI OpenCode
           </p>
           <label>
             Хост
@@ -135,12 +100,6 @@ export function SettingsView(props: {
             />
           </label>
           <label>
-            Порт вкладки (voice-web)
-            <input type="number" min="1" max="65535" value={draft.browserPort}
-              onChange={(e) => set({ browserPort: Number(e.target.value) || 4097 })} />
-            <small className="field-note">Откройте OpenCode через opencode-orchestra voice-web, обычно на http://127.0.0.1:4097.</small>
-          </label>
-          <label>
             Пользователь
             <input
               value={draft.username}
@@ -155,75 +114,6 @@ export function SettingsView(props: {
               onChange={(e) => set({ password: e.target.value })}
             />
           </label>
-          <fieldset>
-            <legend>Куда вставлять</legend>
-            <label>
-              <input
-                type="radio"
-                name="target"
-                checked={draft.target === "auto"}
-                onChange={() => set({ target: "auto", postTranscriptionAction: "insert" })}
-              />
-              Открытая вкладка браузера
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="target"
-                value="tui"
-                checked={draft.target === "tui"}
-                onChange={() => set({ target: "tui" })}
-              />
-              TUI-промпт
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="target"
-                value="web"
-                checked={draft.target === "web"}
-                onChange={() => set({ target: "web" })}
-              />
-              Web-сессия
-            </label>
-          </fieldset>
-          {draft.target === "web" && (
-            <label>
-              Сессия
-              <select
-                value={draft.sessionId}
-                onChange={(e) => set({ sessionId: e.target.value })}
-              >
-                <option value="">Выбери сессию</option>
-                {selectedSessionMissing && (
-                  <option value={draft.sessionId}>
-                    Недоступна — {draft.sessionId}
-                  </option>
-                )}
-                {props.sessions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.title}{s.directory ? ` — ${s.directory}` : ""}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => props.onRefreshSessions(draft)}
-              >
-                Обновить сессии
-              </button>
-              {selectedSessionMissing && (
-                <small className="field-note" role="alert">
-                  Сервер больше не возвращает выбранную сессию.
-                </small>
-              )}
-              {props.sessionError && (
-                <small className="field-note" role="alert">
-                  {props.sessionError}
-                </small>
-              )}
-            </label>
-          )}
         </details>
         {error && <p role="alert">{error}</p>}
         <div className="settings-actions">
@@ -232,8 +122,9 @@ export function SettingsView(props: {
             type="button"
             onClick={() => {
               try {
-                localStorage.setItem(KEY, JSON.stringify(draft));
-                props.onChange(draft);
+                const next = { ...draft, target: "tui" as const, postTranscriptionAction: "insert" as const };
+                localStorage.setItem(KEY, JSON.stringify(next));
+                props.onChange(next);
               } catch {
                 setError(
                   "Не удалось сохранить настройки. Проверьте доступ к хранилищу.",

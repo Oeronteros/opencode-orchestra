@@ -1,5 +1,9 @@
 # Voice integration: implementation and verification
 
+> Historical verification record. The overlay-to-browser bridge was removed when
+> the overlay became TUI-only; current TUI dictation uses `voice-tui` and the
+> proxy-web microphone continues to use its own inline client.
+
 ## Result
 
 The embedded Web microphone inserts transcription into the current OpenCode composer.

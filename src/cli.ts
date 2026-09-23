@@ -21,6 +21,7 @@ import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
 import { startVoiceWeb } from "./voice-web.js"
+import { runVoiceEditor, voiceEditorCommand } from "./voice-editor.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -708,6 +709,8 @@ function usage(): string {
     "  voice-web   OpenCode web with an inline offline microphone",
     "  web         OpenCode web with an inline offline microphone",
     "              --upstream http://127.0.0.1:4096 --port 4097",
+    "  voice-editor <file>  Record into the draft file supplied by OpenCode /editor",
+    "  voice-tui [args]      Launch OpenCode with the voice editor bound to Ctrl+X, E",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
     "  eval        Run the built-in reproducible evaluation suite",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",
@@ -750,6 +753,8 @@ function usage(): string {
 
 type ParsedCommand =
   | { command: "voice-web"; options: { upstream?: string; port?: number } }
+  | { command: "voice-editor"; file: string }
+  | { command: "voice-tui"; args: string[] }
   | { command: "install"; options: InstallOptions }
   | { command: "dashboard"; options: DashboardOptions }
   | { command: "doctor"; options: { configDirectory?: string; json?: boolean } }
@@ -760,6 +765,11 @@ type ParsedCommand =
 
 function parseArguments(argv: string[]): ParsedCommand | "help" {
   if (argv[0] === "--help" || argv[0] === "-h") return "help"
+  if (argv[0] === "voice-editor") {
+    if (argv.length !== 2 || !argv[1]) throw new Error("voice-editor requires exactly one draft file")
+    return { command: "voice-editor", file: argv[1] }
+  }
+  if (argv[0] === "voice-tui") return { command: "voice-tui", args: argv.slice(1) }
   if (argv[0] === "voice-web" || argv[0] === "web") {
     const options: { upstream?: string; port?: number } = {}
     for (let index = 1; index < argv.length; index++) {
@@ -904,6 +914,21 @@ async function main(): Promise<void> {
       console.log("Откройте этот адрес в браузере. Для остановки нажмите Ctrl+C.")
       return
     }
+    if (parsed.command === "voice-editor") {
+      await runVoiceEditor(parsed.file)
+      return
+    }
+    if (parsed.command === "voice-tui") {
+      const cli = process.argv[1]
+      if (!cli) throw new Error("Cannot locate the Orchestra CLI entrypoint")
+      const editor = voiceEditorCommand(process.execPath, path.resolve(cli))
+      run("opencode", parsed.args, {
+        ...process.env,
+        EDITOR: editor,
+        VISUAL: editor,
+      })
+      return
+    }
     if (parsed.command === "dashboard") {
       const dashboard = await startDashboard(parsed.options)
       console.log(`Orchestra dashboard: ${dashboard.url}`)
@@ -957,16 +982,15 @@ async function main(): Promise<void> {
     console.log(`ast-grep: ${dependencyLine(result.dependencies.astGrep)}`)
     console.log(`Voice overlay: ${dependencyLine(result.dependencies.voice)}`)
     if (result.dependencies.voice.status === "installed" || result.dependencies.voice.status === "existing") {
-      console.log("TUI или отдельное окно: запусти voice-overlay.")
+      console.log("TUI 1.x: opencode-orchestra voice-tui, затем Ctrl+X, E для записи.")
       console.log("Web с текущей вкладкой и выбором микрофона: запусти bunx @oeronteros-1/opencode-orchestra@latest web и открой http://127.0.0.1:4097.")
-      console.log("Отдельное окно не может определить активную вкладку браузера; Web-сессия в нём выбирается вручную через ⚙.")
     }
     if (result.changed.length > 0) console.log(`Changed: ${result.changed.join(", ")}`)
     if (result.preserved.length > 0) console.log(`Preserved: ${result.preserved.join(", ")}`)
     if (result.backup) console.log(`Backup: ${result.backup}`)
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
-    console.error(usage())
+    if (process.argv[2] !== "voice-tui" && process.argv[2] !== "voice-editor") console.error(usage())
     process.exitCode = 1
   }
 }
