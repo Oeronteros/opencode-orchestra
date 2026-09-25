@@ -66,6 +66,10 @@ test("installer merges plugin and MCPs while preserving existing entries", async
 
   assert.ok(text.includes("// keep this comment"))
   assert.deepEqual(config.plugin, ["existing", "@oeronteros-1/opencode-orchestra@latest", SUPER_POWERS_ENTRY])
+  const agents = config.agent as Record<string, { mode: string }>
+  assert.equal(agents["orch-lead"]?.mode, "primary")
+  assert.equal(agents["orch-editor"]?.mode, "subagent")
+  assert.equal(agents["orch-integrator"]?.mode, "subagent")
   assert.equal(mcp.context7?.url, "https://custom.invalid")
   assert.deepEqual(mcp["codebase-memory"], {
     type: "local",
@@ -158,7 +162,9 @@ test("installer preserves a pinned Orchestra version when Superpowers is already
   const config = parse(await readFile(configFile, "utf8")) as { plugin: string[] }
 
   assert.deepEqual(config.plugin, ["@oeronteros-1/opencode-orchestra@1.0.15", SUPER_POWERS_ENTRY])
-  assert.deepEqual((config as Record<string, unknown>).agent, { "orch-lead": { mode: "primary", hidden: false } })
+  const agents = (config as unknown as { agent: Record<string, { mode: string; hidden: boolean }> }).agent
+  assert.deepEqual(agents["orch-lead"], { mode: "primary", hidden: false })
+  assert.deepEqual(agents["orch-editor"], { mode: "subagent", hidden: true })
   const cacheRoot = process.env.XDG_CACHE_HOME
     ?? (process.platform === "win32" ? process.env.LOCALAPPDATA : undefined)
     ?? path.join(os.homedir(), ".cache")
@@ -166,6 +172,42 @@ test("installer preserves a pinned Orchestra version when Superpowers is already
     path.join(cacheRoot, "opencode", "packages", SUPER_POWERS_ENTRY, "node_modules", "superpowers", "skills"),
   ])
   assert.equal(result.changed.includes("plugin"), false)
+})
+
+test("installer updates native V2 plugin and agent fields", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-v2-install-"))
+  const configFile = path.join(directory, "opencode.jsonc")
+  await writeFile(configFile, JSON.stringify({
+    plugins: [{ package: "@oeronteros-1/opencode-orchestra", options: { budget: "eco" } }],
+    agents: { custom: { mode: "primary" } },
+  }))
+  const options = {
+    configDirectory: directory,
+    context7: true,
+    codebaseMemory: false,
+    memoryGraph: false,
+    git: false,
+    astGrep: false,
+    playwright: false,
+    superpowers: false,
+    voice: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
+  }
+  await install(options)
+  const updated = parse(await readFile(configFile, "utf8")) as Record<string, any>
+  assert.deepEqual(updated.plugins, [{ package: "@oeronteros-1/opencode-orchestra@latest", options: { budget: "eco" } }])
+  assert.equal(updated.plugin, undefined)
+  assert.equal(updated.agent, undefined)
+  assert.deepEqual(updated.agents.custom, { mode: "primary" })
+  assert.equal(updated.agents["orch-lead"].mode, "primary")
+  assert.equal(updated.agents["orch-editor"].mode, "subagent")
+  assert.equal(updated.mcp.servers.context7.disabled, false)
+  assert.equal(updated.mcp.context7, undefined)
+  const again = await install(options)
+  assert.equal(again.changed.includes("plugins"), false)
 })
 
 test("installer preserves user-configured Supermemory entries", async () => {

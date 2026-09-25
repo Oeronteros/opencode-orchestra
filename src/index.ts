@@ -28,6 +28,8 @@ import { OrchestrationActionInbox } from "./orchestration/action-inbox.js"
 import { releasePlanMode, type ReminderMessage } from "./routing/plan-reminder.js"
 import { LoopController } from "./loop/controller.js"
 import { loopPrompt, resolveLoopGoal } from "./loop/protocol.js"
+import { setupV2 } from "./v2.js"
+import { Plugin as V2Plugin } from "@opencode/plugin"
 
 type MutableConfig = Omit<Config, "agent" | "command"> & {
   agent?: Record<string, RuntimeAgentConfig>
@@ -688,7 +690,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (tool === "bash" && typeof output?.args?.command === "string") {
         verificationCalls.set(callID, { sessionID, command: output.args.command })
       }
-      if (tool === "task" && (output?.args?.subagent_type?.startsWith("orch-") || sessionAgent.get(sessionID)?.startsWith("orch-") || coordinator.snapshot(sessionID))) {
+      if ((tool === "task" || tool === "subagent") && (output?.args?.subagent_type?.startsWith("orch-") || sessionAgent.get(sessionID)?.startsWith("orch-") || coordinator.snapshot(sessionID))) {
         throw new Error("Native task is disabled for Orchestra nodes because it cannot guarantee an isolated worktree or lifecycle accounting. Use orchestra_dispatch with the sealed nodeId and TaskContract.")
       }
       const server = mcpServerForTool(tool)
@@ -881,6 +883,9 @@ export const server: Plugin = OrchestraPlugin
 
 // OpenCode 1.18 desktop resolves the default export as a PluginModule.
 export default {
-  id: "opencode-orchestra",
+  ...V2Plugin.define({
+    id: "opencode-orchestra",
+    setup: (ctx) => setupV2(ctx, OrchestraPlugin),
+  }),
   server: OrchestraPlugin,
-} satisfies { id: string; server: Plugin }
+}

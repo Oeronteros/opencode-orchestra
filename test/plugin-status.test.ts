@@ -48,6 +48,18 @@ test("detectMcpPresence maps git and ast-grep keys", async () => {
   assert.equal(presence.context7, false)
 })
 
+test("detectMcpPresence reads native V2 MCP servers and disabled flags", async () => {
+  const { detectMcpPresence } = await import("../src/plugin-status.js")
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-v2-mcp-presence-"))
+  const { writeFile } = await import("node:fs/promises")
+  await writeFile(path.join(directory, "opencode.json"), JSON.stringify({
+    mcp: { servers: { git: { type: "local", command: ["uvx", "mcp-server-git"] }, "ast-grep": { type: "local", command: ["uvx"], disabled: true } } },
+  }))
+  const presence = await detectMcpPresence(directory)
+  assert.equal(presence.git, true)
+  assert.equal(presence.astGrep, false)
+})
+
 test("plugin exposes the /plugin-status command and orchestra_plugin_status tool", async () => {
   const initialize = OrchestraPlugin as unknown as (
     input: Record<string, unknown>,

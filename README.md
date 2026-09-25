@@ -39,6 +39,10 @@ Useful status commands:
 
 The installer is idempotent. It backs up the OpenCode configuration before changing it and preserves existing plugins and MCP entries unless `--force` is explicitly supplied.
 
+### OpenCode 2 migration
+
+Run `install` again after upgrading OpenCode. Version 2 loads the plugin through its new `setup` API; the installer seeds Orchestra agent names in the OpenCode config because V2 plugins can update existing agents but cannot create them through an agent transform. The plugin continues to expose its V1 entrypoint for OpenCode 1.18.29 and newer. Existing V1 config fields are normalized by OpenCode 2, so a config rewrite is optional. See the [official migration guide](https://opencode.ai/v2/docs/build/plugins/migrate-v1).
+
 ## Dashboard
 
 The dashboard is local, token-protected, and bound to `127.0.0.1` by default. It shows live agent activity, usage trends, model and agent breakdowns, estimated or provider-reported cost, MCP health, anomalies, and exportable reports.

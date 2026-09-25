@@ -213,13 +213,16 @@ async function findMainConfig(configDirectory: string): Promise<string> {
 
 async function mcpStatus(configDirectory: string): Promise<Record<string, boolean>> {
   const root = parseJsonc(await readTextOr(await findMainConfig(configDirectory), "{}"))
-  const mcp = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
+  const outer = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
     ? (root.mcp as Record<string, unknown>)
     : {}
+  const mcp = typeof outer.servers === "object" && outer.servers !== null && !Array.isArray(outer.servers)
+    ? { ...outer, ...(outer.servers as Record<string, unknown>) }
+    : outer
   const enabled = (name: string) => {
     const entry = mcp[name]
     return typeof entry === "object" && entry !== null && !Array.isArray(entry)
-      ? (entry as Record<string, unknown>).enabled !== false
+      ? (entry as Record<string, unknown>).enabled !== false && (entry as Record<string, unknown>).disabled !== true
       : entry !== undefined
   }
   return {

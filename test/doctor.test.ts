@@ -5,7 +5,21 @@ import path from "node:path"
 import test from "node:test"
 import { completionFor, bashCompletion } from "../src/diagnostics/completion.js"
 import { compareVersions, formatUpdateResult } from "../src/diagnostics/update.js"
-import { findMainConfig, formatDoctorReport, readConfigFile, runDoctor, type Check, type DoctorReport } from "../src/diagnostics/doctor.js"
+import { extractMcp, findMainConfig, formatDoctorReport, readConfigFile, runDoctor, type Check, type DoctorReport } from "../src/diagnostics/doctor.js"
+
+test("extractMcp reads native V2 servers without treating timeout as a server", () => {
+  const entries = extractMcp({ mcp: { timeout: { catalog: 30_000 }, servers: { git: { type: "local", command: ["uvx", "mcp-server-git"] } } } })
+  assert.deepEqual(entries.map((entry) => entry.name), ["git"])
+})
+
+test("runDoctor recognizes a native V2 plugin entry", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-doctor-v2-"))
+  await writeFile(path.join(directory, "opencode.json"), JSON.stringify({
+    plugins: [{ package: "@oeronteros-1/opencode-orchestra@latest", options: {} }],
+  }))
+  const report = await runDoctor({ configDirectory: directory })
+  assert.equal(report.checks.find((check) => check.id === "plugin-entry")?.status, "ok")
+})
 
 test("compareVersions orders dotted versions", () => {
   assert.ok(compareVersions("0.5.3", "0.5.4") < 0)
@@ -296,7 +310,9 @@ test("runDoctor reports voice overlay info when the binary is absent", async () 
     "utf8",
   )
   const originalHome = process.env.HOME
+  const originalLocalAppData = process.env.LOCALAPPDATA
   process.env.HOME = home
+  delete process.env.LOCALAPPDATA
   try {
     const report = await runDoctor({ configDirectory })
     const byId = new Map(report.checks.map((c: Check) => [c.id, c]))
@@ -304,6 +320,8 @@ test("runDoctor reports voice overlay info when the binary is absent", async () 
   } finally {
     if (originalHome === undefined) delete process.env.HOME
     else process.env.HOME = originalHome
+    if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA
+    else process.env.LOCALAPPDATA = originalLocalAppData
   }
 })
 

@@ -74,6 +74,7 @@ function pluginName(entry: unknown): string | undefined {
   let raw: string | undefined
   if (typeof entry === "string") raw = entry
   else if (Array.isArray(entry) && typeof entry[0] === "string") raw = entry[0]
+  else if (entry && typeof entry === "object" && !Array.isArray(entry) && typeof (entry as { package?: unknown }).package === "string") raw = (entry as { package: string }).package
   else return undefined
   const slash = raw.lastIndexOf("/")
   const at = slash === -1 ? raw.indexOf("@") : raw.indexOf("@", slash)
@@ -136,7 +137,13 @@ export interface LocalMcp {
 export function extractMcp(parsed: Record<string, unknown>): { name: string; value: Record<string, unknown> }[] {
   const mcp = parsed.mcp
   if (typeof mcp !== "object" || mcp === null || Array.isArray(mcp)) return []
-  return Object.entries(mcp).map(([name, value]) => ({
+  const record = mcp as Record<string, unknown>
+  const native = record.servers
+  const legacy = Object.fromEntries(Object.entries(record).filter(([name]) => name !== "servers" && name !== "timeout"))
+  const servers = native && typeof native === "object" && !Array.isArray(native)
+    ? { ...legacy, ...(native as Record<string, unknown>) }
+    : legacy
+  return Object.entries(servers).map(([name, value]) => ({
     name,
     value: typeof value === "object" && value !== null && !Array.isArray(value)
       ? (value as Record<string, unknown>)
@@ -170,7 +177,8 @@ export function collectLocalMcps(parsed: Record<string, unknown>): {
   for (const { name, value } of extractMcp(parsed)) {
     const argv = commandArgv(value)
     const type = mcpType(value)
-    const enabled = value.enabled !== false
+    const enabled = value.enabled !== false && value.disabled !== true
+    if (!enabled) continue
     if (type === "remote" || (argv.length === 0 && type !== "local" && typeof value.url === "string")) {
       nonLocalCount += 1
       continue
@@ -526,7 +534,10 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   }
 
   // --- Plugin entry ---
-  const plugin = Array.isArray(mainConfig.parsed.plugin) ? mainConfig.parsed.plugin : []
+  const plugin = [
+    ...(Array.isArray(mainConfig.parsed.plugin) ? mainConfig.parsed.plugin : []),
+    ...(Array.isArray(mainConfig.parsed.plugins) ? mainConfig.parsed.plugins : []),
+  ]
   const pluginEntry = plugin.map(pluginName).find((name) => name === PACKAGE_NAME)
   push({
     id: "plugin-entry",

@@ -39,6 +39,10 @@ bunx @oeronteros-1/opencode-orchestra@latest install
 
 安装程序是幂等的。修改 OpenCode 配置前会创建备份，并保留已有的插件和 MCP 配置；只有显式传入 `--force` 时才会替换现有条目。
 
+### 迁移到 OpenCode 2
+
+升级 OpenCode 后请重新运行 `install`。V2 通过新的 `setup` API 加载插件；安装程序会先在配置中创建 Orchestra 智能体名称，因为 V2 插件只能通过 `agent.transform` 更新已有智能体。插件仍为 OpenCode 1.18.29 及更新的 V1 版本保留旧入口。OpenCode 2 会在加载时规范化受支持的 V1 配置字段，因此无需强制重写配置。参见[官方迁移指南](https://opencode.ai/v2/docs/build/plugins/migrate-v1)。
+
 ## 控制面板
 
 控制面板完全在本地运行，使用随机 token 保护，并默认只监听 `127.0.0.1`。它展示智能体实时活动、使用趋势、模型和智能体明细、估算或提供商上报的成本、MCP 健康状态、异常情况，以及可导出的报告。

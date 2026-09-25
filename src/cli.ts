@@ -22,6 +22,9 @@ import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
 import { startVoiceWeb } from "./voice-web.js"
 import { runVoiceEditor, voiceEditorCommand } from "./voice-editor.js"
+import { createAgentSet } from "./agents/build.js"
+import { DEFAULT_CONFIG } from "./config/defaults.js"
+import { loadPrompts } from "./prompts/load.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -111,11 +114,12 @@ function setJsonc(text: string, location: (string | number)[], value: unknown): 
   return applyEdits(text, modify(text, location, value, { formattingOptions: FORMATTING }))
 }
 
-/** Normalized package name for an entry: string or `[name, options]`. */
+/** Normalized package name for a V1 or V2 plugin entry. */
 function pluginName(entry: unknown): string | undefined {
   let raw: string | undefined
   if (typeof entry === "string") raw = entry
   else if (Array.isArray(entry) && typeof entry[0] === "string") raw = entry[0]
+  else if (entry && typeof entry === "object" && !Array.isArray(entry) && typeof (entry as { package?: unknown }).package === "string") raw = (entry as { package: string }).package
   else return undefined
   // Strip a version range/tag (@latest, @1.2.3) so that
   // "@oeronteros-1/opencode-orchestra@latest" compares equal to the bare name.
@@ -500,16 +504,17 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
 
   if (!("$schema" in root)) updated = setJsonc(updated, ["$schema"], "https://opencode.ai/config.json")
 
-  const plugins = Array.isArray(root.plugin) ? [...root.plugin] : []
-  if (root.plugin !== undefined && !Array.isArray(root.plugin)) {
-    throw new Error(`Expected \"plugin\" to be an array in ${openCodeConfig}`)
+  const pluginField = root.plugins !== undefined ? "plugins" : "plugin"
+  const plugins = Array.isArray(root[pluginField]) ? [...root[pluginField]] : []
+  if (root[pluginField] !== undefined && !Array.isArray(root[pluginField])) {
+    throw new Error(`Expected \"${pluginField}\" to be an array in ${openCodeConfig}`)
   }
   let pluginsChanged = false
   const existing = plugins.findIndex((entry) => pluginName(entry) === PACKAGE_NAME)
   if (existing === -1) {
     // Not present at all: add the @latest entry so future runs re-resolve.
     plugins.push(PACKAGE_ENTRY)
-    changed.push("plugin")
+    changed.push(pluginField)
     pluginsChanged = true
   } else {
     const current = plugins[existing]
@@ -517,14 +522,18 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
       ? current
       : Array.isArray(current) && typeof current[0] === "string"
         ? current[0]
-        : undefined
+        : current && typeof current === "object" && !Array.isArray(current) && typeof (current as { package?: unknown }).package === "string"
+          ? (current as { package: string }).package
+          : undefined
     // Add a resolvable tag to a bare package name, but preserve explicit
     // versions/tags so installing companions cannot change a working plugin.
     if (currentSpec === PACKAGE_NAME) {
       const wasOptions = Array.isArray(plugins[existing])
       const options = wasOptions ? plugins[existing][1] : undefined
-      plugins[existing] = options !== undefined ? [PACKAGE_ENTRY, options] : PACKAGE_ENTRY
-      changed.push("plugin")
+      plugins[existing] = current && typeof current === "object" && !Array.isArray(current)
+        ? { ...current, package: PACKAGE_ENTRY }
+        : options !== undefined ? [PACKAGE_ENTRY, options] : PACKAGE_ENTRY
+      changed.push(pluginField)
       pluginsChanged = true
     }
   }
@@ -532,19 +541,20 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     const superPowersIndex = plugins.findIndex((entry) => superPowersName(entry)?.includes("superpowers"))
     if (superPowersIndex === -1) {
       plugins.push(SUPER_POWERS_ENTRY)
-      if (!changed.includes("plugin")) changed.push("plugin")
+      if (!changed.includes(pluginField)) changed.push(pluginField)
       pluginsChanged = true
     }
     // Present in any form (pinned, local path): preserve it. The installer
     // contract preserves user plugins rather than upgrading foreign ones.
   }
-  if (pluginsChanged) updated = setJsonc(updated, ["plugin"], plugins)
+  if (pluginsChanged) updated = setJsonc(updated, [pluginField], plugins)
 
-  const agent = typeof root.agent === "object" && root.agent !== null && !Array.isArray(root.agent)
-    ? (root.agent as Record<string, unknown>)
+  const agentField = root.agents !== undefined ? "agents" : "agent"
+  const agent = typeof root[agentField] === "object" && root[agentField] !== null && !Array.isArray(root[agentField])
+    ? (root[agentField] as Record<string, unknown>)
     : {}
-  if (root.agent !== undefined && (typeof root.agent !== "object" || root.agent === null || Array.isArray(root.agent))) {
-    throw new Error(`Expected \"agent\" to be an object in ${openCodeConfig}`)
+  if (root[agentField] !== undefined && (typeof root[agentField] !== "object" || root[agentField] === null || Array.isArray(root[agentField]))) {
+    throw new Error(`Expected \"${agentField}\" to be an object in ${openCodeConfig}`)
   }
   const lead = typeof agent["orch-lead"] === "object" && agent["orch-lead"] !== null && !Array.isArray(agent["orch-lead"])
     ? (agent["orch-lead"] as Record<string, unknown>)
@@ -553,12 +563,24 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     throw new Error(`Expected \"agent.orch-lead\" to be an object in ${openCodeConfig}`)
   }
   if (lead.mode !== "primary") {
-    updated = setJsonc(updated, ["agent", "orch-lead", "mode"], "primary")
-    changed.push("agent.orch-lead.mode")
+    updated = setJsonc(updated, [agentField, "orch-lead", "mode"], "primary")
+    changed.push(`${agentField}.orch-lead.mode`)
   }
   if (lead.hidden !== false) {
-    updated = setJsonc(updated, ["agent", "orch-lead", "hidden"], false)
-    changed.push("agent.orch-lead.hidden")
+    updated = setJsonc(updated, [agentField, "orch-lead", "hidden"], false)
+    changed.push(`${agentField}.orch-lead.hidden`)
+  }
+  // OpenCode V2 can update agents from a plugin transform but cannot create
+  // them there. Seed names in the supported config so setup can fill in the
+  // current prompts, models, and permission policy without rewriting files.
+  const orchestraAgents = createAgentSet(DEFAULT_CONFIG, await loadPrompts())
+  for (const [name, definition] of Object.entries(orchestraAgents)) {
+    if (name === "orch-lead" || agent[name] !== undefined) continue
+    updated = setJsonc(updated, [agentField, name], {
+      mode: definition.mode,
+      hidden: definition.hidden ?? false,
+    })
+    changed.push(`${agentField}.${name}`)
   }
 
   if (options.superpowers !== false) {
@@ -587,12 +609,24 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     throw new Error(`Expected \"mcp\" to be an object in ${openCodeConfig}`)
   }
 
+  const nativeMcp = pluginField === "plugins" || agentField === "agents" || mcp.servers !== undefined
+  const mcpServers = nativeMcp && mcp.servers && typeof mcp.servers === "object" && !Array.isArray(mcp.servers)
+    ? mcp.servers as Record<string, unknown>
+    : mcp
+  const mcpPath = nativeMcp ? ["mcp", "servers"] : ["mcp"]
   const addMcp = (name: string, value: Record<string, unknown>) => {
-    if (mcp[name] !== undefined && !options.force) {
+    if (mcpServers[name] !== undefined && !options.force) {
       preserved.push(`mcp.${name}`)
       return
     }
-    updated = setJsonc(updated, ["mcp", name], value)
+    const nativeValue = nativeMcp
+      ? Object.fromEntries(Object.entries(value).map(([key, entry]) => key === "enabled"
+        ? ["disabled", entry === false]
+        : key === "timeout" && typeof entry === "number"
+          ? ["timeout", { catalog: entry, execution: entry }]
+          : [key, entry]))
+      : value
+    updated = setJsonc(updated, [...mcpPath, name], nativeValue)
     changed.push(`mcp.${name}`)
   }
   if (options.context7) {
