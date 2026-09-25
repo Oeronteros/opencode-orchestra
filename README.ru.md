@@ -316,10 +316,11 @@ opencode --port 4096
 
 ```bash
 opencode web --port 4096
-opencode-orch web
+bunx @oeronteros-1/opencode-orchestra@latest web
 ```
 
 Откройте `http://127.0.0.1:4097`. Кнопка микрофона появится рядом с отправкой промпта и вставит распознанный текст в черновик без отправки.
+`web` и `voice-web` — подкоманды CLI `opencode-orchestra`, а не отдельные команды терминала.
 
 Требования платформ и диагностика описаны в [voice-overlay/README.md](voice-overlay/README.md).
 

@@ -1,9 +1,15 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { VoiceRecorder } from './voice-recorder.js'
 
-export function voiceEditorCommand(executable: string, cli: string): string {
+export function voiceEditorCommand(executable: string, cli: string, platform: NodeJS.Platform = process.platform): string {
   for (const value of [executable, cli]) {
     if (!value || /["\r\n]/.test(value)) throw new Error('Недопустимый путь к voice-editor.')
+  }
+  // OpenCode 1.x splits EDITOR on spaces on Unix; quotes are not interpreted.
+  if (platform !== 'win32') {
+    if ([executable, cli].some(value => /\s/.test(value)))
+      throw new Error('OpenCode TUI не поддерживает пробелы в пути к voice-editor на этой платформе.')
+    return `${executable} ${cli} voice-editor`
   }
   return `"${executable}" "${cli}" voice-editor`
 }

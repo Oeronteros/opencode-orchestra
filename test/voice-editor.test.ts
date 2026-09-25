@@ -5,10 +5,21 @@ import os from 'node:os'
 import path from 'node:path'
 import { runVoiceEditor, voiceEditorCommand } from '../src/voice-editor.js'
 
-test('launcher quotes the executable and CLI paths for OpenCode EDITOR', () => {
+test('launcher quotes the executable and CLI paths for Windows OpenCode EDITOR', () => {
   assert.equal(
-    voiceEditorCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Program Files\\orchestra\\cli.js'),
+    voiceEditorCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Program Files\\orchestra\\cli.js', 'win32'),
     '"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\orchestra\\cli.js" voice-editor',
+  )
+})
+
+test('launcher leaves Unix paths unquoted for OpenCode editor splitting', () => {
+  assert.equal(
+    voiceEditorCommand('/usr/bin/node', '/tmp/orchestra/dist/cli.js', 'linux'),
+    '/usr/bin/node /tmp/orchestra/dist/cli.js voice-editor',
+  )
+  assert.throws(
+    () => voiceEditorCommand('/usr/bin/node', '/tmp/space in path/cli.js', 'linux'),
+    /пробелы в пути/,
   )
 })
 
