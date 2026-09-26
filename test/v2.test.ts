@@ -108,3 +108,53 @@ test("V2 setup registers legacy behavior on the new domains and adapts tool exec
   await cleanup()
   assert.equal(disposed, true)
 })
+
+test("V2 event stream retries an assistant message after a handler failure", async () => {
+  let resolveIdle!: () => void
+  const idleProcessed = new Promise<void>((resolve) => { resolveIdle = resolve })
+  const attempts: string[] = []
+  const domain = () => ({
+    transform: async (edit: (editor: Record<string, unknown>) => void) => { edit({}) },
+    hook: async () => undefined,
+  })
+  const ctx = {
+    location: { directory: process.cwd() },
+    options: {},
+    agent: domain(),
+    command: domain(),
+    tool: domain(),
+    permission: domain(),
+    model: { list: async () => ({ data: [] }) },
+    session: {
+      ...domain(),
+      context: async () => [
+        { id: "user", type: "user" },
+        { id: "reply", type: "assistant", agent: "orch-lead", model: { providerID: "mock", id: "reasoner" }, content: [{ type: "text", text: "done" }], time: { created: 1, completed: 2 }, finish: "stop", tokens: { input: 1, output: 1, reasoning: 0 } },
+      ],
+    },
+    event: { subscribe: ({ signal }: { signal: AbortSignal }) => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "session.idle", data: { sessionID: "session" } }
+        yield { type: "session.idle", data: { sessionID: "session" } }
+        if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+      },
+    }) },
+  } as unknown as Context
+  const initialize = (async () => ({
+    event: async ({ event }: { event: { type: string } }) => {
+      attempts.push(event.type)
+      if (event.type === "message.updated" && attempts.filter((type) => type === "message.updated").length === 1) throw new Error("transient ledger failure")
+      if (event.type === "session.idle") resolveIdle()
+    },
+  })) as unknown as LegacyPlugin
+
+  const cleanup = await setupV2(ctx, initialize)
+  const timeout = setTimeout(() => resolveIdle(), 1_000)
+  try {
+    await idleProcessed
+    assert.deepEqual(attempts, ["message.updated", "message.updated", "session.idle"])
+  } finally {
+    clearTimeout(timeout)
+    await cleanup()
+  }
+})

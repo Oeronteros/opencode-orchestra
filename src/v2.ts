@@ -218,26 +218,30 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<(
   const seen = new Set<string>()
   const stream = (async () => {
     for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-      if (event.type === "session.reasoning.delta") {
-        const partID = `${event.data.assistantMessageID}:reasoning:${event.data.ordinal}`
-        await hooks.event?.({ event: { type: "message.part.updated", properties: { part: { type: "reasoning", id: partID, messageID: event.data.assistantMessageID, sessionID: event.data.sessionID }, delta: event.data.delta } } as never })
-      } else if (event.type === "session.text.delta") {
-        await hooks.event?.({ event: { type: "message.part.delta", properties: { sessionID: event.data.sessionID, messageID: event.data.assistantMessageID, partID: `${event.data.assistantMessageID}:${event.data.ordinal}`, field: "text", delta: event.data.delta } } as never })
-      } else if (event.type === "session.idle" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
-        const sessionID = event.data.sessionID
-        const messages = await ctx.session.context({ sessionID }).catch(() => [])
-        for (let i = 0; i < messages.length; i++) {
-          const message = messages[i]
-          if (!message || message.type !== "assistant" || seen.has(message.id)) continue
-          seen.add(message.id)
-          if (seen.size > 2_048) {
-            const oldest = seen.values().next().value
-            if (oldest) seen.delete(oldest)
+      try {
+        if (event.type === "session.reasoning.delta") {
+          const partID = `${event.data.assistantMessageID}:reasoning:${event.data.ordinal}`
+          await hooks.event?.({ event: { type: "message.part.updated", properties: { part: { type: "reasoning", id: partID, messageID: event.data.assistantMessageID, sessionID: event.data.sessionID }, delta: event.data.delta } } as never })
+        } else if (event.type === "session.text.delta") {
+          await hooks.event?.({ event: { type: "message.part.delta", properties: { sessionID: event.data.sessionID, messageID: event.data.assistantMessageID, partID: `${event.data.assistantMessageID}:${event.data.ordinal}`, field: "text", delta: event.data.delta } } as never })
+        } else if (event.type === "session.idle" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+          const sessionID = event.data.sessionID
+          const messages = await ctx.session.context({ sessionID }).catch(() => [])
+          for (let i = 0; i < messages.length; i++) {
+            const message = messages[i]
+            if (!message || message.type !== "assistant" || seen.has(message.id)) continue
+            const user = messages.slice(0, i).findLast((item) => item.type === "user")
+            await hooks.event?.({ event: { type: "message.updated", properties: legacyMessage(message as LegacyAssistant, sessionID, user?.id) } as never })
+            seen.add(message.id)
+            if (seen.size > 2_048) {
+              const oldest = seen.values().next().value
+              if (oldest) seen.delete(oldest)
+            }
           }
-          const user = messages.slice(0, i).findLast((item) => item.type === "user")
-          await hooks.event?.({ event: { type: "message.updated", properties: legacyMessage(message as LegacyAssistant, sessionID, user?.id) } as never })
+          await hooks.event?.({ event: { type: event.type === "session.idle" ? "session.idle" : "session.error", properties: { sessionID } } as never })
         }
-        await hooks.event?.({ event: { type: event.type === "session.idle" ? "session.idle" : "session.error", properties: { sessionID } } as never })
+      } catch (error) {
+        if (!controller.signal.aborted) console.warn("[opencode-orchestra] V2 event processing failed", error)
       }
     }
   })().catch((error: unknown) => { if (!controller.signal.aborted) console.warn("[opencode-orchestra] V2 event stream failed", error) })

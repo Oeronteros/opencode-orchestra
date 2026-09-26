@@ -1,6 +1,5 @@
-import { readFileSync, statSync } from "node:fs"
+import { statSync } from "node:fs"
 import path from "node:path"
-import { parse as parseJsonc } from "jsonc-parser"
 import type { Config, Plugin } from "@opencode-ai/plugin"
 import { createAgentSet } from "./agents/build.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
@@ -66,27 +65,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 interface AutoAcceptCache {
   signatures: Map<string, number>
-  value: boolean | undefined
+  value: boolean
 }
 
-function createLiveAutoAccept(directory: string, rawOptions: Record<string, unknown>): () => boolean {
+function createLiveAutoAccept(directory: string, rawOptions: Record<string, unknown>): () => Promise<boolean> {
   const optionValue = isRecord(rawOptions.permissions) && typeof rawOptions.permissions.autoAcceptAll === "boolean"
     ? rawOptions.permissions.autoAcceptAll
     : undefined
+  const explicit = typeof rawOptions.configFile === "string" ? path.resolve(directory, rawOptions.configFile) : undefined
   const projectJsonc = path.join(directory, ".opencode", "orchestra.jsonc")
   const projectJson = path.join(directory, ".opencode", "orchestra.json")
   let cache: AutoAcceptCache | undefined
-  return (): boolean => {
+  return async (): Promise<boolean> => {
     if (optionValue !== undefined) return optionValue
     try {
-      // Project JSONC shadows the JSON sibling (same rule as loadConfig).
+      // Track the same source files and precedence as loadConfig.
       let projected = projectJsonc
-      try {
-        statSync(projectJsonc)
-      } catch {
-        projected = projectJson
+      if (!explicit) {
+        try {
+          statSync(projectJsonc)
+        } catch {
+          projected = projectJson
+        }
       }
-      const files = [globalOrchestraConfig(), projected]
+      const files = explicit ? [explicit] : [globalOrchestraConfig(), projected]
       const signatures = new Map<string, number>()
       let changed = cache === undefined || cache.signatures.size !== files.length
       for (const file of files) {
@@ -99,21 +101,12 @@ function createLiveAutoAccept(directory: string, rawOptions: Record<string, unkn
         signatures.set(file, mtime)
         if (!changed && cache && cache.signatures.get(file) !== mtime) changed = true
       }
-      if (!changed && cache) return cache.value ?? false
-      let merged: boolean | undefined
-      for (const file of files) {
-        if ((signatures.get(file) ?? 0) === 0) continue
-        try {
-          const raw = readFileSync(file, "utf8")
-          const parsed = parseJsonc(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as unknown
-          const permissions = isRecord(parsed) && isRecord(parsed.permissions) ? parsed.permissions : undefined
-          if (permissions && typeof permissions.autoAcceptAll === "boolean") merged = permissions.autoAcceptAll
-        } catch {
-          // Mid-save or malformed JSONC: keep the previously known value.
-        }
-      }
-      cache = { signatures, value: merged }
-      return merged ?? false
+      if (!changed && cache) return cache.value
+      // A partial write or schema-invalid update leaves the last known policy
+      // in effect, matching the config accepted by the main loader.
+      const value = (await loadConfig(directory, rawOptions)).config.permissions.autoAcceptAll
+      cache = { signatures, value }
+      return value
     } catch {
       return cache?.value ?? false
     }
@@ -609,7 +602,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     // auto-accept switch takes effect without restarting opencode.
     "permission.ask": async (_input, output) => {
       loop.stop(_input.sessionID, "paused", "Permission request requires user attention")
-      if (autoAcceptLive() && output.status !== "deny") output.status = "allow"
+      if (await autoAcceptLive() && output.status !== "deny") output.status = "allow"
     },
     dispose: async () => {
       actionInbox.stop()

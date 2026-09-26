@@ -468,7 +468,7 @@ test("plugin verifies completion from observed bash and artifact gates", async (
   }
 })
 
-test("auto-accept toggle written to config after startup takes effect without restart", async () => {
+test("live auto-accept toggle ignores incomplete JSONC and applies completed saves", async () => {
   // Simulates the dashboard toggling autoAcceptAll mid-session: the file
   // appears (or changes) after the plugin has already loaded its config.
   const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-live-toggle-"))
@@ -493,21 +493,73 @@ test("auto-accept toggle written to config after startup takes effect without re
 
     const configDirectory = path.join(project, ".opencode")
     await mkdir(configDirectory, { recursive: true })
-    await writeFile(path.join(configDirectory, "orchestra.jsonc"), '{ "permissions": { "autoAcceptAll": true } }', "utf8")
+    const configPath = path.join(configDirectory, "orchestra.jsonc")
+    // jsonc-parser recovers this incomplete document and returns true, but
+    // a partial dashboard save must not change the permission policy.
+    await writeFile(configPath, '{ "permissions": { "autoAcceptAll": true', "utf8")
+    const incomplete = pending()
+    await permissionAsk({ type: "bash", sessionID: "s-live" }, incomplete)
+    assert.equal(incomplete.status, "ask")
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(configPath, '{ "permissions": { "autoAcceptAll": true, }, }', "utf8")
 
     const after = pending()
     await permissionAsk({ type: "bash", sessionID: "s-live" }, after)
     assert.equal(after.status, "allow")
 
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(configPath, '{ "permissions": { "autoAcceptAll": false', "utf8")
+    const incompleteOff = pending()
+    await permissionAsk({ type: "bash", sessionID: "s-live" }, incompleteOff)
+    assert.equal(incompleteOff.status, "allow")
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(configPath, '{ "budget": "invalid", "permissions": { "autoAcceptAll": false } }', "utf8")
+    const invalidSchema = pending()
+    await permissionAsk({ type: "bash", sessionID: "s-live" }, invalidSchema)
+    assert.equal(invalidSchema.status, "allow")
+
     // Force a new mtime so the live-reader cache does not see a stale stamp on
     // filesystems with coarse mtime resolution.
     await new Promise((resolve) => setTimeout(resolve, 10))
-    await writeFile(path.join(configDirectory, "orchestra.jsonc"), '{ "permissions": { "autoAcceptAll": false } }', "utf8")
+    await writeFile(configPath, '{ "permissions": { "autoAcceptAll": false } }', "utf8")
     const toggledOff = pending()
     await permissionAsk({ type: "bash", sessionID: "s-live" }, toggledOff)
     assert.equal(toggledOff.status, "ask")
 
     await (hooks.dispose as () => Promise<void>)()
+  } finally {
+    await rm(project, { recursive: true, force: true })
+  }
+})
+
+test("live auto-accept follows an explicit configFile", async () => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "orchestra-plugin-explicit-toggle-"))
+  const configPath = path.join(project, "settings.jsonc")
+  await mkdir(path.join(project, ".opencode"), { recursive: true })
+  await writeFile(path.join(project, ".opencode", "orchestra.jsonc"), '{ "permissions": { "autoAcceptAll": true } }', "utf8")
+  await writeFile(configPath, '{ "permissions": { "autoAcceptAll": false } }', "utf8")
+  try {
+    const initialize = OrchestraPlugin as unknown as (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, unknown>>
+    const hooks = await initialize(
+      { directory: project, client: { app: { log: async () => undefined } } },
+      { configFile: "settings.jsonc", telemetry: { enabled: false } },
+    )
+    try {
+      const permissionAsk = hooks["permission.ask"] as (input: Record<string, unknown>, output: { status: "ask" | "deny" | "allow" }) => Promise<void>
+      const before = { status: "ask" as "ask" | "deny" | "allow" }
+      await permissionAsk({ type: "bash", sessionID: "s-explicit" }, before)
+      assert.equal(before.status, "ask")
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      await writeFile(configPath, '{ "permissions": { "autoAcceptAll": true } }', "utf8")
+      const after = { status: "ask" as "ask" | "deny" | "allow" }
+      await permissionAsk({ type: "bash", sessionID: "s-explicit" }, after)
+      assert.equal(after.status, "allow")
+    } finally {
+      await (hooks.dispose as () => Promise<void>)()
+    }
   } finally {
     await rm(project, { recursive: true, force: true })
   }
