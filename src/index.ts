@@ -1,6 +1,6 @@
 import { statSync } from "node:fs"
 import path from "node:path"
-import type { Config, Plugin } from "@opencode-ai/plugin"
+import { tool, type Config, type Plugin } from "@opencode-ai/plugin"
 import { createAgentSet } from "./agents/build.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
 import { InvalidConfigError, loadConfig, type LoadedConfig } from "./config/load.js"
@@ -28,6 +28,7 @@ import { releasePlanMode, type ReminderMessage } from "./routing/plan-reminder.j
 import { LoopController } from "./loop/controller.js"
 import { loopPrompt, resolveLoopGoal } from "./loop/protocol.js"
 import { setupV2 } from "./v2.js"
+import { connectGithub, githubTokenInOpenCode } from "./github/connect.js"
 import { Plugin as V2Plugin } from "@opencode/plugin"
 
 type MutableConfig = Omit<Config, "agent" | "command"> & {
@@ -562,6 +563,10 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         description: "Show the OpenCode Orchestra plugin's own runtime status",
         template: "Call the orchestra_plugin_status tool and present its result verbatim.",
       }
+      mutable.command["github-connect"] ??= {
+        description: "Connect the GitHub MCP server to OpenCode",
+        template: "Call the orchestra_github_connect tool with no arguments. Report its result and any required restart. Do not request or display a GitHub token in chat.",
+      }
       mutable.command["orchestra-resume"] ??= {
         description: "Resume an interrupted OpenCode Orchestra run",
         agent: "orch-lead",
@@ -593,11 +598,21 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       loopInputs.add(input.sessionID)
       for (const part of output.parts) if (part.type === "text") part.text = loopPrompt(goal)
     },
-    tool: createOrchestraTools(orchestra, ledger, pluginStatus, {
-      get snapshot() { return priceRefresher.snapshot },
-      ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
-      ...(openRouter ? { openRouter } : {}),
-    }, { client, agents, directory, coordinator }),
+    tool: {
+      ...createOrchestraTools(orchestra, ledger, pluginStatus, {
+        get snapshot() { return priceRefresher.snapshot },
+        ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
+        ...(openRouter ? { openRouter } : {}),
+      }, { client, agents, directory, coordinator }),
+      orchestra_github_connect: tool({
+        description: "Connect GitHub MCP using GitHub CLI credentials or a token already in the environment. Never returns the token.",
+        args: {},
+        async execute() {
+          const result = await connectGithub(await githubTokenInOpenCode())
+          return `GitHub MCP connected in ${result.openCodeConfig}. Restart OpenCode to activate the updated server configuration.`
+        },
+      }),
+    },
     // Always registered: the handler consults the live toggle so the dashboard
     // auto-accept switch takes effect without restarting opencode.
     "permission.ask": async (_input, output) => {

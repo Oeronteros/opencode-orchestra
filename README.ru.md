@@ -182,16 +182,26 @@ Orchestra локально сохраняет запечатанный план,
 - [Codebase Memory](https://github.com/DeusData/codebase-memory-mcp) для индексации репозитория и impact analysis;
 - [MemoryGraph](https://github.com/memory-graph/memory-graph) для долговременных решений и повторно используемых знаний;
 - официальный Git MCP, ограниченный активным репозиторием;
+- [GitHub MCP](https://github.com/github/github-mcp-server) для удалённых репозиториев, issues и PR;
 - ast-grep MCP для структурного поиска;
 - Playwright MCP для браузерных проверок;
 - локальный voice overlay и модель Whisper на поддерживаемых платформах.
 
 Ошибка установки опциональной зависимости не мешает настроить основной плагин. При неудаче provisioning нерабочая команда локального MCP не записывается.
 
+Для однократного подключения GitHub MCP установите [GitHub CLI](https://cli.github.com/) и введите команду **внутри OpenCode**:
+
+```text
+/github-connect
+```
+
+Команда откроет вход через браузер, если GitHub CLI ещё не авторизован, сохранит токен в `~/.config/opencode-orchestra/github-token` и настроит OpenCode на чтение этого файла. Токен хранится в файле открытым текстом; на Unix файл доступен только владельцу. После этого перезапустите OpenCode. Вместо команды можно задать `GITHUB_PERSONAL_ACCESS_TOKEN` в окружении OpenCode. Токену нужны права на репозитории и действия, которые вы собираетесь использовать.
+
 Основные параметры установки:
 
 ```text
 --no-context7
+--no-github
 --no-codebase-memory
 --no-memorygraph
 --no-git

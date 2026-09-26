@@ -182,16 +182,26 @@ The default installer configures the Orchestra plugin and attempts to provision 
 - [Codebase Memory](https://github.com/DeusData/codebase-memory-mcp) for repository indexing and impact analysis
 - [MemoryGraph](https://github.com/memory-graph/memory-graph) for durable decisions and reusable knowledge
 - the official Git MCP, restricted to the active repository
+- the [GitHub MCP server](https://github.com/github/github-mcp-server) for remote repositories, issues, and pull requests
 - ast-grep MCP for structural code search
 - Playwright MCP for browser inspection
 - the local voice overlay and Whisper model on supported platforms
 
 Provisioning failures for optional companions do not prevent the core plugin from being configured. Dead local MCP commands are not written when provisioning fails.
 
+To connect GitHub MCP once, install [GitHub CLI](https://cli.github.com/) and enter this command **inside OpenCode**:
+
+```text
+/github-connect
+```
+
+The command opens GitHub CLI browser sign-in if needed, then stores the token in `~/.config/opencode-orchestra/github-token` and points OpenCode to that file. The token file contains the credential in plain text and is created with owner-only permissions on Unix. Restart OpenCode afterward. You can also set `GITHUB_PERSONAL_ACCESS_TOKEN` in OpenCode's environment without running this command. The token needs access to the repositories and operations you want to use.
+
 Common installation options:
 
 ```text
 --no-context7
+--no-github
 --no-codebase-memory
 --no-memorygraph
 --no-git

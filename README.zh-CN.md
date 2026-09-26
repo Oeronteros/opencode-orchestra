@@ -169,16 +169,26 @@ Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展�
 - [Codebase Memory](https://github.com/DeusData/codebase-memory-mcp)，用于仓库索引和影响分析；
 - [MemoryGraph](https://github.com/memory-graph/memory-graph)，用于持久化决策和可复用知识；
 - 官方 Git MCP，并限制在当前仓库中；
+- [GitHub MCP](https://github.com/github/github-mcp-server)，用于远程仓库、Issue 和 Pull Request；
 - ast-grep MCP，用于结构化代码搜索；
 - Playwright MCP，用于浏览器检查；
 - 在支持的平台上安装本地语音浮窗和 Whisper 模型。
 
 可选配套工具安装失败不会阻止核心插件配置。若本地 MCP provisioning 失败，安装程序不会写入一个无法工作的命令。
 
+只需连接 GitHub MCP 一次：安装 [GitHub CLI](https://cli.github.com/)，然后**在 OpenCode 内**输入：
+
+```text
+/github-connect
+```
+
+如果尚未登录，命令会打开浏览器完成 GitHub CLI 登录，然后把令牌保存到 `~/.config/opencode-orchestra/github-token`，并让 OpenCode 从该文件读取。令牌以明文保存在该文件中；在 Unix 上文件仅允许所有者访问。之后请重启 OpenCode。也可以直接在启动 OpenCode 的环境中设置 `GITHUB_PERSONAL_ACCESS_TOKEN`。令牌需要具备相应仓库和操作的权限。
+
 常用安装选项：
 
 ```text
 --no-context7
+--no-github
 --no-codebase-memory
 --no-memorygraph
 --no-git

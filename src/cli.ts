@@ -13,6 +13,7 @@ import { startDashboard, type DashboardOptions } from "./dashboard/server.js"
 import { completionFor, SHELL_NAMES } from "./diagnostics/completion.js"
 import { formatDoctorReport, runDoctor } from "./diagnostics/doctor.js"
 import { createEvalReport, formatEvalReport, readEvalObservations, readEvalReport, writeEvalReport } from "./evals/harness.js"
+import { GITHUB_MCP_URL } from "./github/connect.js"
 import { checkForUpdates, formatUpdateResult } from "./diagnostics/update.js"
 import { astGrepMcpCommand, gitMcpCommand } from "./mcp/commands.js"
 import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/config-smoke.js"
@@ -45,6 +46,8 @@ const UV_WINDOWS_INSTALLER = "https://astral.sh/uv/install.ps1"
 export interface InstallOptions {
   configDirectory?: string
   context7: boolean
+  /** Configure GitHub's remote MCP server using a PAT from the environment. */
+  github?: boolean
   codebaseMemory: boolean
   memoryGraph: boolean
   /** Configure the official Git MCP (uvx mcp-server-git) by default; false explicitly disables it. */
@@ -85,6 +88,7 @@ export interface InstallResult {
     voice: ProvisionedDependency
   }
 }
+
 
 interface ProvisionedDependency {
   command: string | string[]
@@ -632,6 +636,15 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
   if (options.context7) {
     addMcp("context7", { type: "remote", url: CONTEXT7_URL, enabled: true, oauth: false })
   }
+  if (options.github !== false) {
+    addMcp("github", {
+      type: "remote",
+      url: GITHUB_MCP_URL,
+      headers: { Authorization: "Bearer {env:GITHUB_PERSONAL_ACCESS_TOKEN}" },
+      enabled: true,
+      oauth: false,
+    })
+  }
   if (options.playwright !== false) {
     addMcp("playwright", { type: "local", command: PLAYWRIGHT_COMMAND, enabled: true, timeout: 30_000 })
   }
@@ -753,6 +766,7 @@ function usage(): string {
     "",
     "Install options:",
     "  --no-context7        Do not configure Context7 MCP",
+    "  --no-github          Do not configure GitHub MCP",
     "  --no-codebase-memory Do not install or configure Codebase Memory MCP",
     "  --no-memorygraph     Do not install or configure MemoryGraph MCP",
     "  --no-git             Do not configure Git MCP",
@@ -902,6 +916,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
   if (argv[0] !== "install") throw new Error(`Unknown command: ${argv[0] ?? "(missing)"}`)
   const options: InstallOptions = {
     context7: true,
+    github: true,
     codebaseMemory: true,
     memoryGraph: true,
     git: true,
@@ -916,6 +931,7 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === "--no-context7") options.context7 = false
+    else if (argument === "--no-github") options.github = false
     else if (argument === "--no-codebase-memory") options.codebaseMemory = false
     else if (argument === "--no-memorygraph") options.memoryGraph = false
     else if (argument === "--no-git") options.git = false
@@ -1013,6 +1029,7 @@ async function main(): Promise<void> {
     console.log(`Codebase Memory: ${dependencyLine(result.dependencies.codebaseMemory)}`)
     console.log(`MemoryGraph: ${dependencyLine(result.dependencies.memoryGraph)}`)
     console.log(`Git: ${dependencyLine(result.dependencies.git)}`)
+    if (parsed.options.github !== false) console.log("GitHub MCP: run /github-connect inside OpenCode to sign in once")
     console.log(`ast-grep: ${dependencyLine(result.dependencies.astGrep)}`)
     console.log(`Voice overlay: ${dependencyLine(result.dependencies.voice)}`)
     if (result.dependencies.voice.status === "installed" || result.dependencies.voice.status === "existing") {

@@ -112,9 +112,11 @@ test("full plugin run discovers mock provider models and assigns them to agents"
 
   const commands = runtime.command as Record<string, { template: string }>
   assert.ok(commands["orchestra-status"]?.template.includes("orchestra_status"))
+  assert.ok(commands["github-connect"]?.template.includes("orchestra_github_connect"))
 
   const tools = hooks.tool as Record<string, unknown>
   assert.ok(tools.orchestra_route, "orchestra_route tool should be registered")
+  assert.ok(tools.orchestra_github_connect, "GitHub connection tool should be registered")
 })
 
 test("manual strategy keeps explicit pools and ignores the mock provider", async () => {

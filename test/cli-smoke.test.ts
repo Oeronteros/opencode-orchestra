@@ -17,6 +17,7 @@ test("built CLI prints help", () => {
   assert.match(result.stdout, /OpenCode Orchestra/)
   assert.match(result.stdout, /completion\s+Print shell completion/)
   assert.match(result.stdout, /web\s+OpenCode web with an inline offline microphone/)
+  assert.match(result.stdout, /--no-github\s+Do not configure GitHub MCP/)
 })
 
 test("built CLI rejects an unknown command", () => {

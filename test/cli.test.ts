@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 import { parse } from "jsonc-parser"
 import { failureReason, install } from "../src/cli.js"
+import { connectGithub } from "../src/github/connect.js"
 import { astGrepMcpCommand, gitMcpCommand } from "../src/mcp/commands.js"
 
 const SUPER_POWERS_ENTRY = "superpowers@git+https://github.com/obra/superpowers.git"
@@ -517,6 +518,81 @@ test("installer writes git and ast-grep MCPs by default and respects --no-git/--
   const off = parse(await readFile(path.join(suppressed, "opencode.json"), "utf8")) as { mcp?: Record<string, unknown> }
   assert.equal(off.mcp?.git, undefined)
   assert.equal(off.mcp?.["ast-grep"], undefined)
+})
+
+test("installer configures GitHub MCP with an environment token and supports opting out", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-github-mcp-"))
+  const options = {
+    configDirectory: directory,
+    context7: false,
+    codebaseMemory: false,
+    memoryGraph: false,
+    git: false,
+    astGrep: false,
+    playwright: false,
+    superpowers: false,
+    voice: false,
+    provisionDependencies: false,
+    force: false,
+    dryRun: false,
+    pluginCacheDirectory: path.join(directory, "packages"),
+  }
+  await install(options)
+  const config = parse(await readFile(path.join(directory, "opencode.json"), "utf8")) as { mcp: Record<string, unknown> }
+  assert.deepEqual(config.mcp.github, {
+    type: "remote",
+    url: "https://api.githubcopilot.com/mcp/",
+    headers: { Authorization: "Bearer {env:GITHUB_PERSONAL_ACCESS_TOKEN}" },
+    enabled: true,
+    oauth: false,
+  })
+
+  const suppressed = await mkdtemp(path.join(os.tmpdir(), "orchestra-github-mcp-off-"))
+  await install({ ...options, configDirectory: suppressed, pluginCacheDirectory: path.join(suppressed, "packages"), github: false })
+  const off = parse(await readFile(path.join(suppressed, "opencode.json"), "utf8")) as { mcp?: Record<string, unknown> }
+  assert.equal(off.mcp?.github, undefined)
+})
+
+test("github-connect stores the token separately and updates the MCP entry", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-github-connect-"))
+  const home = path.join(directory, "home")
+  const configDirectory = path.join(directory, "config")
+  await mkdir(configDirectory)
+  const configFile = path.join(configDirectory, "opencode.jsonc")
+  await writeFile(configFile, '{\n  // keep this comment\n  "mcp": { "github": { "type": "remote", "url": "https://api.githubcopilot.com/mcp/", "headers": { "X-MCP-Readonly": "true" } } }\n}\n')
+
+  const result = await connectGithub("test-token-123", { configDirectory, homeDirectory: home })
+  const configText = await readFile(configFile, "utf8")
+  const config = parse(configText) as { mcp: Record<string, any> }
+  assert.ok(configText.includes("// keep this comment"))
+  assert.ok(!configText.includes("test-token-123"))
+  assert.deepEqual(config.mcp.github.headers, {
+    "X-MCP-Readonly": "true",
+    Authorization: "Bearer {file:~/.config/opencode-orchestra/github-token}",
+  })
+  assert.equal(config.mcp.github.oauth, false)
+  assert.equal(config.mcp.github.enabled, true)
+  assert.equal(await readFile(result.tokenFile, "utf8"), "test-token-123")
+  assert.ok(result.backup)
+
+  const again = await connectGithub("new-test-token", { configDirectory, homeDirectory: home })
+  assert.equal(again.backup, undefined)
+  assert.equal(await readFile(result.tokenFile, "utf8"), "new-test-token")
+})
+
+test("github-connect uses native MCP shape and leaves custom GitHub servers alone", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-github-native-"))
+  const configFile = path.join(directory, "opencode.json")
+  await writeFile(configFile, JSON.stringify({ plugins: [], mcp: { servers: {} } }))
+  await connectGithub("test-token-123", { configDirectory: directory, homeDirectory: path.join(directory, "home") })
+  const native = parse(await readFile(configFile, "utf8")) as { mcp: { servers: Record<string, any> } }
+  assert.equal(native.mcp.servers.github.disabled, false)
+  assert.equal(native.mcp.servers.github.enabled, undefined)
+
+  await writeFile(configFile, JSON.stringify({ mcp: { github: { type: "local", command: ["custom"] } } }))
+  await assert.rejects(connectGithub("test-token-123", { configDirectory: directory, homeDirectory: path.join(directory, "home") }), /different server/)
+  const custom = parse(await readFile(configFile, "utf8")) as { mcp: { github: { type: string } } }
+  assert.equal(custom.mcp.github.type, "local")
 })
 
 test("installer skips voice overlay with voice:false", async () => {
