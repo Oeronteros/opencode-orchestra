@@ -1,6 +1,8 @@
-# Voice Overlay — офлайн голосовой ввод для OpenCode (Tauri v2)
+# Voice Overlay — офлайн голосовой ввод для OpenCode v2 (Tauri v2)
 
-**Актуальный сценарий:** в OpenCode 1.x запустите `opencode-orchestra voice-tui`
+Voice Overlay поставляется как часть OpenCode Orchestra, плагина для OpenCode v2. Встроенная кнопка для OpenCode Web работает через локальный прокси. Описанный ниже `voice-tui` относится к совместимости со старыми TUI на OpenCode 1.x.
+
+**Сценарий совместимости для старого TUI:** в OpenCode 1.x запустите `opencode-orchestra voice-tui`
 и нажмите Ctrl+X, E (или `/editor`), затем тот же бинд либо Enter для остановки записи.
 OpenCode возвращает изменённый черновик именно в ту сессию, из которой открыт редактор.
 Кнопка в прокси-вебе работает самостоятельно. Это окно оставлено как ручной
@@ -197,7 +199,7 @@ Proxy сохраняет loopback binding и проверки origin: досту
 ### Ручное окно для TUI
 
 Окно `voice-overlay` теперь работает только с TUI на фиксированном порту.
-Для обычной диктовки в OpenCode 1.x используйте `opencode-orchestra voice-tui`
+Для диктовки в старом TUI OpenCode 1.x используйте `opencode-orchestra voice-tui`
 и встроенный бинд Ctrl+X, E. Окно оставлено для ручного запуска и диагностики.
 Кнопка микрофона в прокси-вебе не зависит от этого окна.
 

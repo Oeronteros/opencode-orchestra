@@ -8,6 +8,8 @@
 
 OpenCode Orchestra 将复杂请求转化为可控的多智能体工作流。它会对任务进行分类、选择已连接的模型、调度专门的智能体、合并证据、实施修改、验证结果，并在本地记录成本与使用情况。
 
+**OpenCode Orchestra 面向 OpenCode v2**，通过插件 `setup` API 加载。OpenCode 1.18.29 及更新版本仍保留兼容入口。
+
 - 一个主智能体，以及一组权限受限的专用智能体
 - 自动发现模型、预算模式、按智能体覆盖模型，以及 fallback 链
 - 依赖感知执行，并严格限制并发数、委派深度和文件所有权
@@ -17,7 +19,7 @@ OpenCode Orchestra 将复杂请求转化为可控的多智能体工作流。它�
 
 ## 快速开始
 
-要求：[OpenCode](https://opencode.ai/)、Bun 1.2 或更高版本，以及 OpenCode 支持的模型提供商。
+要求：[OpenCode v2](https://opencode.ai/)、Bun 1.2 或更高版本，以及 OpenCode 支持的模型提供商。
 
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest install
@@ -39,9 +41,9 @@ bunx @oeronteros-1/opencode-orchestra@latest install
 
 安装程序是幂等的。修改 OpenCode 配置前会创建备份，并保留已有的插件和 MCP 配置；只有显式传入 `--force` 时才会替换现有条目。
 
-### 迁移到 OpenCode 2
+### OpenCode v2 支持与迁移
 
-升级 OpenCode 后请重新运行 `install`。V2 通过新的 `setup` API 加载插件；安装程序会先在配置中创建 Orchestra 智能体名称，因为 V2 插件只能通过 `agent.transform` 更新已有智能体。插件仍为 OpenCode 1.18.29 及更新的 V1 版本保留旧入口。OpenCode 2 会在加载时规范化受支持的 V1 配置字段，因此无需强制重写配置。参见[官方迁移指南](https://opencode.ai/v2/docs/build/plugins/migrate-v1)。
+在 OpenCode v2 中，插件通过 `setup` API 加载。由于 v2 插件无法通过 `agent.transform` 创建智能体，安装程序会先在配置中加入 Orchestra 智能体名称。从 OpenCode 1.x 升级后，请重新运行 `install`。OpenCode 1.18.29 及更新版本仍保留旧兼容入口。OpenCode v2 会在加载时规范化受支持的 v1 配置字段，因此无需强制重写配置。参见[官方迁移指南](https://opencode.ai/v2/docs/build/plugins/migrate-v1)。
 
 ## 控制面板
 

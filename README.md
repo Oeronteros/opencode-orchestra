@@ -8,6 +8,8 @@
 
 OpenCode Orchestra turns a complex request into a controlled multi-agent workflow. It classifies the task, chooses connected models, dispatches focused specialists, merges their evidence, applies changes, verifies the result, and records local cost and usage telemetry.
 
+**OpenCode Orchestra targets OpenCode v2** and loads through its plugin `setup` API. A compatibility entrypoint remains available for OpenCode 1.18.29 and newer.
+
 - One primary agent with a team of focused, permission-scoped specialists
 - Automatic model discovery, budget modes, per-agent overrides, and fallback chains
 - Dependency-aware execution with hard concurrency, depth, and ownership limits
@@ -17,7 +19,7 @@ OpenCode Orchestra turns a complex request into a controlled multi-agent workflo
 
 ## Quick start
 
-Requirements: [OpenCode](https://opencode.ai/), Bun 1.2 or newer, and a supported OpenCode model provider.
+Requirements: [OpenCode v2](https://opencode.ai/), Bun 1.2 or newer, and a supported OpenCode model provider.
 
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest install
@@ -39,9 +41,9 @@ Useful status commands:
 
 The installer is idempotent. It backs up the OpenCode configuration before changing it and preserves existing plugins and MCP entries unless `--force` is explicitly supplied.
 
-### OpenCode 2 migration
+### OpenCode v2 support and migration
 
-Run `install` again after upgrading OpenCode. Version 2 loads the plugin through its new `setup` API; the installer seeds Orchestra agent names in the OpenCode config because V2 plugins can update existing agents but cannot create them through an agent transform. The plugin continues to expose its V1 entrypoint for OpenCode 1.18.29 and newer. Existing V1 config fields are normalized by OpenCode 2, so a config rewrite is optional. See the [official migration guide](https://opencode.ai/v2/docs/build/plugins/migrate-v1).
+For OpenCode v2, the plugin loads through the `setup` API. The installer seeds Orchestra agent names in the OpenCode config because v2 plugins can update existing agents but cannot create them through an agent transform. After upgrading from OpenCode 1.x, run `install` again. The legacy entrypoint remains available for OpenCode 1.18.29 and newer. OpenCode v2 normalizes supported v1 config fields at load time, so a config rewrite is optional. See the [official migration guide](https://opencode.ai/v2/docs/build/plugins/migrate-v1).
 
 ## Dashboard
 
@@ -303,7 +305,7 @@ Bounded-loop state itself is in memory and is lost when OpenCode restarts. A non
 
 The standard installer provisions local ffmpeg and Whisper binaries for Linux x64 and Windows x64 and downloads the `ggml-base.bin` model. No audio is sent to a remote transcription service.
 
-In **OpenCode 1.x**, run `opencode-orchestra voice-tui`. Press **Ctrl+X, then E** or run `/editor`, speak, and press the same shortcut again (or Enter). OpenCode restores the transcript to that session's draft without submitting it. `Ctrl+C` cancels recording and preserves the draft. The launcher sets `EDITOR` and `VISUAL` for that OpenCode process; no separate window or fixed port is needed. Run plain `opencode` when you want a regular text editor.
+For legacy **OpenCode 1.x** TUI sessions, run `opencode-orchestra voice-tui`. Press **Ctrl+X, then E** or run `/editor`, speak, and press the same shortcut again (or Enter). OpenCode restores the transcript to that session's draft without submitting it. `Ctrl+C` cancels recording and preserves the draft. The launcher sets `EDITOR` and `VISUAL` for that OpenCode process; no separate window or fixed port is needed. Run plain `opencode` when you want a regular text editor.
 
 Set `ORCHESTRA_VOICE_MODEL=small` to use the small model or `ORCHESTRA_VOICE_DEVICE` to select a microphone. The old manual TUI window remains available:
 
