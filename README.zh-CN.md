@@ -1,5 +1,7 @@
 # OpenCode Orchestra
 
+无需扩展的托管浏览器：[持久配置文件、Playwright/DevTools、首次登录与权限](docs/browser.md)。需要 OpenCode V2 >=2.0.16、Node >=22.12 和单独安装的 Chrome。新安装启用 `browser.mode=auto`；现有配置保持不变，缺省为 `off`。浏览器 Code Mode 暂时禁用。
+
 [![npm version](https://img.shields.io/npm/v/@oeronteros-1/opencode-orchestra)](https://www.npmjs.com/package/@oeronteros-1/opencode-orchestra)
 [![license](https://img.shields.io/npm/l/@oeronteros-1/opencode-orchestra)](LICENSE)
 [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-4f46e5)](https://opencode.ai/docs/plugins/)
@@ -300,12 +302,14 @@ bounded loop 本身的状态保存在内存中，OpenCode 重启后会丢失。�
 
 ## 语音输入
 
+Windows 和 Linux X11 上的 OpenCode 2 支持统一快捷键：启动 `bunx @oeronteros-1/opencode-orchestra@latest voice-overlay`，将光标放在 TUI、Desktop 或浏览器的输入框，然后按 **Ctrl+Alt+Space** 开始录音，再按一次停止并粘贴本地识别结果。不会自动发送，也不需要固定服务器端口。录音期间请保持原窗口、标签页和输入框；窗口或焦点改变时，文本会保留，可使用相同快捷键重试。录音时可最小化窗口，快捷键仍然有效。自动插入开关默认开启；关闭后结果保留在预览和剪贴板，可用同一快捷键手动插入。Linux X11 需要 xclip、EWMH 和 XTEST，终端使用 Ctrl+Shift+V。Wayland 暂不支持全局快捷键和原生自动插入，可使用原有 TUI 和浏览器语音方式。
+
 标准安装程序会为 Linux x64 和 Windows x64 安装预构建的本地语音浮窗，并下载 Whisper `ggml-base.bin` 模型。音频不会发送到远程转写服务。
 
 在终端 UI 中启动：
 
 ```bash
-voice-overlay
+bunx @oeronteros-1/opencode-orchestra@latest voice-overlay
 ```
 
 对于 OpenCode Web，请在不同终端中运行：

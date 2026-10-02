@@ -71,9 +71,9 @@ test("evidence workers delegate only through the guarded dispatcher", () => {
   assert.equal((agents["orch-editor"]?.permission.bash as Record<string, string>)["*"], "ask")
   assert.equal((agents["orch-integrator"]?.permission.bash as Record<string, string>)["*"], "ask")
   assert.equal((agents["orch-integrator"]?.permission.bash as Record<string, string>)["git cherry-pick *"], "allow")
-  assert.equal(agents["orch-tests"]?.permission["playwright_*"], "allow")
-  assert.equal(agents["orch-visual-reference"]?.permission["playwright_*"], "allow")
-  assert.equal(agents["orch-visual-review"]?.permission["playwright_*"], "allow")
+  assert.equal(agents["orch-tests"]?.permission["playwright_*"], "deny")
+  assert.equal(agents["orch-visual-reference"]?.permission["playwright_*"], "deny")
+  assert.equal(agents["orch-visual-review"]?.permission["playwright_*"], "deny")
   assert.equal(agents["orch-lead"]?.permission["supermemory_*"], undefined)
 })
 

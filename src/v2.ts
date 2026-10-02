@@ -1,6 +1,7 @@
 import type { Hooks as LegacyHooks, Plugin as LegacyPlugin, PluginInput } from "@opencode-ai/plugin"
 import type { Context } from "@opencode/plugin/promise/plugin"
 import { z } from "zod"
+import { registerBrowserHost } from "./browser/v2.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
 
 type LegacyClient = PluginInput["client"]
@@ -50,6 +51,10 @@ function legacyClient(ctx: Context): LegacyClient {
     return { data: legacyMessage(answer, id, user?.id) }
   }
   const facade = {
+    mcp: { status: async () => {
+      const servers = await ctx.mcp.list()
+      return { data: Object.fromEntries(servers.data.map((server) => [server.name, server.status])) }
+    } },
     app: { log: async ({ body }: { body: { level: string; message: string; extra?: unknown } }) => {
       const line = `[opencode-orchestra] ${body.message}`
       if (body.level === "warn" || body.level === "error") console.warn(line, body.extra ?? "")
@@ -117,6 +122,7 @@ function permissions(config: RuntimeAgentConfig): Array<{ action: string; resour
 
 export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<() => Promise<void>> {
   const client = legacyClient(ctx)
+  const browser = registerBrowserHost(client, ctx)
   const hooks: LegacyHooks = await initialize({ client, directory: ctx.location.directory } as unknown as PluginInput, ctx.options)
   const config: { agent?: Record<string, RuntimeAgentConfig>; command?: Record<string, { template: string; description?: string; agent?: string }> } = {}
   await hooks.config?.(config as Parameters<NonNullable<LegacyHooks["config"]>>[0])
@@ -135,7 +141,8 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<(
           const slash = agent.model.indexOf("/")
           if (slash > 0) draft.model = { providerID: agent.model.slice(0, slash), id: agent.model.slice(slash + 1) } as unknown as NonNullable<typeof draft.model>
         }
-        draft.permissions.push(...permissions(agent))
+        // V2 uses the last matching rule. Keep configured user rules after plugin defaults.
+        draft.permissions.unshift(...permissions(agent))
       })
     }
   })
@@ -215,6 +222,7 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<(
   })
 
   const controller = new AbortController()
+  await browser.install()
   const seen = new Set<string>()
   const stream = (async () => {
     for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
@@ -250,5 +258,6 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<(
     controller.abort()
     await stream
     await hooks.dispose?.()
+    await browser.dispose()
   }
 }

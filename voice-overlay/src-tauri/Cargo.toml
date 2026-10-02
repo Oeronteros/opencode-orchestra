@@ -15,6 +15,13 @@ tokio = { version = "1", features = ["process", "time", "sync", "macros", "io-ut
 tempfile = "3"
 base64 = "0.22"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13.2", features = ["xtest"] }
+
+[dev-dependencies]
+# Compile/test the Linux protocol backend on Windows as well.
+x11rb = { version = "0.13.2", features = ["xtest"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

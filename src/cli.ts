@@ -20,12 +20,14 @@ import { formatConfiguredMcpSmokeReport, smokeConfiguredMcps } from "./mcp/confi
 import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
-import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
+import { ensureVerifiedVoiceModel, installVoiceFiles, launchVoiceOverlay, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
 import { startVoiceWeb } from "./voice-web.js"
 import { runVoiceEditor, voiceEditorCommand } from "./voice-editor.js"
 import { createAgentSet } from "./agents/build.js"
 import { DEFAULT_CONFIG } from "./config/defaults.js"
 import { loadPrompts } from "./prompts/load.js"
+import type { BrowserConfig } from "./config/schema.js"
+import { runBrowserCommand, parseBrowserArguments, type BrowserCommandOptions } from "./browser/cli.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -37,13 +39,13 @@ const PACKAGE_ENTRY = `${PACKAGE_NAME}@latest`
 // `plugin` array (https://github.com/obra/superpowers/blob/main/.opencode/INSTALL.md).
 const SUPER_POWERS_ENTRY = "superpowers@git+https://github.com/obra/superpowers.git"
 const CONTEXT7_URL = "https://mcp.context7.com/mcp"
-const PLAYWRIGHT_COMMAND = ["npx", "-y", "@playwright/mcp@latest"]
 const CODEBASE_MEMORY_INSTALLER = "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
 const CODEBASE_MEMORY_WINDOWS_INSTALLER = "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.ps1"
 const UV_INSTALLER = "https://astral.sh/uv/install.sh"
 const UV_WINDOWS_INSTALLER = "https://astral.sh/uv/install.ps1"
 
 export interface InstallOptions {
+  browserMode?: BrowserConfig["mode"]
   configDirectory?: string
   context7: boolean
   /** Configure GitHub's remote MCP server using a PAT from the environment. */
@@ -645,9 +647,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
       oauth: false,
     })
   }
-  if (options.playwright !== false) {
-    addMcp("playwright", { type: "local", command: PLAYWRIGHT_COMMAND, enabled: true, timeout: 30_000 })
-  }
+  // Browser MCPs are registered lazily by the V2 runtime; user servers are preserved.
   // A failed provisioning never persists an MCP entry pointing at a dead command.
   if (options.codebaseMemory && codebase.status !== "failed") {
     addMcp("codebase-memory", {
@@ -718,6 +718,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
           $schema: "https://unpkg.com/@oeronteros-1/opencode-orchestra@latest/schema/opencode-orchestra.schema.json",
           budget: "balanced",
           models: { strategy: "auto", agents: {} },
+          browser: { mode: options.browserMode ?? (options.playwright === false ? "off" : "auto"), profile: "default", profiles: ["default"] },
         },
         null,
         2,
@@ -758,6 +759,7 @@ function usage(): string {
     "              --upstream http://127.0.0.1:4096 --port 4097",
     "  voice-editor <file>  Record into the draft file supplied by OpenCode /editor",
     "  voice-tui [args]      Launch OpenCode with the voice editor bound to Ctrl+X, E",
+    "  voice-overlay        Launch the floating offline voice window (Windows/Linux)",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
     "  eval        Run the built-in reproducible evaluation suite",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",
@@ -771,7 +773,10 @@ function usage(): string {
     "  --no-memorygraph     Do not install or configure MemoryGraph MCP",
     "  --no-git             Do not configure Git MCP",
     "  --no-ast-grep        Do not configure ast-grep MCP",
-    "  --no-playwright      Do not configure Playwright MCP",
+    "  --no-playwright      New browser config is off; use --browser-mode devtools for DevTools only",
+    "  --browser-mode MODE  off, auto, playwright, devtools (new config only)",
+    "  browser status|login|restart|profiles|select|reset --directory DIR --profile NAME",
+    "                       reset requires --confirm NAME",
     "  --no-superpowers     Do not add the Superpowers plugin",
     "  --no-voice             Do not provision the voice overlay button",
     "  --no-deps            Only write config; do not install local MCP executables",
@@ -800,6 +805,8 @@ function usage(): string {
 }
 
 type ParsedCommand =
+  | { command: "browser"; options: BrowserCommandOptions }
+  | { command: "voice-overlay" }
   | { command: "voice-web"; options: { upstream?: string; port?: number } }
   | { command: "voice-editor"; file: string }
   | { command: "voice-tui"; args: string[] }
@@ -812,7 +819,13 @@ type ParsedCommand =
   | { command: "completion"; options: { shell: string; program: string } }
 
 function parseArguments(argv: string[]): ParsedCommand | "help" {
+  if (argv[0] === "browser") return { command: "browser", options: parseBrowserArguments(argv.slice(1)) }
   if (argv[0] === "--help" || argv[0] === "-h") return "help"
+  if (argv[0] === "voice-overlay") {
+    if (argv.length === 2 && (argv[1] === "--help" || argv[1] === "-h")) return "help"
+    if (argv.length !== 1) throw new Error("voice-overlay does not accept arguments")
+    return { command: "voice-overlay" }
+  }
   if (argv[0] === "voice-editor") {
     if (argv.length !== 2 || !argv[1]) throw new Error("voice-editor requires exactly one draft file")
     return { command: "voice-editor", file: argv[1] }
@@ -937,6 +950,11 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     else if (argument === "--no-git") options.git = false
     else if (argument === "--no-ast-grep") options.astGrep = false
     else if (argument === "--no-playwright") options.playwright = false
+    else if (argument === "--browser-mode") {
+      const mode = argv[++index]
+      if (!["off", "auto", "playwright", "devtools"].includes(mode ?? "")) throw new Error("--browser-mode requires off, auto, playwright, or devtools")
+      options.browserMode = mode as BrowserConfig["mode"]
+    }
     else if (argument === "--no-superpowers") options.superpowers = false
     else if (argument === "--no-voice") options.voice = false
     else if (argument === "--no-deps") options.provisionDependencies = false
@@ -948,12 +966,14 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
       options.configDirectory = directory
     } else throw new Error(`Unknown option: ${argument}`)
   }
+  if (options.playwright === false && (options.browserMode === "auto" || options.browserMode === "playwright")) throw new Error("--no-playwright conflicts with this browser mode; use off or devtools")
   return { command: "install", options }
 }
 
 async function main(): Promise<void> {
   try {
     const parsed = parseArguments(process.argv.slice(2))
+    if (parsed !== "help" && parsed.command === "browser") { await runBrowserCommand(parsed.options); return }
     if (parsed === "help") {
       console.log(usage())
       return
@@ -962,6 +982,23 @@ async function main(): Promise<void> {
       const web = await startVoiceWeb(parsed.options)
       console.log(`OpenCode с микрофоном: ${web.url}`)
       console.log("Откройте этот адрес в браузере. Для остановки нажмите Ctrl+C.")
+      return
+    }
+    if (parsed.command === "voice-overlay") {
+      if (voiceOverlayPackageFor(process.platform, process.arch) === null) {
+        throw new Error(`Voice overlay is not supported on ${process.platform}/${process.arch}`)
+      }
+      console.log("Preparing voice-overlay and its local speech model…")
+      // Refresh from this CLI's companion package so @latest never opens an old
+      // installed window that predates the unified shortcut.
+      const result = await provisionVoiceOverlay(true)
+      if (result.status !== "installed" && result.status !== "existing") {
+        throw new Error(`Cannot prepare voice-overlay: ${result.reason ?? result.status}. Close any running overlay and retry. If the platform package is missing, run bunx @oeronteros-1/opencode-orchestra@latest install with optional dependencies enabled.`)
+      }
+      if (typeof result.command !== "string") throw new Error("Voice overlay executable path is invalid")
+      const binary = path.resolve(result.command)
+      await launchVoiceOverlay(binary)
+      console.log("Voice overlay launched. Windows / Linux X11: Ctrl+Alt+Space starts/stops dictation in OpenCode 2 TUI, Desktop or browser. Keep the input focused; submission is manual. Linux requires xclip.")
       return
     }
     if (parsed.command === "voice-editor") {
@@ -1033,7 +1070,9 @@ async function main(): Promise<void> {
     console.log(`ast-grep: ${dependencyLine(result.dependencies.astGrep)}`)
     console.log(`Voice overlay: ${dependencyLine(result.dependencies.voice)}`)
     if (result.dependencies.voice.status === "installed" || result.dependencies.voice.status === "existing") {
-      console.log("TUI 1.x: opencode-orchestra voice-tui, затем Ctrl+X, E для записи.")
+      console.log("Floating voice window: bunx @oeronteros-1/opencode-orchestra@latest voice-overlay")
+      console.log("Windows / Linux X11 / OpenCode 2: Ctrl+Alt+Space — единый голосовой ввод для TUI, Desktop и браузера. Для Linux нужен xclip.")
+      console.log("Внешний редактор TUI: opencode-orchestra voice-tui, затем Ctrl+X, E для записи.")
       console.log("Web с текущей вкладкой и выбором микрофона: запусти bunx @oeronteros-1/opencode-orchestra@latest web и открой http://127.0.0.1:4097.")
     }
     if (result.changed.length > 0) console.log(`Changed: ${result.changed.join(", ")}`)

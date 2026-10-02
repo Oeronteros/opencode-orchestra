@@ -2,6 +2,7 @@ import type { ProfileName } from "../config/schema.js"
 import type { TaskContract } from "../orchestration/contracts.js"
 import { validateOwnership } from "../orchestration/ownership.js"
 import { PROFILE_CATALOG } from "../profiles/catalog.js"
+import { browserTaskSchema, BROWSER_ROLES } from "../browser/policy.js"
 
 /** A node in the dependency-aware specialist execution DAG. */
 export interface PlanNode {
@@ -417,6 +418,7 @@ export function validatePlan(plan: TaskPlan): string[] {
   const problems: string[] = []
   for (const node of plan.nodes) {
     if (byId.has(node.id)) problems.push("duplicate node " + node.id)
+    if (node.contract?.browser && (!browserTaskSchema.safeParse(node.contract.browser).success || !BROWSER_ROLES.has(node.worker) || !node.contract.exclusiveResources.includes(`browser:${node.contract.browser.profile}`))) problems.push("node " + node.id + " has an invalid browser grant or exclusive resource")
     if (!node.contract || !node.contract.objective.trim()) problems.push("node " + node.id + " has an empty contract objective")
     if (!node.contract || !node.contract.deliverable.trim()) problems.push("node " + node.id + " has an empty contract deliverable")
     if (!node.contract || node.contract.acceptanceCriteria.length === 0 || node.contract.acceptanceCriteria.some((criterion) => !criterion.trim())) problems.push("node " + node.id + " has empty contract acceptance criteria")

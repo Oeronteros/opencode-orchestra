@@ -5,17 +5,19 @@ import {
   type VoicePreferences,
 } from "../../src/voice-context";
 import { WindowHeader } from "./WindowHeader";
+import { autoInsertDefault, nativeInputDefault, VOICE_HOTKEY } from "./lib/hotkey";
 
-export interface OverlaySettings extends ServerConfig, VoicePreferences { browserPort: number }
+export interface OverlaySettings extends ServerConfig, VoicePreferences { browserPort: number; nativeInput: boolean; autoInsert: boolean }
 
 const KEY = "voice-overlay-settings:v1";
 
 export function loadSettings(): OverlaySettings {
   try {
     const raw = localStorage.getItem(KEY);
-    return { ...normalizeOverlaySettings(JSON.parse(raw ?? "null")), target: "tui", postTranscriptionAction: "insert" };
+    const saved = JSON.parse(raw ?? "null");
+    return { ...normalizeOverlaySettings(saved), nativeInput: nativeInputDefault(navigator.platform, saved?.nativeInput), autoInsert: autoInsertDefault(saved?.autoInsert), target: "tui", postTranscriptionAction: "insert" };
   } catch {
-    return { ...normalizeOverlaySettings(null), target: "tui", postTranscriptionAction: "insert" };
+    return { ...normalizeOverlaySettings(null), nativeInput: nativeInputDefault(navigator.platform, undefined), autoInsert: true, target: "tui", postTranscriptionAction: "insert" };
   }
 }
 
@@ -78,7 +80,17 @@ export function SettingsView(props: {
             <option value="small">small — точнее (~460 МБ)</option>
           </select>
         </label>
-        <p className="field-note">Текст добавляется в промпт TUI. Отправку вы нажимаете в OpenCode.</p>
+        <label>
+          Ввод
+          <select value={draft.nativeInput ? "native" : "tui"} onChange={e => set({ nativeInput: e.target.value === "native" })}>
+            {/win|linux/i.test(navigator.platform) && <option value="native">OpenCode 2 — TUI, Desktop и браузер</option>}
+            <option value="tui">Совместимость с TUI 1.x через сервер</option>
+          </select>
+        </label>
+        <p className="field-note">{draft.nativeInput
+          ? `${VOICE_HOTKEY}: начать / остановить запись в активном поле ввода. Отправку нажимаете вы.`
+          : "Текст добавляется в промпт TUI через сервер. Отправку нажимаете вы."}</p>
+        {!draft.nativeInput && (
         <details>
           <summary>Дополнительно</summary>
           <p className="settings-subtitle">
@@ -115,6 +127,7 @@ export function SettingsView(props: {
             />
           </label>
         </details>
+        )}
         {error && <p role="alert">{error}</p>}
         <div className="settings-actions">
           <button

@@ -30,6 +30,7 @@
     "dist",
     "dashboard-dist",
     "docs/assets",
+    "docs/browser.md",
     "prompts",
     "schema",
     "README.md",
@@ -59,16 +60,20 @@
     "prepublishOnly": "npm run check",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p dashboard/tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && tsc -p tsconfig.build.json && node --test dist-test/test/loop.test.js dist-test/test/config.test.js dist-test/test/classifier.test.js dist-test/test/cache-refresh.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/cli-smoke.test.js dist-test/test/mcp-smoke.test.js dist-test/test/mcp-config-smoke.test.js dist-test/test/diagnostics-update.test.js dist-test/test/dashboard.test.js dist-test/test/live.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/plan-reminder.test.js dist-test/test/orchestration-run-state.test.js dist-test/test/ownership.test.js dist-test/test/worktrees.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js dist-test/test/spawn-fallback.test.js dist-test/test/model-match.test.js dist-test/test/cost.test.js dist-test/test/openrouter.test.js dist-test/test/pricing-resolver.test.js dist-test/test/snapshot-reset.test.js dist-test/test/tokens.test.js dist-test/test/model-search.test.js dist-test/test/i18n.test.js dist-test/test/voice.test.js dist-test/test/voice-web.test.js dist-test/test/voice-editor.test.js dist-test/test/v2.test.js",
+    "test": "tsc -p tsconfig.test.json && tsc -p tsconfig.build.json && node --test dist-test/test/loop.test.js dist-test/test/config.test.js dist-test/test/classifier.test.js dist-test/test/cache-refresh.test.js dist-test/test/model-resolver.test.js dist-test/test/model-discovery.test.js dist-test/test/budget.test.js dist-test/test/agents.test.js dist-test/test/plugin.test.js dist-test/test/plugin-status.test.js dist-test/test/cli.test.js dist-test/test/cli-smoke.test.js dist-test/test/mcp-smoke.test.js dist-test/test/mcp-config-smoke.test.js dist-test/test/diagnostics-update.test.js dist-test/test/dashboard.test.js dist-test/test/live.test.js dist-test/test/ledger.test.js dist-test/test/analytics.test.js dist-test/test/routing-features.test.js dist-test/test/plan-reminder.test.js dist-test/test/orchestration-run-state.test.js dist-test/test/ownership.test.js dist-test/test/worktrees.test.js dist-test/test/pricing.test.js dist-test/test/fallback.test.js dist-test/test/integration.test.js dist-test/test/doctor.test.js dist-test/test/spawn-fallback.test.js dist-test/test/model-match.test.js dist-test/test/cost.test.js dist-test/test/openrouter.test.js dist-test/test/pricing-resolver.test.js dist-test/test/snapshot-reset.test.js dist-test/test/tokens.test.js dist-test/test/model-search.test.js dist-test/test/i18n.test.js dist-test/test/voice.test.js dist-test/test/voice-web.test.js dist-test/test/voice-editor.test.js dist-test/test/v2.test.js dist-test/test/browser.test.js dist-test/test/browser-v2.test.js dist-test/test/browser-live.test.js",
     "test:mcp-live": "tsc -p tsconfig.test.json && node scripts/run-live-mcp-tests.mjs",
     "test:mcp-live:windows": "npm run test:mcp-live",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "test:browser-live": "tsc -p tsconfig.test.json && node scripts/run-browser-live-tests.mjs",
+    "test:browser-e2e": "playwright test --config test/browser.playwright.config.ts"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.18.32",
     "@opencode/plugin": "^2.0.16",
+    "@playwright/mcp": "0.0.83",
+    "chrome-devtools-mcp": "1.10.1",
     "jsonc-parser": "^3.3.1",
-    "zod": "^4.0.0"
+    "zod": "4.1.8"
   },
   "optionalDependencies": {
     "@oeronteros-1/voice-overlay-linux-x64": "2.0.1",
@@ -90,6 +95,8 @@
     "@hookform/resolvers": "^5.9.0",
     "@hugeicons/core-free-icons": "^4.2.3",
     "@hugeicons/react": "^1.1.9",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-router": "^1.170.29",
@@ -116,6 +123,6 @@
   },
   "engines": {
     "bun": ">=1.2",
-    "node": ">=22"
+    "node": ">=22.12"
   }
 }

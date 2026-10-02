@@ -12,6 +12,8 @@ import { emptyPriceSnapshot, type PriceSnapshot } from "../routing/pricing/price
 import { resolvePluginVersion } from "../plugin-status.js"
 import { voiceBinaryName, voiceManagedDir } from "../voice.js"
 import { homeDirectory, spawnWithCmdFallback } from "../spawn.js"
+import { browserDiagnostics } from "../browser/diagnostics.js"
+import { browserConfigSchema } from "../config/schema.js"
 
 export const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 
@@ -426,6 +428,7 @@ function routingChecks(parsed: Record<string, unknown>): Check[] {
   const checks: Check[] = []
   const push = (check: Check) => checks.push(check)
 
+
   // Exact overrides are reported from the raw config so a syntactically
   // invalid model id still surfaces here even though it fails schema parsing.
   for (const [name, modelId] of Object.entries(extractRawAgents(parsed))) {
@@ -692,6 +695,15 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   })
 
   // --- Routing preflight (non-mutating) ---
+  const browserConfig = browserConfigSchema.safeParse(orchestraConfig.parsed.browser ?? {})
+  if (browserConfig.success) {
+    const browser = await browserDiagnostics(process.cwd(), browserConfig.data)
+    push({ id: "browser-mode", label: "Managed browser configured", status: "info", detail: browser.mode })
+    for (const backend of ["playwright", "devtools"] as const) push({ id: `browser-${backend}-installed`, label: `Managed ${backend} package`, status: browser.installed[backend] ? "ok" : browser.configured ? "warning" : "info", detail: browser.installed[backend] ? "pinned package installed; connection not probed offline" : "not installed" })
+    push({ id: "browser-chrome", label: "Managed Chrome", status: browser.chromeAvailable ? "ok" : browser.configured ? "warning" : "info", detail: browser.chromeAvailable ? "executable available; browser not launched" : "Chrome missing", hint: "Install Chrome explicitly or set browser.executable. No binary is bundled." })
+    push({ id: "browser-node", label: "Browser MCP Node", status: browser.nodeAvailable ? "ok" : browser.configured ? "warning" : "info", detail: browser.nodeAvailable ? "Node >=22.12 available" : "Node >=22.12 missing" })
+    push({ id: "browser-profile", label: "Browser profile ownership", status: browser.profileBusy ? "warning" : "info", detail: browser.profileBusy ? "profile busy; lock is retained" : "profile not locked" })
+  }
   for (const check of routingChecks(orchestraConfig.parsed)) push(check)
 
   return {

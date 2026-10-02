@@ -1,3 +1,4 @@
+import { MCP_LABELS } from "../../src/mcp/catalog"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   Activity01Icon,
@@ -780,9 +781,17 @@ function OverviewPage() {
             <Card className="mcp-card depth-card">
               <span className="eyebrow">{t("memoryLayer")}</span>
               <h2>{t("mcpTitle")}</h2>
+              {data.browser && <p className="text-muted-foreground text-sm" aria-label="Managed browser status">
+                Browser {data.browser.mode} · {data.browser.profile} · configured: {String(data.browser.configured)} ·
+                installed: {Object.entries(data.browser.installed).filter(([, installed]) => installed).map(([name]) => name).join(", ") || "none"} ·
+                connected: {Object.entries(data.browser.connected).filter(([, connected]) => connected).map(([name]) => name).join(", ") || "none"} ·
+                running: {String(data.browser.browserRunning)} · busy: {String(data.browser.profileBusy)}
+                {data.browser.lastFailure && ` · ${data.browser.lastFailure}`}
+              </p>}
               <div className="mcp-list">
-                {Object.entries({ context7: "Context7", codebaseMemory: "Codebase Memory", memoryGraph: "MemoryGraph", git: "Git", astGrep: "ast-grep", playwright: "Playwright" }).map(([key, label], index) => {
+                {Object.entries({ ...Object.fromEntries(Object.keys(data.mcp).map((key) => [key, key])), ...MCP_LABELS }).map(([key, label], index) => {
                   const usage = data.mcpUsage.find((row) => row.server === key)
+                  const state = data.mcpStatuses?.[key]?.state ?? (data.mcp[key] ? "unverified" : "missing")
                   return (
                     <motion.div
                       key={key}
@@ -790,10 +799,10 @@ function OverviewPage() {
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: 0.5 + index * 0.05 }}
                     >
-                      <span className={cn("status-dot", (!data.mcp[key as keyof Snapshot["mcp"]] || usage?.lastOutcome === "failure") && "off")} />
+                      <span className={cn("status-dot", state !== "connected" && "off", state === "unverified" && "unknown")} />
                       <span>{label}</span>
                       <small>
-                        {data.mcp[key as keyof Snapshot["mcp"]] ? t("mcpConnected") : t("mcpMissing")}
+                        {t(`mcpState_${state}`)}
                         {usage ? ` · ${usage.calls}× · ${Math.round((usage.successes / Math.max(1, usage.calls)) * 100)}% · ${usage.averageLatencyMs}ms` : ""}
                       </small>
                     </motion.div>

@@ -25,6 +25,12 @@ svg { width: 20px; height: 20px; display: block; }
 .icon-button { padding: 7px; background: transparent; border: 0; border-radius: 8px; color: #a4b2a7; display: grid; place-items: center; }
 .icon-button svg circle { fill: #1c261f; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px 0; }
+.auto-insert-toggle { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 18px 0; font-size: 12px; color: #b5c3b7; }
+.auto-insert-toggle input { appearance: none; width: 34px; height: 20px; border-radius: 12px; background: #465149; position: relative; cursor: pointer; flex-shrink: 0; }
+.auto-insert-toggle input::before { content: ""; position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #eef5ec; top: 3px; left: 3px; transition: transform .15s; }
+.auto-insert-toggle input:checked { background: #70995d; }
+.auto-insert-toggle input:checked::before { transform: translateX(14px); }
+.auto-insert-toggle input:disabled { opacity: .5; cursor: default; }
 .target-tag { font-size: 11px; padding: 5px 9px; border: 1px solid #ffffff13; border-radius: 6px; color: #b5c3b7; }
 .recorder { display: flex; flex-direction: column; align-items: center; padding: 26px 16px 25px; text-align: center; }
 .record-ring { padding: 9px; border: 1px solid #b9e4a01c; border-radius: 50%; box-shadow: 0 0 0 9px #b9e4a004; margin-bottom: 22px; }

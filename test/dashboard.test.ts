@@ -1,10 +1,38 @@
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { startDashboard } from "../src/dashboard/server.js"
+import { discoverConnectedModels, startDashboard } from "../src/dashboard/server.js"
 import { projectId, readProjects, registerProject } from "../src/dashboard/registry.js"
+
+test("Windows model discovery supports native executables and npm shims", { skip: process.platform !== "win32" }, async (t) => {
+  for (const extension of ["exe", "cmd"]) {
+    await t.test(extension, async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "orchestra models "))
+      const previousPath = process.env.PATH
+      const previousPathExt = process.env.PATHEXT
+      try {
+        // Keep discovery isolated from any OpenCode installation or credentials.
+        process.env.PATH = root
+        process.env.PATHEXT = ".COM;.EXE;.BAT;.CMD"
+        if (extension === "exe") {
+          await copyFile(process.execPath, path.join(root, "opencode.exe"))
+          await writeFile(path.join(root, "models"), 'console.log("test/native"); console.log("test/native"); console.log("not a model")\n')
+        } else {
+          await writeFile(path.join(root, "opencode.cmd"), '@echo off\r\nif not "%~1"=="models" exit /b 1\r\necho test/shim\r\n')
+        }
+        assert.deepEqual(await discoverConnectedModels(root), [extension === "exe" ? "test/native" : "test/shim"])
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH
+        else process.env.PATH = previousPath
+        if (previousPathExt === undefined) delete process.env.PATHEXT
+        else process.env.PATHEXT = previousPathExt
+        await rm(root, { recursive: true, force: true })
+      }
+    })
+  }
+})
 
 test("project registry drops directories that no longer exist", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-registry-"))
@@ -59,6 +87,17 @@ test("dashboard serves local telemetry and saves validated config", async () => 
     assert.equal(snapshot.summary.calls, 1)
     assert.equal(snapshot.summary.tokens.input, 100)
     assert.equal(snapshot.mcp.playwright, true)
+    const mcpFile = path.join(project, ".orchestra", "mcp-status.json")
+    for (const [state, updatedAt, expected] of [
+      ["connected", Date.now(), "connected"],
+      ["failed", Date.now(), "failed"],
+      ["connected", Date.now() - 60_000, "unverified"],
+    ] as const) {
+      await writeFile(mcpFile, JSON.stringify({ updatedAt, statuses: { playwright: { name: "playwright", state } } }))
+      const current = await fetch(new URL("/api/snapshot", url), { headers: { "X-Orchestra-Token": token } })
+      const body = await current.json() as { mcpStatuses: { playwright: { state: string } } }
+      assert.equal(body.mcpStatuses.playwright.state, expected)
+    }
     // Analytics are exposed on the snapshot; projection is a finite number and
     // storeTexts defaults to false when not configured.
     assert.equal(typeof snapshot.projection.projected, "number")

@@ -3,12 +3,14 @@ import path from "node:path"
 import { parse, type ParseError } from "jsonc-parser"
 import { openCodeConfigDirectory } from "../config/paths.js"
 import { smokeMcp, type McpSmokeCall } from "./smoke.js"
+import { mcpEntries } from "./status.js"
 
 interface LocalMcpConfig {
   type?: unknown
   command?: unknown
   cwd?: unknown
   enabled?: unknown
+  disabled?: unknown
 }
 
 export interface ConfiguredMcpSmokeResult {
@@ -72,12 +74,11 @@ export async function smokeConfiguredMcps(options: ConfiguredMcpSmokeOptions = {
   const projectDirectory = path.resolve(options.projectDirectory ?? process.cwd())
   const configFile = await mainConfig(configDirectory)
   const config = parseConfig(await readFile(configFile, "utf8"), configFile)
-  const mcp = typeof config.mcp === "object" && config.mcp !== null && !Array.isArray(config.mcp)
-    ? config.mcp as Record<string, LocalMcpConfig>
-    : {}
+  const mcp: Record<string, LocalMcpConfig> = mcpEntries(config)
 
   const results = await Promise.all(Object.entries(mcp).map(async ([name, entry]): Promise<ConfiguredMcpSmokeResult> => {
-    if (entry.enabled === false) return { name, status: "skipped", durationMs: 0, tools: [], error: "disabled" }
+    if (/playwright|chrome-devtools|orchestra.browser/.test(name + " " + (Array.isArray(entry.command) ? entry.command.join(" ") : ""))) return { name, status: "skipped", durationMs: 0, tools: [], error: "Browser MCP requires the isolated local fixture; configured profiles are never smoke-tested." }
+    if (entry.enabled === false || entry.disabled === true) return { name, status: "skipped", durationMs: 0, tools: [], error: "disabled" }
     if (entry.type === "remote") return { name, status: "skipped", durationMs: 0, tools: [], error: "remote MCP" }
     if (!Array.isArray(entry.command) || !entry.command.every((part) => typeof part === "string") || entry.command.length === 0) {
       return { name, status: "failed", durationMs: 0, tools: [], error: "missing local command" }

@@ -26,6 +26,8 @@ import { fallbackModelsForAgent, supportsFallbackDispatch } from "./routing/agen
 import { dispatchWithFallback } from "./routing/fallback-dispatch.js"
 import { resolveModel, leadResolveRequest, boundReasonText, type RoutingReason } from "./routing/model-resolver.js"
 import { VerifiedKnowledgeStore } from "./knowledge/store.js"
+import { browserTaskSchema, browserTaskToolSchema, BROWSER_ROLES } from "./browser/policy.js"
+import type { BrowserRuntime } from "./browser/runtime.js"
 
 interface ToolContextLike {
   sessionID?: string
@@ -45,6 +47,7 @@ export interface PricingContext {
 }
 
 export interface DispatchContext {
+  browser?: BrowserRuntime
   client: PluginInput["client"]
   agents: AgentSet
   directory: string
@@ -310,6 +313,7 @@ export function createOrchestraTools(
           acceptanceCriteria: tool.schema.array(tool.schema.string().min(1)).min(1),
           allowedPaths: tool.schema.array(tool.schema.string().min(1)),
           exclusiveResources: tool.schema.array(tool.schema.string().min(1)),
+          browser: browserTaskToolSchema.optional(),
           delegation: tool.schema.object({
             allowed: tool.schema.boolean(),
             maxChildren: tool.schema.number().int().min(0).max(1),
@@ -429,6 +433,7 @@ export function createOrchestraTools(
               })
             } finally {
               context.abort?.removeEventListener("abort", abortChild)
+              dispatch.browser?.releaseSession(child.id)
             }
             if (aborted || context.abort?.aborted) throw Object.assign(new Error("Dispatch cancelled."), { name: "AbortError" })
             const failure = assistantFailure(response.data.info, response.data.parts)
@@ -488,6 +493,7 @@ export function createOrchestraTools(
       description: "Classify a complex task and return the recommended OpenCode Orchestra worker team for the active budget mode. This does not execute the team.",
       args: {
         task: tool.schema.string().min(1),
+        browser: browserTaskToolSchema.optional(),
         profile: tool.schema.string().optional(),
         maxCostUSD: tool.schema.number().min(0).optional(),
         maxTokens: tool.schema.number().int().min(0).optional(),
@@ -495,6 +501,8 @@ export function createOrchestraTools(
         unknownPricing: tool.schema.enum(["warn", "block"]).optional(),
       },
       async execute(args, context) {
+        if (args.browser && context.agent !== "orch-lead") return JSON.stringify({ ok: false, error: "Only the runtime lead may seal a browser contract." })
+        if (args.browser && (config.browser.mode === "off" || !config.browser.profiles.includes(args.browser.profile))) return JSON.stringify({ ok: false, error: "Browser is disabled or profile is not configured." })
         const requested = args.profile ? profileNameSchema.safeParse(args.profile) : undefined
         let cached = false
         let classification: Classification
@@ -563,17 +571,6 @@ export function createOrchestraTools(
               return [capability, chain?.all.slice(0, config.models.fallback.maxRetries + 1) ?? []]
             }))
           : {}
-        const fallbackAgentChains = config.models.fallback.enabled && dispatch
-          ? Object.fromEntries(
-              [...new Set([...plannedWorkers, "orch-merge", "orch-judge"])]
-                .filter((agent) => dispatch.agents[agent])
-                .map((agent) => [
-                  agent,
-                  fallbackModelsForAgent(config, agent, dispatch.agents[agent]?.model),
-                ]),
-            )
-          : {}
-
         const guard = createBudgetGuard(paidBudget)
         for (let i = 0; i < paidCallsUsed; i++) guard.recordPaidCall("paid")
         const escalation = decideEscalation(config, {
@@ -585,6 +582,29 @@ export function createOrchestraTools(
           plan = planTask(profile, classification.secondaryProfiles, { ...planOptions, includeJudge: escalation.escalate })
           plannedWorkers = plan.nodes.filter((node) => node.role === "specialist" || node.role === "reviewer").map((node) => node.worker)
         }
+        if (args.browser) {
+          const browserGrant = browserTaskSchema.parse(args.browser)
+          const node = plan.nodes.find((candidate) => candidate.role === "specialist" && BROWSER_ROLES.has(candidate.worker))
+            ?? plan.nodes.find((candidate) => candidate.role === "specialist")
+          if (!node) return JSON.stringify({ ok: false, error: "Worker budget has no room for a browser executor." })
+          if (args.browser.task !== "visual" || !BROWSER_ROLES.has(node.worker)) node.worker = "orch-tests"
+          node.contract.browser = browserGrant
+          node.contract.exclusiveResources.push(`browser:${args.browser.profile}`)
+          node.contract.objective += ` Reproduce and verify: ${args.task}`
+          node.contract.deliverable = "Browser evidence: checked behavior, expected and actual result, reproduction steps, backend, private artifacts, limitations."
+          node.contract.acceptanceCriteria.push("Start observation before reproduction; inspect ambiguous mutations before repeating them; preserve the profile.")
+          node.contract.delegation = { allowed: false, maxChildren: 0 }
+          plannedWorkers = plan.nodes.filter((candidate) => candidate.role === "specialist" || candidate.role === "reviewer").map((candidate) => candidate.worker)
+        }
+        const finalPlanProblems = validatePlan(plan)
+        if (finalPlanProblems.length) return JSON.stringify({ ok: false, error: "Generated orchestration plan is invalid.", violations: finalPlanProblems, plan }, null, 2)
+        const fallbackAgentChains = config.models.fallback.enabled && dispatch
+          ? Object.fromEntries(
+              [...new Set([...plannedWorkers, "orch-merge", "orch-judge"])]
+                .filter((agent) => dispatch.agents[agent])
+                .map((agent) => [agent, fallbackModelsForAgent(config, agent, dispatch.agents[agent]?.model)]),
+            )
+          : {}
         if (sessionID) {
           try {
             await ledger.setProfile(sessionID, profile)
@@ -935,7 +955,7 @@ export function createOrchestraTools(
       },
     }),
     orchestra_plugin_status: tool({
-      description: "Show the OpenCode Orchestra plugin's own runtime status: loaded version, budget mode, model strategy, config source, model counts, and companion MCP status (Context7, Codebase Memory, MemoryGraph, Playwright, Git, ast-grep).",
+      description: "Show the OpenCode Orchestra plugin's own runtime status: loaded version, budget mode, model strategy, config source, model counts, and companion MCP status (Context7, GitHub, Codebase Memory, MemoryGraph, Playwright, Git, ast-grep).",
       args: {},
       async execute() {
         if (!pluginStatus) return "OpenCode Orchestra plugin status is unavailable — no plugin status snapshot was captured."

@@ -42,6 +42,7 @@ test("V2 setup registers legacy behavior on the new domains and adapts tool exec
     tool: { ...domain("tool") },
     permission: domain("permission"),
     model: { list: async () => ({ data: [] }) },
+    mcp: { list: async () => ({ data: [{ name: "github", status: { status: "needs_auth" } }] }) },
     session: {
       ...domain("session"),
       get: async () => ({ location: { directory: process.cwd() } }),
@@ -88,6 +89,7 @@ test("V2 setup registers legacy behavior on the new domains and adapts tool exec
   assert.deepEqual(prompted, ["Route task"])
   assert.equal(tools[0]?.name, "orchestra_test")
   assert.deepEqual(await tools[0]!.execute({ text: "hello" }, { sessionID: "session", messageID: "message", agent: "orch-lead", signal: new AbortController().signal }), { content: `hello:${process.cwd()}` })
+  assert.deepEqual(await legacyClient.mcp.status(), { data: { github: { status: "needs_auth" } } })
   const child = await legacyClient.session.create({ body: { parentID: "parent", title: "Work" }, query: { directory: process.cwd() } })
   assert.equal(child.data.id, "child")
   const reply = await legacyClient.session.prompt({ path: { id: "child" }, body: { agent: "orch-lead", model: { providerID: "mock", modelID: "reasoner" }, parts: [{ type: "text", text: "please work" }] } })

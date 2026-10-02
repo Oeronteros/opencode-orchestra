@@ -6,6 +6,7 @@ import type { AgentSet } from "./types.js"
 import { createWorkerAgents } from "./workers.js"
 import { createEditorAgent } from "./editor.js"
 import { createIntegratorAgent } from "./integrator.js"
+import { applyBrowserPolicy } from "../browser/policy.js"
 
 export interface PromptBundle {
   lead: string
@@ -25,5 +26,6 @@ export function createAgentSet(config: OrchestraConfig, prompts: PromptBundle): 
   for (const [name, model] of Object.entries(config.models.agents)) {
     if (agents[name]) agents[name].model = model
   }
+  for (const [name, agent] of Object.entries(agents)) applyBrowserPolicy(name, agent, config.browser)
   return agents
 }

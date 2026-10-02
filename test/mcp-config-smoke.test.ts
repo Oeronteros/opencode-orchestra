@@ -28,3 +28,13 @@ test("configured MCP smoke launches enabled local entries and skips disabled or 
   assert.ok(report.results[0]?.tools.includes("git_status"))
   assert.ok(report.results[1]?.tools.includes("dump_syntax_tree"))
 })
+
+test("configured MCP smoke handles native V2 servers and disabled flags", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-v2-mcp-smoke-"))
+  await writeFile(path.join(directory, "opencode.json"), JSON.stringify({ mcp: { servers: {
+    git: { command: [process.execPath, path.resolve("test/fixtures/mcp-smoke-server.mjs")] },
+    disabled: { command: ["missing"], disabled: true },
+  } } }))
+  const report = await smokeConfiguredMcps({ configDirectory: directory, projectDirectory: directory, timeoutMs: 5_000 })
+  assert.deepEqual(report.results.map((r) => [r.name, r.status]), [["git", "ok"], ["disabled", "skipped"]])
+})

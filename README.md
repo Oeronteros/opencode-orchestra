@@ -1,5 +1,7 @@
 # OpenCode Orchestra
 
+Managed browser workflows (OpenCode V2 >=2.0.16, Node >=22.12): [persistent profiles, Playwright/DevTools routing, first login and permissions](docs/browser.md). New installs scaffold `browser.mode=auto`; existing configurations remain unchanged and default off. Browser Code Mode is currently disabled; live tests report skipped when Chrome is unavailable.
+
 [![npm version](https://img.shields.io/npm/v/@oeronteros-1/opencode-orchestra)](https://www.npmjs.com/package/@oeronteros-1/opencode-orchestra)
 [![license](https://img.shields.io/npm/l/@oeronteros-1/opencode-orchestra)](LICENSE)
 [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-4f46e5)](https://opencode.ai/docs/plugins/)
@@ -313,6 +315,8 @@ Bounded-loop state itself is in memory and is lost when OpenCode restarts. A non
 
 ## Voice input
 
+For OpenCode 2 on Windows and Linux X11, launch `bunx @oeronteros-1/opencode-orchestra@latest voice-overlay` once, then focus the prompt in TUI, Desktop or any browser. **Ctrl+Alt+Space** starts recording; press it again to stop, transcribe locally and paste through the system clipboard. Send the prompt manually. No fixed server port or web proxy is required for this shortcut. Keep the same window, tab and input focused while dictating. A changed window, title or native focus retains the text for retry with the same shortcut; unsent text survives an overlay restart. The overlay can be minimized while recording; its shortcut stays active. The Auto insert switch is on by default; turning it off keeps an editable result for explicit insertion with the same shortcut. Linux X11 requires xclip, EWMH and XTEST; terminals use Ctrl+Shift+V. Wayland retains the existing TUI/server and inline browser paths; the global native shortcut is not yet supported there.
+
 The standard installer provisions local ffmpeg and Whisper binaries for Linux x64 and Windows x64 and downloads the `ggml-base.bin` model. No audio is sent to a remote transcription service.
 
 For legacy **OpenCode 1.x** TUI sessions, run `opencode-orchestra voice-tui`. Press **Ctrl+X, then E** or run `/editor`, speak, and press the same shortcut again (or Enter). OpenCode restores the transcript to that session's draft without submitting it. `Ctrl+C` cancels recording and preserves the draft. The launcher sets `EDITOR` and `VISUAL` for that OpenCode process; no separate window or fixed port is needed. Run plain `opencode` when you want a regular text editor.
@@ -321,8 +325,11 @@ Set `ORCHESTRA_VOICE_MODEL=small` to use the small model or `ORCHESTRA_VOICE_DEV
 
 ```bash
 opencode --port 4096
-# in another terminal: voice-overlay
+# in another terminal:
+bunx @oeronteros-1/opencode-orchestra@latest voice-overlay
 ```
+
+This launches the floating window on Windows/Linux without adding its directory to PATH. If it is not installed yet, the CLI provisions the platform package and prepares the `base` model.
 
 For OpenCode Web, run OpenCode and the local voice proxy in separate terminals:
 

@@ -270,6 +270,7 @@ function normalizeResource(value: string): string {
 
 function cloneContract(contract: TaskContract): TaskContract {
   return {
+    ...(contract.browser ? { browser: { ...contract.browser, origins: [...contract.browser.origins], operations: [...contract.browser.operations] } } : {}),
     objective: contract.objective,
     inputs: [...contract.inputs],
     deliverable: contract.deliverable,
@@ -283,6 +284,7 @@ function cloneContract(contract: TaskContract): TaskContract {
 function contractsEqual(left: TaskContract, right: TaskContract): boolean {
   const sameArray = (a: string[], b: string[]) => a.length === b.length && a.every((value, index) => value === b[index])
   return left.objective === right.objective
+    && JSON.stringify(left.browser) === JSON.stringify(right.browser)
     && sameArray(left.inputs, right.inputs)
     && left.deliverable === right.deliverable
     && sameArray(left.acceptanceCriteria, right.acceptanceCriteria)
@@ -1017,7 +1019,7 @@ export class OrchestrationRunState {
           id: raw.id,
           description: raw.description,
           agent: raw.agent,
-          status: interrupted ? "pending" : raw.status,
+          status: interrupted ? raw.contract.browser ? "blocked" : "pending" : raw.status,
           depth: raw.depth,
           ...(raw.parentNodeId ? { parentNodeId: raw.parentNodeId } : {}),
           ...(raw.role ? { role: raw.role } : {}),
@@ -1030,6 +1032,7 @@ export class OrchestrationRunState {
           attempt: raw.attempt ?? 0,
           active: false,
           ...(raw.error && !interrupted ? { error: raw.error } : {}),
+          ...(interrupted && raw.contract.browser ? { error: "Browser scenario was interrupted; inspect site state before an explicit retry. External mutations are not automatically resumed." } : {}),
           ...(raw.output ? { output: raw.output } : {}),
           contextUpdates: Array.isArray(raw.contextUpdates)
             ? raw.contextUpdates.filter((update) => update && Number.isInteger(update.id) && typeof update.text === "string").map((update) => ({ id: update.id, text: update.text }))
@@ -1129,6 +1132,7 @@ export class OrchestrationRunState {
       if (!parent.contract.delegation.allowed) {
         return this.denied(run, "delegation_denied", `Node ${parent.id} is not allowed to delegate.`)
       }
+      if (request.contract.browser) return this.denied(run, "delegation_denied", "Nested browser scenarios are not supported; use the sealed root browser executor.")
       if (parent.childrenStarted >= parent.contract.delegation.maxChildren) {
         return this.denied(run, "delegation_limit", `Node ${parent.id} exhausted its child budget.`)
       }

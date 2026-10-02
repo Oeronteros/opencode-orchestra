@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ServerConfig, SessionRef } from "./lib/opencode";
+import type { InputTarget } from "./lib/hotkey";
+
+export function enableVoiceHotkey(): Promise<boolean> {
+  return invoke<boolean>("enable_voice_hotkey");
+}
+
+export function pasteVoiceText(target: InputTarget | null, text: string): Promise<boolean> {
+  return invoke<boolean>("paste_voice_text", { target, text });
+}
 export interface BrowserTarget { id: string; route: string; title: string }
 
 export function browserTarget(cfg: ServerConfig): Promise<BrowserTarget> {

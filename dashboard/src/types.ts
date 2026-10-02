@@ -164,7 +164,9 @@ export interface Snapshot {
   daily: Array<DailyPoint>
   projection: MonthProjection
   anomalies: DailyAnomaly[]
-  mcp: Record<"context7" | "codebaseMemory" | "memoryGraph" | "playwright" | "git" | "astGrep", boolean>
+  mcp: Record<string, boolean>
+  mcpStatuses?: Record<string, { name: string; state: "connected" | "failed" | "disabled" | "missing" | "unverified" | "needs_auth" | "needs_client_registration" }>
+  browser?: { configured: boolean; mode: string; profile: string; installed: Record<string, boolean>; connected: Record<string, boolean>; browserRunning: boolean; profileBusy: boolean; lastFailure?: string }
   mcpUsage: McpUsageRow[]
   availableModels: string[]
   orchestrationRuns: OrchestrationRun[]

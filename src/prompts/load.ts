@@ -31,7 +31,7 @@ export async function readPrompt(relativePath: string, fallback = ""): Promise<s
 export type PromptBundle = Record<string, string> & { lead: string; judge: string }
 
 /** Load named markdown prompts, falling back safely when package files are absent. */
-export async function loadPrompts(names: string[] = Object.keys(FALLBACKS)): Promise<PromptBundle> {
+export async function loadPrompts(names: string[] = ["lead", "judge", "repo", "docs", "research", "tests", "critic", "security", "visual-reference", "visual-generate", "visual-review", "editor", "integrator", "merge"]): Promise<PromptBundle> {
   const entries = await Promise.all([...new Set(names)].map(async (name) => [
     name,
     await readPrompt(`${name}.md`, FALLBACKS[name] ?? "You are an internal read-only specialist. Return concise, evidence-backed findings. Delegate only through orchestra_dispatch when the sealed TaskContract permits one narrower child; never call yourself or an ancestor, and relay decisions, assumptions, blockers, and provenance."),

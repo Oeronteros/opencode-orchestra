@@ -1,5 +1,61 @@
 # Voice integration: implementation and verification
 
+## Linux X11, minimize and automatic insertion (2026-10-02)
+
+The native shortcut now also uses X11 GrabKey and XTEST on Linux, with xclip
+owning the Unicode clipboard. Caps Lock and the detected Num Lock modifier are
+included in the grab. One activation follows a Space release; repeat events do
+not start a second recording. The original window/focus/title/process must still
+match before paste. Known terminal classes use Ctrl+Shift+V; Desktop and browsers
+use Ctrl+V. Native input is the default on Linux and Windows.
+
+The title bar has a minimize control, permitted by the Tauri capability and
+available while busy. It retains the process, recorder and native registration.
+The main-window Auto insert switch defaults on and persists across restarts.
+When off, recognition keeps the editable draft; native mode also copies it, and
+the shortcut explicitly retries insertion after review. Submission is manual.
+
+Local checks: frontend typecheck/build and 27 tests; plugin TypeScript build and
+55 scoped CLI/editor/web tests; 25 Rust tests, including compilation and pure
+tests of the X11 backend on Windows. Two interactive display tests are opt-in.
+The actual Windows WebView2 UI was checked via a temporary local debug session:
+the switch defaults on, persists off across reload and survives settings save.
+Clicking Minimize made IsIconic return true while Ctrl+Alt+Space remained
+registered (a second registration returned error 1409). The temporary debug
+process was closed and original settings restored after the check.
+The Xvfb smoke test checks a dedicated fixture's hotkey event, Unicode clipboard,
+changed-target rejection, Ctrl+V and terminal Ctrl+Shift+V. It is wired into the
+Linux release CI; it was not executed locally because this Windows host has no
+running Linux environment. Real microphone dictation on Linux is unverified.
+
+Wayland native global input is unsupported and reports an explicit error,
+including under XWayland. Use an X11 session or existing server/inline-Web
+integration. Linux X11 requires xclip, EWMH and XTEST; custom terminal paste
+bindings may require manual insertion. Older sections below are historical.
+
+## OpenCode 2 unified Windows shortcut (2026-10-02)
+
+The overlay defaults to native Windows input. Ctrl+Alt+Space starts/stops local
+dictation in the focused TUI, Desktop or browser prompt, with manual submission.
+The backend registers RegisterHotKey with MOD_NOREPEAT, snapshots the window,
+process, title and native focus, writes Unicode clipboard text and sends Ctrl+V
+only while that snapshot still matches. A failed insertion is retained in the
+editable overlay and localStorage; the same shortcut retries it. Buttons record
+to the clipboard and allow the user to select a destination before retrying.
+No TUI HTTP endpoint or browser proxy is needed for this Windows path.
+
+Verified locally: overlay typecheck/frontend build and 27 tests, 55 CLI/editor/web
+tests, cargo check and 22 Rust tests. The built Windows window starts and owns
+Ctrl+Alt+Space; the shortcut is released on process exit. The separate foreground
+textbox test is opt-in: this runner cannot activate its fixture, and the guard
+correctly refuses to inject into another window. End-to-end speech insertion in
+the three actual OpenCode surfaces still needs an interactive microphone check.
+The repository-wide TypeScript build is currently blocked by parallel changes
+in src/browser; scoped overlay checks are independent of those errors.
+
+Linux retains the existing TUI/server and inline browser paths. The global native
+shortcut implemented here is Windows-only. Remaining sections are historical.
+
 > Historical verification record. The overlay-to-browser bridge was removed when
 > the overlay became TUI-only; current TUI dictation uses `voice-tui` and the
 > proxy-web microphone continues to use its own inline client.

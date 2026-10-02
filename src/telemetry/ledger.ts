@@ -75,6 +75,9 @@ export interface McpUsage {
 }
 
 export interface McpCallMetric {
+  backend?: "playwright" | "devtools"
+  agent?: string
+  nodeID?: string
   server: string
   tool: string
   durationMs: number
@@ -85,6 +88,7 @@ export interface McpCallMetric {
 }
 
 export interface SessionLedger {
+  browserCalls?: Array<{ backend: "playwright" | "devtools"; agent: string; nodeID: string; tool: string; durationMs: number; success: boolean; outputChars: number }>
   profile?: ProfileName
   agents: Record<string, number>
   premiumEscalations: number
@@ -536,6 +540,11 @@ export class Ledger {
       usage.outputChars += outputChars
       usage.lastUsedAt = metric.at ?? Date.now()
       usage.lastOutcome = metric.success ? "success" : "failure"
+      if (metric.backend) {
+        const calls = session.browserCalls ??= []
+        calls.push({ backend: metric.backend, agent: boundedString(metric.agent) ?? "unknown", nodeID: boundedString(metric.nodeID) ?? "unknown", tool: boundedString(metric.tool) ?? "unknown", durationMs, success: metric.success, outputChars })
+        if (calls.length > 256) calls.splice(0, calls.length - 256)
+      }
     })
   }
 

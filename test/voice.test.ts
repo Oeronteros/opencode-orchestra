@@ -5,6 +5,50 @@ import os from "node:os"
 import path from "node:path"
 import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceOverlayTriple, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_SHA256, VOICE_MODEL_URL } from "../src/voice.js"
 import { createHash } from "node:crypto"
+import { EventEmitter } from "node:events"
+import { type ChildProcess, type spawn } from "node:child_process"
+import { launchVoiceOverlay } from "../src/voice.js"
+
+describe("voice overlay launcher", () => {
+  it("launches paths with spaces directly and detaches only after successful spawn", async () => {
+    const binary = path.resolve("User With Spaces", "Programs", "voice-overlay", "voice-overlay.exe")
+    const child = new EventEmitter() as ChildProcess
+    let detached = false
+    child.unref = () => { detached = true }
+    const start = ((command: string, args: string[], options: unknown) => {
+      assert.equal(command, binary)
+      assert.deepEqual(args, [])
+      assert.deepEqual(options, {
+        cwd: path.dirname(binary), detached: true, stdio: ["ignore", "ignore", "pipe"], windowsHide: true, shell: false,
+      })
+      queueMicrotask(() => child.emit("spawn"))
+      return child
+    }) as typeof spawn
+    await launchVoiceOverlay(binary, start)
+    assert.equal(detached, true)
+  })
+
+  it("reports OS startup errors instead of announcing a successful launch", async () => {
+    const child = new EventEmitter() as ChildProcess
+    child.unref = () => {}
+    const start = (() => {
+      queueMicrotask(() => child.emit("error", new Error("ENOENT")))
+      return child
+    }) as typeof spawn
+    await assert.rejects(launchVoiceOverlay(path.resolve("missing.exe"), start), /Cannot launch voice-overlay: ENOENT/)
+    await assert.rejects(launchVoiceOverlay(path.resolve("missing-overlay-executable")), /Cannot launch voice-overlay/)
+  })
+
+  it("reports a GUI failure immediately after OS spawn", async () => {
+    const child = new EventEmitter() as ChildProcess
+    child.unref = () => {}
+    const start = (() => {
+      queueMicrotask(() => { child.emit("spawn"); child.emit("exit", 101, null) })
+      return child
+    }) as typeof spawn
+    await assert.rejects(launchVoiceOverlay(path.resolve("overlay.exe"), start), /exited with 101/)
+  })
+})
 
 describe("voice installation upgrades", () => {
   it("refreshes old binaries, restores missing sidecars and repairs Unix execute permissions", async () => {

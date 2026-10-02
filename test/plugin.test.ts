@@ -24,6 +24,7 @@ test("entrypoint exposes a stable id and server", () => {
 
 test("MCP tool prefixes map to stable telemetry server names", () => {
   assert.equal(mcpServerForTool("git_git_status"), "git")
+  assert.equal(mcpServerForTool("github_get_me"), "github")
   assert.equal(mcpServerForTool("ast-grep_find_code"), "astGrep")
   assert.equal(mcpServerForTool("playwright_browser_navigate"), "playwright")
   assert.equal(mcpServerForTool("bash"), undefined)

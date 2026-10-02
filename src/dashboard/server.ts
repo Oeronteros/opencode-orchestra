@@ -1,3 +1,6 @@
+import { dashboardMcpStatuses, mcpPresence, type McpStatuses } from "../mcp/status.js"
+import { browserDiagnostics, refreshBrowserStatus } from "../browser/diagnostics.js"
+import type { BrowserStatus } from "../browser/runtime.js"
 import { randomBytes } from "node:crypto"
 import { spawn } from "node:child_process"
 import { createReadStream } from "node:fs"
@@ -211,30 +214,6 @@ async function findMainConfig(configDirectory: string): Promise<string> {
   return path.join(configDirectory, "opencode.json")
 }
 
-async function mcpStatus(configDirectory: string): Promise<Record<string, boolean>> {
-  const root = parseJsonc(await readTextOr(await findMainConfig(configDirectory), "{}"))
-  const outer = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
-    ? (root.mcp as Record<string, unknown>)
-    : {}
-  const mcp = typeof outer.servers === "object" && outer.servers !== null && !Array.isArray(outer.servers)
-    ? { ...outer, ...(outer.servers as Record<string, unknown>) }
-    : outer
-  const enabled = (name: string) => {
-    const entry = mcp[name]
-    return typeof entry === "object" && entry !== null && !Array.isArray(entry)
-      ? (entry as Record<string, unknown>).enabled !== false && (entry as Record<string, unknown>).disabled !== true
-      : entry !== undefined
-  }
-  return {
-    context7: enabled("context7"),
-    codebaseMemory: enabled("codebase-memory"),
-    memoryGraph: enabled("memorygraph"),
-    playwright: enabled("playwright"),
-    git: enabled("git"),
-    astGrep: enabled("ast-grep"),
-  }
-}
-
 interface McpUsageRow {
   server: string
   calls: number
@@ -282,6 +261,8 @@ interface SnapshotData {
   projection: MonthProjection
   anomalies: DailyAnomaly[]
   mcp: Record<string, boolean>
+  mcpStatuses: McpStatuses
+  browser: BrowserStatus
   mcpUsage: McpUsageRow[]
   availableModels: string[]
   orchestrationRuns: PersistedRun[]
@@ -319,10 +300,12 @@ interface ConnectedModelsCacheEntry {
 }
 const connectedModelsCache = new Map<string, ConnectedModelsCacheEntry>()
 
-function discoverConnectedModels(directory: string): Promise<string[]> {
+export function discoverConnectedModels(directory: string): Promise<string[]> {
   return new Promise((resolve) => {
     const executable = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "opencode"
-    const args = process.platform === "win32" ? ["/d", "/s", "/c", "opencode.cmd models"] : ["models"]
+    // Let cmd.exe resolve PATHEXT: npm installs a .cmd shim, while native
+    // Windows installations provide opencode.exe.
+    const args = process.platform === "win32" ? ["/d", "/s", "/c", "opencode models"] : ["models"]
     const child = spawn(executable, args, { cwd: directory, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
     let stdout = ""
     let settled = false
@@ -376,6 +359,7 @@ interface SnapshotCacheEntry {
   inputFiles: string[]
   value?: SnapshotData
   pending?: Promise<SnapshotData>
+  mcpFile?: string
 }
 
 const snapshotCache = new Map<string, SnapshotCacheEntry>()
@@ -411,6 +395,10 @@ function defaultSnapshotInputFiles(directory: string, configDirectory: string): 
     path.join(configDirectory, "opencode.json"),
     path.join(directory, ".opencode", "orchestra.jsonc"),
     path.join(directory, ".opencode", "orchestra.json"),
+    path.join(directory, "opencode.jsonc"),
+    path.join(directory, "opencode.json"),
+    path.join(directory, ".opencode", "opencode.jsonc"),
+    path.join(directory, ".opencode", "opencode.json"),
     path.join(directory, ".orchestra", "state.json"),
     path.join(directory, "orchestra", "state.json"),
   ]
@@ -423,13 +411,17 @@ async function snapshot(directory: string, configDirectory: string, includeModel
   const fileState = await fileSignature(inputFiles)
   const signature = `${fileState}|models:${includeModels ? Math.floor(Date.now() / CONNECTED_MODELS_TTL) : 0}`
   if (cached?.signature === signature) {
-    if (cached.value) return cached.value
+    if (cached.value && cached.mcpFile) {
+      const mcpStatuses = await dashboardMcpStatuses(configDirectory, directory, cached.mcpFile)
+      return { ...cached.value, mcpStatuses, mcp: mcpPresence(mcpStatuses), browser: await refreshBrowserStatus(cached.value.browser, path.join(path.dirname(cached.mcpFile), "browser-status.json")) }
+    }
     if (cached.pending) return cached.pending
   }
 
   const entry: SnapshotCacheEntry = { signature, inputFiles }
   const pending = buildSnapshot(directory, configDirectory, includeModels, options).then(({ data, ledgerFile, orchestrationFile }) => {
     entry.inputFiles = [...defaultSnapshotInputFiles(directory, configDirectory), ledgerFile, orchestrationFile]
+    entry.mcpFile = path.join(path.dirname(ledgerFile), "mcp-status.json")
     entry.value = data
     delete entry.pending
     return data
@@ -447,6 +439,7 @@ async function buildSnapshot(directory: string, configDirectory: string, include
   const ledgerFile = path.resolve(directory, config.telemetry.directory, "state.json")
   const orchestrationFile = path.resolve(directory, config.orchestration.persistence.directory, "runs.json")
   const ledger = await readLedgerState(ledgerFile)
+  const mcpStatuses = await dashboardMcpStatuses(configDirectory, directory, path.resolve(directory, config.telemetry.directory, "mcp-status.json"))
   let orchestrationRuns: PersistedRun[] = []
   try {
     const checkpoint = JSON.parse(await readFile(orchestrationFile, "utf8")) as { version?: number; runs?: PersistedRun[] }
@@ -557,7 +550,9 @@ async function buildSnapshot(directory: string, configDirectory: string, include
     daily: dailyLimit === 0 ? daily : daily.slice(-dailyLimit),
     projection: analytics.projection,
     anomalies: analytics.anomalies,
-    mcp: await mcpStatus(configDirectory),
+    mcp: mcpPresence(mcpStatuses),
+    mcpStatuses,
+    browser: await browserDiagnostics(directory, config.browser, path.resolve(directory, config.telemetry.directory, "browser-status.json")),
     mcpUsage,
     availableModels: [...new Set([
       ...(includeModels ? await connectedModels(directory) : []),

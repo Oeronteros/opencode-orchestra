@@ -62,7 +62,7 @@ jobs:
 
       - name: Install Linux webkit deps
         if: startsWith(matrix.os, 'ubuntu')
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpulse-dev build-essential pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpulse-dev build-essential pkg-config xclip xvfb xauth
 
       - uses: actions/setup-node@v4
         with:
@@ -72,6 +72,11 @@ jobs:
 
       - name: Install frontend deps
         run: npm ci --prefix voice-overlay
+
+      - name: Check voice controls
+        run: |
+          npm --prefix voice-overlay run typecheck
+          npm --prefix voice-overlay test
 
       - name: Test sidecar packaging
         run: node --test scripts/pack-voice-overlay.test.mjs scripts/publish-voice-package.test.mjs
@@ -126,6 +131,13 @@ jobs:
 
       - name: Test voice runtime
         run: cargo test --manifest-path voice-overlay/src-tauri/Cargo.toml
+
+      - name: Verify X11 shortcut and Unicode paste in a dedicated display
+        if: startsWith(matrix.os, 'ubuntu')
+        env:
+          ORCHESTRA_X11_SMOKE: "1"
+          XDG_SESSION_TYPE: x11
+        run: xvfb-run -a cargo test --manifest-path voice-overlay/src-tauri/Cargo.toml x11_shortcut_clipboard_focus_guard_and_paste -- --ignored --test-threads=1
 
       - name: Stage sidecar npm package
         shell: bash

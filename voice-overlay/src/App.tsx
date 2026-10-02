@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   appendToPrompt,
+  enableVoiceHotkey,
+  pasteVoiceText,
   browserTarget,
   insertInBrowser,
   type BrowserTarget,
@@ -19,6 +22,13 @@ import { MAX_SECONDS } from "./lib/audio";
 import type { SessionRef } from "./lib/opencode";
 import { loadSettings, SettingsView, type OverlaySettings } from "./settings";
 import { WindowHeader } from "./WindowHeader";
+import { hotkeyAction, parseVoiceDraft, VOICE_HOTKEY, type InputTarget } from "./lib/hotkey";
+
+const DRAFT_KEY = "voice-overlay-native-draft:v1";
+function loadVoiceDraft() {
+  try { return parseVoiceDraft(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")); }
+  catch { return null; }
+}
 
 function codeOf(message: string): OverlayErrorCode | null {
   const head = message.split(": ")[0];
@@ -42,6 +52,7 @@ function codeOf(message: string): OverlayErrorCode | null {
 }
 
 export function App() {
+  const [restoredDraft] = useState(loadVoiceDraft);
   const [settings, setSettings] = useState<OverlaySettings>(loadSettings);
   const [devices, setDevices] = useState<string[]>([]);
   const [sessions, setSessions] = useState<SessionRef[]>([]);
@@ -51,7 +62,13 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [preview, setPreview] = useState<string>("");
+  const [preview, setPreview] = useState<string>(restoredDraft?.text ?? "");
+  const [hasNativeDraft, setHasNativeDraft] = useState(restoredDraft !== null);
+  const [hotkeyReady, setHotkeyReady] = useState(false);
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const recordingNative = useRef<InputTarget | null>(null);
+  const draftNative = useRef<InputTarget | null>(restoredDraft?.target ?? null);
+  const onHotkey = useRef<(target: InputTarget | null) => void>(() => {});
   const [showSettings, setShowSettings] = useState(false);
   const [sending, setSending] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -67,6 +84,28 @@ export function App() {
   const draftTab = useRef<BrowserTarget | null>(null);
   const sessionRequest = useRef(0);
   const manual = settings.target === "web";
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<InputTarget | null>("voice-hotkey", event => onHotkey.current(event.payload))
+      .then(async cleanup => {
+        if (disposed) { cleanup(); return; }
+        unlisten = cleanup;
+        try {
+          const ready = await enableVoiceHotkey();
+          if (!disposed) setHotkeyReady(ready);
+        } catch (e) { if (!disposed) setHotkeyError(String(e)); }
+      }).catch(e => { if (!disposed) setHotkeyError(String(e)); });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (hasNativeDraft && preview.trim()) localStorage.setItem(DRAFT_KEY, JSON.stringify({ text: preview, target: draftNative.current }));
+      else localStorage.removeItem(DRAFT_KEY);
+    } catch { /* The editable result is still available in this window. */ }
+  }, [preview, hasNativeDraft]);
 
   useEffect(() => {
     if (status !== "recording") return;
@@ -140,7 +179,7 @@ export function App() {
     setStatus("error");
   };
 
-  const onRecord = async () => {
+  const onRecord = async (nativeTarget: InputTarget | null = null) => {
     if (operation.current) return;
     operation.current = true;
     setStarting(true);
@@ -149,11 +188,13 @@ export function App() {
     setNotice(null);
     invocation.current = { ...settings };
     recordingTab.current = null;
+    recordingNative.current = nativeTarget;
     try {
+      if (hasNativeDraft && preview.trim()) throw new Error("Сначала вставьте или удалите сохранённый текст. Для вставки вернитесь в исходное поле и нажмите Ctrl+Alt+Space.");
       if (preview.trim() && draftTab.current) {
         throw new Error("Сначала вставьте или удалите предыдущий текст — его вкладка сохранена.");
       }
-      if (settings.target === "auto") {
+      if (!settings.nativeInput && settings.target === "auto") {
         setDetectedSession(null);
         const session = await browserTarget({ ...settings, port: settings.browserPort });
         setDetectedSession(session);
@@ -210,11 +251,34 @@ export function App() {
         setRecognizing(false);
         setCancelling(false);
       }
+      if (settings.nativeInput) {
+        draftNative.current = recordingNative.current;
+        setHasNativeDraft(true);
+        setPreview(text);
+        try {
+          const inserted = await pasteVoiceText(settings.autoInsert ? draftNative.current : null, text);
+          if (inserted) {
+            setPreview("");
+            setHasNativeDraft(false);
+            draftNative.current = null;
+          }
+          setNotice(inserted
+            ? "Текст вставлен в активное поле OpenCode. Отправку нажимаете вы."
+            : "Текст сохранён и скопирован. Проверьте его, вернитесь в поле и нажмите Ctrl+Alt+Space для вставки.");
+          setStatus("idle");
+        } catch (e) { fail(String(e)); }
+        return;
+      }
       draftDestination.current = settings.target === "auto" ? { ...settings } : null;
       draftTab.current = recordingTab.current;
       setPreview((previous) =>
         settings.target === "web" && previous ? `${previous}\n${text}` : text,
       );
+      if (!settings.autoInsert) {
+        setNotice("Автовставка выключена. Проверьте текст и нажмите кнопку вставки.");
+        setStatus("idle");
+        return;
+      }
       if (settings.target === "auto") {
         try {
           if (!recordingTab.current) throw new Error("Исходная вкладка не определена. Текст сохранён.");
@@ -292,21 +356,32 @@ export function App() {
     }
   };
 
-  const onSend = async () => {
+  const onSend = async (nativeTarget: InputTarget | null = null) => {
     // Retrying a recording must keep its original server and session.
     const target = draftDestination.current ?? settings;
     if (
       operation.current ||
       !preview.trim() ||
-      (target.target === "web" && target.sessionId === "") ||
-      (target.target === "auto" && !draftTab.current)
+      (!hasNativeDraft && target.target === "web" && target.sessionId === "") ||
+      (!hasNativeDraft && target.target === "auto" && !draftTab.current)
     )
       return;
     operation.current = true;
     setSending(true);
     setError(null);
     try {
-      if (target.target === "auto" && draftTab.current) {
+      if (hasNativeDraft) {
+        const destination = draftNative.current ?? nativeTarget;
+        if (!destination) throw new Error("Вернитесь в поле ввода OpenCode и нажмите Ctrl+Alt+Space либо вставьте текст через Ctrl+V.");
+        draftNative.current = destination;
+        try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ text: preview, target: destination })); } catch { /* Keep the in-memory draft. */ }
+        const inserted = await pasteVoiceText(destination, preview);
+        if (!inserted) throw new Error("Вставьте текст через Ctrl+V.");
+        setPreview("");
+        setHasNativeDraft(false);
+        draftNative.current = null;
+        setNotice("Текст вставлен. Отправку нажимаете вы.");
+      } else if (target.target === "auto" && draftTab.current) {
         await insertInBrowser({ ...target, port: target.browserPort }, draftTab.current, preview);
         setNotice("Текст вставлен в исходную вкладку. Отправьте его из OpenCode.");
         setPreview("");
@@ -365,6 +440,18 @@ export function App() {
     }
   };
 
+  onHotkey.current = target => {
+    if (showSettings) return;
+    switch (hotkeyAction(status, operation.current, hasNativeDraft && !!preview.trim())) {
+      case "stop": void onStop(); break;
+      case "retry": void onSend(target); break;
+      case "start":
+        if (settings.nativeInput && !target) { fail("Поставьте курсор в поле ввода OpenCode и нажмите Ctrl+Alt+Space."); return; }
+        void onRecord(target);
+        break;
+    }
+  };
+
   if (showSettings) {
     return (
       <SettingsView
@@ -397,7 +484,7 @@ export function App() {
       <WindowHeader busy={busy} />
       <div className="toolbar">
         <span className="target-tag">
-          {settings.target === "auto" ? "Открытая вкладка" : settings.target === "web" ? "Web-сессия" : "Промпт OpenCode"}
+          {settings.nativeInput ? "OpenCode 2 · TUI / Desktop / Web" : settings.target === "auto" ? "Открытая вкладка" : settings.target === "web" ? "Web-сессия" : "Промпт OpenCode"}
         </span>
         <button
           className="icon-button"
@@ -420,6 +507,20 @@ export function App() {
           </svg>
         </button>
       </div>
+      {settings.nativeInput && <p className="notice" role="status">
+        {hotkeyReady ? `${VOICE_HOTKEY} — начать / остановить. Сначала поставьте курсор в нужное поле ввода.` : hotkeyError ? "Глобальный хоткей недоступен. Подробности ниже." : "Подключаем глобальный хоткей…"}
+      </p>}
+      <label className="auto-insert-toggle">
+        <span>Автовставка в поле сессии</span>
+        <input type="checkbox" role="switch" checked={settings.autoInsert} disabled={busy}
+          onChange={event => {
+            const next = { ...settings, autoInsert: event.target.checked };
+            setSettings(next);
+            try { localStorage.setItem("voice-overlay-settings:v1", JSON.stringify(next)); }
+            catch { setNotice("Не удалось сохранить настройку автовставки."); }
+          }} />
+      </label>
+      {hotkeyError && <p className="error-card" role="alert">{hotkeyError}</p>}
       {settings.target === "auto" && (
         <p className="notice" role="status">
           {detectedSession
@@ -575,12 +676,14 @@ export function App() {
                 setPreview("");
                 draftDestination.current = null;
                 draftTab.current = null;
+                draftNative.current = null;
+                setHasNativeDraft(false);
                 setNotice(null);
               }}
             >
               Удалить
             </button>
-            <button
+            {!hasNativeDraft && <button
               type="button"
               disabled={
                 !canSend ||
@@ -594,8 +697,9 @@ export function App() {
                 : (draftDestination.current ?? settings).target === "web"
                 ? "Отправить в сессию"
                 : "Повторить вставку в TUI"}
-            </button>
+            </button>}
           </div>
+          {hasNativeDraft && <p className="field-note">Вернитесь в исходное поле и нажмите Ctrl+Alt+Space для вставки сохранённого текста.</p>}
         </section>
       )}
       {notice !== null && (
@@ -615,7 +719,7 @@ export function App() {
         </div>
       )}
       <footer className="overlay-footer">
-        {settings.target === "auto" ? "Текст вставится в открытую вкладку. Отправку нажимаете вы."
+        {settings.nativeInput ? "Обычная вставка через буфер обмена. Без отправки и без порта сервера." : settings.target === "auto" ? "Текст вставится в открытую вкладку. Отправку нажимаете вы."
           : settings.postTranscriptionAction === "insert-and-submit"
           ? "Вставка и отправка после распознавания"
           : settings.target === "tui"

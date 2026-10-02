@@ -2,6 +2,35 @@ import path from "node:path"
 import { createReadStream } from "node:fs"
 import { chmod, copyFile, mkdir, open, readFile, readdir, mkdtemp, rename, rm } from "node:fs/promises"
 import { createHash } from "node:crypto"
+import { spawn } from "node:child_process"
+
+/** Launch the GUI by its absolute path, without PATH lookup or a Windows shell. */
+export async function launchVoiceOverlay(binary: string, spawnProcess: typeof spawn = spawn): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawnProcess(binary, [], {
+      cwd: path.dirname(binary), detached: true, stdio: ["ignore", "ignore", "pipe"], windowsHide: true, shell: false,
+    })
+    let startup: ReturnType<typeof setTimeout> | undefined
+    let detail = ""
+    child.stderr?.on("data", (chunk: Buffer) => { detail = (detail + chunk.toString()).slice(-4096) })
+    const finish = (error?: Error) => {
+      clearTimeout(startup)
+      child.stderr?.destroy()
+      child.unref()
+      if (error) reject(error)
+      else resolve()
+    }
+    child.once("error", (error) => finish(new Error(`Cannot launch voice-overlay: ${error.message}`)))
+    child.once("exit", (code, signal) => {
+      if (code === 0) finish()
+      else finish(new Error(`Cannot launch voice-overlay: exited with ${code ?? signal}. ${detail.trim()}`))
+    })
+    child.once("spawn", () => {
+      // A successful OS spawn can still be followed by a Tauri startup failure.
+      startup = setTimeout(() => finish(), 1000)
+    })
+  })
+}
 
 const SCOPE = "@oeronteros-1/voice-overlay"
 

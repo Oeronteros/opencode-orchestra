@@ -17,6 +17,7 @@ test("built CLI prints help", () => {
   assert.match(result.stdout, /OpenCode Orchestra/)
   assert.match(result.stdout, /completion\s+Print shell completion/)
   assert.match(result.stdout, /web\s+OpenCode web with an inline offline microphone/)
+  assert.match(result.stdout, /voice-overlay\s+Launch the floating offline voice window/)
   assert.match(result.stdout, /--no-github\s+Do not configure GitHub MCP/)
 })
 
@@ -24,6 +25,16 @@ test("built CLI rejects an unknown command", () => {
   const result = runCli("not-a-command")
   assert.equal(result.status, 1)
   assert.match(result.stderr, /Unknown command: not-a-command/)
+})
+
+test("voice-overlay help and invalid options do not start installation", () => {
+  const help = runCli("voice-overlay", "--help")
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /voice-overlay\s+Launch/)
+  const invalid = runCli("voice-overlay", "--unknown")
+  assert.equal(invalid.status, 1)
+  assert.match(invalid.stderr, /voice-overlay does not accept arguments/)
+  assert.doesNotMatch(invalid.stdout, /Preparing voice-overlay/)
 })
 
 test("built CLI emits zsh completion", () => {

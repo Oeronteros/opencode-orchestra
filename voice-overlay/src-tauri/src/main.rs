@@ -4,6 +4,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::{watch, Mutex};
 mod browser_bridge;
+mod native_input;
 mod sidecars;
 pub use sidecars::sidecar_file;
 
@@ -734,6 +735,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            native_input::enable_voice_hotkey,
+            native_input::paste_voice_text,
             browser_bridge::browser_target,
             browser_bridge::insert_in_browser,
             health_check,

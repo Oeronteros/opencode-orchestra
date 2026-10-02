@@ -58,8 +58,29 @@ const fallbackChainSchema = z
   .max(5)
   .refine((models) => new Set(models).size === models.length, "Fallback models must be unique")
 
+export const browserProfileNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)
+  .refine((name) => !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(name), "Reserved profile name")
+export const browserConfigSchema = z.object({
+  // Omitted on an existing installation means off. The installer explicitly proposes auto.
+  mode: z.enum(["off", "playwright", "devtools", "auto"]).default("off"),
+  profile: browserProfileNameSchema.default("default"),
+  profiles: z.array(browserProfileNameSchema).min(1).default(["default"]),
+  sharedProfiles: z.array(browserProfileNameSchema).default([]),
+  executable: z.string().min(1).optional(),
+  nodeExecutable: z.string().min(1).optional(),
+  headless: z.boolean().default(false),
+  startupTimeoutMs: z.number().int().min(1000).max(120000).default(20000),
+  operationTimeoutMs: z.number().int().min(1000).max(300000).default(60000),
+  maxOutputChars: z.number().int().min(1000).max(100000).default(16000),
+  artifactRetentionHours: z.number().int().min(1).max(168).default(24),
+}).refine((config) => config.profiles.includes(config.profile), "Selected profile must be listed in profiles")
+  .refine((config) => config.sharedProfiles.every((name) => config.profiles.includes(name)), "Shared profiles must be listed in profiles")
+
+export type BrowserConfig = z.infer<typeof browserConfigSchema>
+
 export const orchestraConfigSchema = z.object({
   $schema: z.string().optional(),
+  browser: browserConfigSchema.prefault({}),
   budget: budgetModeSchema.default("balanced"),
   models: z
     .object({

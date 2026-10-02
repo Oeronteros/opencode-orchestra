@@ -1,6 +1,5 @@
+import { configuredMcpStatuses, mcpPresence, type McpStatuses } from "./mcp/status.js"
 import { readFile } from "node:fs/promises"
-import path from "node:path"
-import { parse } from "jsonc-parser"
 import { openCodeConfigDirectory } from "./config/paths.js"
 
 export const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
@@ -39,71 +38,24 @@ export interface PluginStatus {
   discoveredModels: number
   configSource: string
   mcp: Record<string, boolean>
+  mcpStatuses?: McpStatuses
+  refreshMcp?: () => Promise<void>
+  browserStatus?: () => Promise<import("./browser/runtime.js").BrowserStatus>
 }
 
-async function readTextOr(file: string, fallback: string): Promise<string> {
-  try {
-    return await readFile(file, "utf8")
-  } catch {
-    return fallback
-  }
-}
-
-async function findMainConfig(configDirectory: string): Promise<string> {
-  for (const name of ["opencode.jsonc", "opencode.json"]) {
-    const candidate = path.join(configDirectory, name)
-    try {
-      await readFile(candidate, "utf8")
-      return candidate
-    } catch {
-      // Try the next name.
-    }
-  }
-  return path.join(configDirectory, "opencode.json")
-}
-
-function parseJsonc(text: string): Record<string, unknown> {
-  const value = parse(text, [], { allowTrailingComma: true, disallowComments: false })
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {}
-}
-
-/**
- * Detect which companion MCPs are configured in the OpenCode main config.
- * Mirrors the dashboard's `mcpStatus` helper without importing the HTTP server.
- */
 export async function detectMcpPresence(configDirectory: string = openCodeConfigDirectory()): Promise<Record<string, boolean>> {
-  const root = parseJsonc(await readTextOr(await findMainConfig(configDirectory), "{}"))
-  const outer = typeof root.mcp === "object" && root.mcp !== null && !Array.isArray(root.mcp)
-    ? (root.mcp as Record<string, unknown>)
-    : {}
-  const mcp = typeof outer.servers === "object" && outer.servers !== null && !Array.isArray(outer.servers)
-    ? { ...outer, ...(outer.servers as Record<string, unknown>) }
-    : outer
-  const enabled = (name: string) => {
-    const entry = mcp[name]
-    return typeof entry === "object" && entry !== null && !Array.isArray(entry)
-      ? (entry as Record<string, unknown>).enabled !== false && (entry as Record<string, unknown>).disabled !== true
-      : entry !== undefined
-  }
-  return {
-    context7: enabled("context7"),
-    codebaseMemory: enabled("codebase-memory"),
-    memoryGraph: enabled("memorygraph"),
-    playwright: enabled("playwright"),
-    git: enabled("git"),
-    astGrep: enabled("ast-grep"),
-  }
+  return mcpPresence(await configuredMcpStatuses(configDirectory))
 }
 
 /**
  * Format the plugin status snapshot as a stable, human-readable report.
  */
 export async function formatPluginStatus(status: PluginStatus): Promise<string> {
+  await status.refreshMcp?.()
+  const browser = await status.browserStatus?.()
   const mcp = Object.entries({ ...status.mcp })
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, present]) => `  ${name.padEnd(24)} ${present ? "configured and enabled" : "disabled or not configured"}`)
+    .map(([name, present]) => `  ${name.padEnd(24)} ${status.mcpStatuses?.[name]?.state ?? (present ? "configured; connection unverified" : "disabled or not configured")}`)
     .join("\n")
   return [
     "OpenCode Orchestra plugin status",
@@ -114,6 +66,7 @@ export async function formatPluginStatus(status: PluginStatus): Promise<string> 
     `configured models: ${status.configuredModels}`,
     `discovered models: ${status.discoveredModels}`,
     `config source: ${status.configSource}`,
+    ...(browser ? [`browser: ${JSON.stringify(browser)}`] : []),
     "",
     "MCP servers:",
     mcp || "  none detected",

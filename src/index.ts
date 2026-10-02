@@ -1,3 +1,4 @@
+import { configuredMcpStatuses, mcpEntries, mcpPresence, persistMcpStatuses, statusesFromEntries } from "./mcp/status.js"
 import { statSync } from "node:fs"
 import path from "node:path"
 import { tool, type Config, type Plugin } from "@opencode-ai/plugin"
@@ -30,6 +31,10 @@ import { loopPrompt, resolveLoopGoal } from "./loop/protocol.js"
 import { setupV2 } from "./v2.js"
 import { connectGithub, githubTokenInOpenCode } from "./github/connect.js"
 import { Plugin as V2Plugin } from "@opencode/plugin"
+import { BrowserRuntime } from "./browser/runtime.js"
+import { browserHost } from "./browser/v2.js"
+import { browserTool } from "./browser/policy.js"
+import { persistBrowserStatus } from "./browser/diagnostics.js"
 
 type MutableConfig = Omit<Config, "agent" | "command"> & {
   agent?: Record<string, RuntimeAgentConfig>
@@ -168,8 +173,15 @@ const MCP_TOOL_PREFIXES: Array<[prefix: string, server: string]> = [
   ["ast_grep_", "astGrep"],
   ["memorygraph_", "memoryGraph"],
   ["playwright_", "playwright"],
+  ["chrome-devtools_", "devtools"],
+  ["chrome_devtools_", "devtools"],
+  ["orchestra-browser-playwright_", "playwright"],
+  ["orchestra-browser-devtools_", "devtools"],
+  ["orchestra_browser_playwright_", "playwright"],
+  ["orchestra_browser_devtools_", "devtools"],
   ["context7_", "context7"],
   ["git_", "git"],
+  ["github_", "github"],
 ]
 
 export function mcpServerForTool(tool: string): string | undefined {
@@ -418,6 +430,9 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       ...(modelID ? { modelID } : {}),
     }, pricingConfig())
   const ledger = new Ledger(directory, orchestra.telemetry.directory, orchestra.telemetry.enabled, pools, orchestra.telemetry.storeTexts, resolveModelPricing)
+  const browser = new BrowserRuntime(orchestra.browser, directory, coordinator, browserHost(client), async (call) => {
+    await ledger.recordMcpCall(call.rootSessionID, { server: call.backend, tool: call.tool, durationMs: call.durationMs, success: call.success, outputChars: call.outputChars, agent: call.agent, nodeID: call.nodeID, backend: call.backend })
+  })
   const mcpCalls = new Map<string, { sessionID: string; tool: string; server: string; startedAt: number; retry: boolean }>()
   const completedMcpCalls = new Set<string>()
   const pendingMcpFailures = new Set<string>()
@@ -511,7 +526,37 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     discoveredModels: discovered.length,
     configSource: loaded.source ?? "plugin options/defaults",
     mcp: await detectMcpPresence(),
+    browserStatus: () => browser.status(),
   }
+
+  const mcpClient = client as unknown as {
+    config?: { get: (input: { query: { directory: string } }) => Promise<{ data?: Record<string, unknown> }> }
+    mcp?: { status: (input: { query: { directory: string } }) => Promise<{ data?: Record<string, unknown> }> }
+  }
+  let mcpRefresh: Promise<void> | undefined
+  pluginStatus.refreshMcp = () => mcpRefresh ??= (async () => {
+    let statuses = await configuredMcpStatuses(openCodeConfigDirectory(), directory)
+    try {
+      const [configResult, runtimeResult] = await Promise.allSettled([
+        mcpClient.config?.get({ query: { directory } }),
+        mcpClient.mcp?.status({ query: { directory } }),
+      ])
+      const effective = configResult.status === "fulfilled" ? configResult.value : undefined
+      const runtime = runtimeResult.status === "fulfilled" ? runtimeResult.value : undefined
+      if (effective?.data) statuses = statusesFromEntries(mcpEntries(effective.data), runtime?.data)
+      else if (runtime?.data) {
+        const entries = Object.fromEntries(Object.values(statuses).filter((s) => s.state !== "missing").map((s) => [s.name, { enabled: s.state !== "disabled" }]))
+        statuses = statusesFromEntries(entries, runtime.data)
+      }
+    } catch { /* Runtime API unavailable: leave connections unverified. */ }
+    pluginStatus.mcpStatuses = statuses
+    pluginStatus.mcp = mcpPresence(statuses)
+    await persistMcpStatuses(path.resolve(directory, orchestra.telemetry.directory, "mcp-status.json"), statuses).catch(() => undefined)
+    await persistBrowserStatus(path.resolve(directory, orchestra.telemetry.directory, "browser-status.json"), await browser.status()).catch(() => undefined)
+  })().finally(() => { mcpRefresh = undefined })
+  await pluginStatus.refreshMcp()
+  const mcpTimer = setInterval(() => { void pluginStatus.refreshMcp?.().catch(() => undefined) }, 10_000)
+  mcpTimer.unref()
 
   streamLog = (sessionID, message, extra) =>
     client.app
@@ -603,7 +648,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         get snapshot() { return priceRefresher.snapshot },
         ...(pricingAliases.length ? { aliases: pricingAliases } : {}),
         ...(openRouter ? { openRouter } : {}),
-      }, { client, agents, directory, coordinator }),
+      }, { client, agents, directory, coordinator, browser }),
       orchestra_github_connect: tool({
         description: "Connect GitHub MCP using GitHub CLI credentials or a token already in the environment. Never returns the token.",
         args: {},
@@ -620,6 +665,8 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (await autoAcceptLive() && output.status !== "deny") output.status = "allow"
     },
     dispose: async () => {
+      await browser.dispose().catch(() => undefined)
+      clearInterval(mcpTimer)
       actionInbox.stop()
       loop.dispose()
       loopInputs.clear()
@@ -702,6 +749,12 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
         throw new Error("Native task is disabled for Orchestra nodes because it cannot guarantee an isolated worktree or lifecycle accounting. Use orchestra_dispatch with the sealed nodeId and TaskContract.")
       }
       const server = mcpServerForTool(tool)
+      const browserCall = browserTool(tool)
+      if (browserCall) {
+        if (!browserCall.managed) throw new Error("browser_user_server_not_managed")
+        // Managed executor wrappers record attribution once, including bypass attempts.
+        return
+      }
       if (!server) return
       const failureKey = `${sessionID}:${tool}`
       mcpCalls.set(callID, { sessionID, tool, server, startedAt: Date.now(), retry: pendingMcpFailures.has(failureKey) })
@@ -729,7 +782,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       if (eventRecord.type === "session.error" || eventRecord.type === "session.idle") {
         const sessionID = eventRecord.properties?.sessionID
         if (sessionID && eventRecord.type === "session.idle" && loop.get(sessionID)) { loopIdle.add(sessionID); setTimeout(() => { void loop.tick(sessionID) }, 0) }
-        if (sessionID && eventRecord.type === "session.error") { loopInputs.delete(sessionID); loop.stop(sessionID, "failed", "Session error or cancellation") }
+        if (sessionID && eventRecord.type === "session.error") { browser.releaseSession(sessionID); loopInputs.delete(sessionID); loop.stop(sessionID, "failed", "Session error or cancellation") }
         // The session can no longer be mid-generation: finalize any live rows
         // whose completing message.updated never arrived (abort / pre-token
         // error), or they linger as phantom agents on the live panel.

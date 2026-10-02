@@ -2881,3 +2881,5 @@ html.light .export-close:hover { color: var(--text-primary); }
     transform: none;
   }
 }
+
+.status-dot.unknown { background: var(--text-muted); opacity: 0.6; box-shadow: none; }
