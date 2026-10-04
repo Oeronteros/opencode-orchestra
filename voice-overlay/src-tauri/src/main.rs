@@ -420,7 +420,18 @@ pub fn allowed_model_file(model: &str) -> Result<String, String> {
     match model {
         "base" => Ok("ggml-base.bin".to_string()),
         "small" => Ok("ggml-small.bin".to_string()),
-        _ => Err("transcribe-failed: неизвестная модель. Выбери base или small.".to_string()),
+        "large-v3-turbo-q5_0" => Ok("ggml-large-v3-turbo-q5_0.bin".to_string()),
+        _ => Err(
+            "transcribe-failed: неизвестная модель. Выбери base, small или large-v3-turbo-q5_0."
+                .to_string(),
+        ),
+    }
+}
+
+pub fn allowed_language(language: &str) -> Result<&str, String> {
+    match language {
+        "ru" | "en" | "zh" | "auto" => Ok(language),
+        _ => Err("transcribe-failed: неизвестный язык. Выбери ru, en, zh или auto.".to_string()),
     }
 }
 
@@ -433,7 +444,10 @@ fn model_path(app: &AppHandle, model: &str) -> Result<PathBuf, String> {
         .join("models")
         .join(&file);
     if !model_path.is_file() {
-        return Err(format!("model-missing: нет {}. Для base запусти opencode-orchestra install; для small см. инструкцию в voice-overlay/README.md.", model_path.display()));
+        return Err(format!(
+            "model-missing: нет {}. Запусти opencode-orchestra voice-model {model}.",
+            model_path.display()
+        ));
     }
     Ok(model_path)
 }
@@ -454,7 +468,9 @@ async fn transcribe(
     state: State<'_, AppState>,
     wav: String,
     model: String,
+    language: Option<String>,
 ) -> Result<String, String> {
+    let language = allowed_language(language.as_deref().unwrap_or("ru"))?;
     let mut slot = state.transcription.lock().await;
     if slot.is_some() {
         return Err("busy: распознавание уже выполняется".to_string());
@@ -472,7 +488,7 @@ async fn transcribe(
     let (sender, receiver) = watch::channel(false);
     *slot = Some(sender);
     drop(slot);
-    let result = transcribe_file(&app, &wav, &model, receiver).await;
+    let result = transcribe_file(&app, &wav, &model, language, receiver).await;
     // The process has exited before TempDir removes WAV, stderr and transcript.
     drop(folder);
     *state.transcription.lock().await = None;
@@ -483,6 +499,7 @@ async fn transcribe_file(
     app: &AppHandle,
     wav: &str,
     model: &str,
+    language: &str,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<String, String> {
     let model_path = model_path(app, model)?;
@@ -492,7 +509,7 @@ async fn transcribe_file(
         "-m".to_string(),
         model_path.to_string_lossy().into_owned(),
         "-l".to_string(),
-        "ru".to_string(),
+        language.to_string(),
         "-f".to_string(),
         wav.to_string(),
         "-otxt".to_string(),
@@ -717,6 +734,29 @@ async fn send_to_session(
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if let Some(action) = std::env::args().nth(1) {
+        let result = match action.as_str() {
+            "--toggle" => Some(
+                tauri::async_runtime::block_on(native_input::wayland_input::toggle_existing())
+                    .map(|_| String::new()),
+            ),
+            "--install-gnome-extension" => {
+                Some(native_input::wayland_input::install_gnome_extension())
+            }
+            _ => None,
+        };
+        if let Some(result) = result {
+            match result {
+                Ok(message) => println!("{message}"),
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+    }
     // This small overlay needs no DMA-BUF acceleration. Avoid broken GPU paths
     // on WSL/VMs, while honoring an explicit user override. Set before threads.
     #[cfg(target_os = "linux")]
@@ -991,6 +1031,20 @@ mod tests {
         );
         assert!(allowed_model_file("../../etc/passwd").is_err());
         assert!(allowed_model_file("large").is_err());
+        assert_eq!(
+            allowed_model_file("large-v3-turbo-q5_0"),
+            Ok("ggml-large-v3-turbo-q5_0.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn speech_language_allowlist_supports_multilingual_dictation() {
+        for language in ["ru", "en", "zh", "auto"] {
+            assert_eq!(allowed_language(language), Ok(language));
+        }
+        for language in ["", "fr", "--translate", "../../secret"] {
+            assert!(allowed_language(language).is_err());
+        }
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ServerConfig, SessionRef } from "./lib/opencode";
 import {
   normalizeOverlaySettings,
+  createVoicePolicy,
   type VoicePreferences,
 } from "../../src/voice-context";
 import { WindowHeader } from "./WindowHeader";
@@ -76,8 +77,13 @@ export function SettingsView(props: {
               set({ model: e.target.value as VoicePreferences["model"] })
             }
           >
-            <option value="base">base — быстрая (~140 МБ)</option>
-            <option value="small">small — точнее (~460 МБ)</option>
+            {createVoicePolicy().models.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </label>
+        <label>
+          Язык речи
+          <select value={draft.language} onChange={e => set({ language: e.target.value as VoicePreferences["language"] })}>
+            {createVoicePolicy().languages.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
           </select>
         </label>
         <label>

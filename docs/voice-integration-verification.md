@@ -147,7 +147,34 @@ and browser support for native `execCommand('insertText')` editing.
 TUI's append endpoint addresses the active server input and cannot prove a specific
 terminal session remained active. The existing mechanism is retained as requested.
 `/voice` does not imply a new public/LAN listener; phone access requires an appropriate
-secure tunnel and browser secure context. Small-model download remains manual.
+secure tunnel and browser secure context. Additional models are installed explicitly with `voice-model`.
 
 Next release gate: real microphone E2E on the supported OpenCode version and native
 Windows packaging, with repeated session navigation and an agent already running.
+
+## Multilingual Turbo verification — 2026-10-04, Windows
+
+- Added multilingual `large-v3-turbo-q5_0` beside `base` and `small`. All three models accept `ru`, `en`, `zh` and `auto` in the overlay/native shortcut, TUI server compatibility, external TUI editor, inline browser microphone and `/voice`.
+- Overlay/web settings persist the language; legacy settings keep `ru`. Browser and external-recorder jobs retain their start-time model/language. The TUI editor reads `ORCHESTRA_VOICE_MODEL` and `ORCHESTRA_VOICE_LANGUAGE`.
+- `voice-model <name>` installs just the requested model, validates its allowlisted filename and verifies SHA-256 before replacing an existing file. Turbo was installed locally (574,041,195 bytes, SHA-256 `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`). Installer tests cover reuse, corrupt replacement and preserving the existing base model.
+- Root typecheck/plugin build and overlay typecheck/frontend build passed. Focused voice/CLI/diagnostics tests: 74 passed. Overlay tests: 27 passed. Rust tests: 26 passed, 2 interactive/native tests ignored.
+- Windows GNU builds used the cached Rust toolchain with `RUSTFLAGS=-C link-self-contained=yes` and `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER` pointing to its `rust-lld.exe`. The default clang wrapper crashed the Tauri build script. Local Windows sidecar inputs were copied from the installed ffmpeg/Whisper under the GNU target filenames for Tauri's build-time checks. No toolchain/source dependencies were changed.
+- Rust loopback tests passed with process-local `NO_PROXY=localhost,127.0.0.1,::1` and cleared proxy variables; the machine proxy prevented those fixtures from receiving requests on the first run. System proxy settings were unchanged.
+- The actual overlay frontend was checked in the in-app browser: all language options were present and selecting Turbo/Chinese survived Save and Reload. Tauri APIs are unavailable in that browser preview; this UI check does not exercise the microphone or global shortcut.
+- Actual installed Whisper/Turbo completed `transcribeWebAudio` on Russian and English speech synthesized locally by Windows SAPI, and on the first eight seconds of a public Chinese [sherpa-onnx test recording](https://github.com/k2-fsa/sherpa-onnx/blob/master/sherpa-onnx/csrc/sherpa-onnx-offline-speaker-diarization.cc). The Chinese output stayed Chinese; explicit `ru`/`en` stayed in their source languages; `auto` detected the English recording. These are functionality probes, not comparative accuracy measurements.
+- The external TUI recorder transcribed the prepared English WAV with Turbo/en even after its environment was changed to base/ru during recording, verifying its snapshot behavior without microphone access.
+- The Windows binary was built, stripped, installed beside the existing sidecars with its required x64 WebView2 loader, and checked for startup (alive after five seconds, later closed normally with exit 0). The previous executable is backed up in `.cache/voice-multilingual-build/voice-overlay.previous.exe`. The local optional npm companion was updated to the same binary; no npm release or installer package was published.
+
+Remaining gate: live microphone dictation and native insertion into the supported OpenCode clients, plus mixed-language/short-recording accuracy checks. No real microphone or user session was used by these probes.
+
+## Wayland implementation — 2026-10-04, checked from Windows
+
+- Native dispatch now selects a separate Wayland backend rather than rejecting the session or using XWayland. X11 and Windows retain their native paths.
+- GNOME integration is embedded in the Linux binary and installed with `voice-overlay --install-gnome-extension`. It provides the shortcut, native focus identity, clipboard and virtual keyboard. Only the overlay's D-Bus name owner can invoke clipboard writes/paste. The extension checks focus after modifier release and releases injected keys after failures.
+- Plasma uses GlobalShortcuts and RemoteDesktop portals, plus kdotool for an atomic native window snapshot. Clipboard portal transfers preserve UTF-8; older desktops fall back to wl-copy. A closed/revoked keyboard session is detected and recreated on retry. No screen capture is requested.
+- Sway/Hyprland use compositor IPC, wl-copy and wtype. `voice-overlay --toggle` lets the desktop's own keybinding invoke the already running overlay if GlobalShortcuts is missing. No additional TCP listener is introduced. Native terminal paste uses Ctrl+Shift+V; other clients use Ctrl+V, never Enter.
+- Validation: root and overlay typechecks, plugin and overlay frontend builds passed. Overlay tests: 35 passed (including eight executable GNOME extension tests with mocked GNOME APIs). Windows Rust tests: 29 passed, two interactive tests ignored. `cargo clippy --locked --manifest-path voice-overlay/linux/check/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets -- -D warnings` passed; this cross-check compiles the actual Linux source files and tests without GTK/WebKit.
+- Added `voice-linux-input` CI with dedicated Xvfb and D-Bus fixtures. The GNOME D-Bus contract smoke is compiled locally but **not executed** here. The workflow has not been dispatched or observed running.
+- Setup and per-desktop dependencies: `voice-overlay/linux/README.md`. These source changes are not an npm release, an installed Linux integration, or a completed Linux bundle build.
+
+Remaining gate: build/package on Linux and real Wayland tests in GNOME, Plasma, Sway and Hyprland, including user grants, permission revocation, focus/tab changes, TUI/Desktop/browser insertion and live microphone dictation. This Windows host has no installed WSL distribution; no Linux desktop was changed by this work. Wayland window identity cannot identify a different field within the same application window; keep the original input focused during transcription.

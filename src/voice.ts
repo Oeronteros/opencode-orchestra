@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs"
 import { chmod, copyFile, mkdir, open, readFile, readdir, mkdtemp, rename, rm } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
+import { createVoicePolicy, type VoiceModel } from "./voice-context.js"
 
 /** Launch the GUI by its absolute path, without PATH lookup or a Windows shell. */
 export async function launchVoiceOverlay(binary: string, spawnProcess: typeof spawn = spawn): Promise<void> {
@@ -41,6 +42,13 @@ export const VOICE_MODEL_FILE = "ggml-base.bin"
 // Hugging Face LFS SHA-256 for ggml-base.bin (verified 2026-09-16).
 export const VOICE_MODEL_SHA256 = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
 
+// Multilingual model LFS SHA-256 values verified against Hugging Face on 2026-10-04.
+export const VOICE_MODEL_SHA256S: Record<VoiceModel, string> = {
+  base: VOICE_MODEL_SHA256,
+  small: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+  "large-v3-turbo-q5_0": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+}
+
 async function sha256File(file: string): Promise<string | null> {
   const hash = createHash("sha256")
   try {
@@ -54,19 +62,21 @@ async function sha256File(file: string): Promise<string | null> {
 
 /** Keep the installed model intact until a complete, verified download is ready. */
 export async function ensureVerifiedVoiceModel(dir: string, options: {
-  url?: string; sha256?: string; fetch?: typeof fetch
+  model?: VoiceModel; url?: string; sha256?: string; fetch?: typeof fetch
 } = {}): Promise<void> {
-  const target = path.join(dir, VOICE_MODEL_FILE)
-  const digest = options.sha256 ?? VOICE_MODEL_SHA256
+  const model = createVoicePolicy().model(options.model ?? "base")
+  const filename = createVoicePolicy().modelFile(model)
+  const target = path.join(dir, filename)
+  const digest = options.sha256 ?? VOICE_MODEL_SHA256S[model]
   if (await sha256File(target) === digest) return
-  const response = await (options.fetch ?? fetch)(options.url ?? VOICE_MODEL_URL, {
+  const response = await (options.fetch ?? fetch)(options.url ?? `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${filename}`, {
     redirect: "follow", signal: AbortSignal.timeout(600_000),
   })
   if (!response.ok) throw new Error(`Failed to download voice model: HTTP ${response.status}`)
   await mkdir(dir, { recursive: true })
   const staging = await mkdtemp(path.join(dir, ".download-"))
   try {
-    const downloaded = path.join(staging, VOICE_MODEL_FILE)
+    const downloaded = path.join(staging, filename)
     if (response.body === null) throw new Error("Voice model download returned an empty body.")
     const hash = createHash("sha256")
     const file = await open(downloaded, "wx")

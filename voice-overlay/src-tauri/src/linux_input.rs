@@ -7,6 +7,8 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+#[cfg(test)]
+use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{
     connection::Connection,
     protocol::{
@@ -15,7 +17,6 @@ use x11rb::{
         Event,
     },
     rust_connection::RustConnection,
-    wrapper::ConnectionExt as _,
 };
 
 static ENABLED: Mutex<bool> = Mutex::new(false);
@@ -265,17 +266,23 @@ fn clipboard(text: &str) -> Result<(), String> {
     }
 }
 
-fn terminal_class(class: &[u8]) -> bool {
+pub(crate) fn terminal_class(class: &[u8]) -> bool {
     String::from_utf8_lossy(class).split('\0').any(|part| {
         let part = part.to_ascii_lowercase();
         [
             "xterm",
             "uxterm",
             "gnome-terminal",
+            "gnome-terminal-server",
             "org.gnome.terminal",
             "konsole",
+            "org.kde.konsole",
+            "yakuake",
+            "org.kde.yakuake",
+            "guake",
             "xfce4-terminal",
             "alacritty",
+            "org.alacritty.alacritty",
             "kitty",
             "wezterm",
             "org.wezfurlong.wezterm",
@@ -291,6 +298,7 @@ fn terminal_class(class: &[u8]) -> bool {
             "com.mitchellh.ghostty",
             "org.gnome.ptyxis",
             "org.gnome.console",
+            "kgx",
         ]
         .contains(&part.as_str())
     })

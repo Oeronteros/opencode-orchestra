@@ -87,6 +87,22 @@ export function App() {
 
   useEffect(() => {
     let disposed = false;
+    let cleanup: (() => void) | undefined;
+    void listen<string>("voice-hotkey-error", event => {
+      setError(event.payload);
+      setStatus(current => current === "recording" || current === "transcribing" ? current : "error");
+    }).then(unlisten => { if (disposed) unlisten(); else cleanup = unlisten; }).catch(() => {});
+    return () => { disposed = true; cleanup?.(); };
+  }, []);
+
+  const reconnectHotkey = async () => {
+    setHotkeyError(null);
+    try { setHotkeyReady(await enableVoiceHotkey()); }
+    catch (e) { setHotkeyReady(false); setHotkeyError(String(e)); }
+  };
+
+  useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<InputTarget | null>("voice-hotkey", event => onHotkey.current(event.payload))
       .then(async cleanup => {
@@ -238,7 +254,7 @@ export function App() {
       let text: string;
       try {
         setRecognizing(true);
-        text = await transcribe(wav, settings.model);
+        text = await transcribe(wav, settings.model, settings.language);
       } catch (e) {
         if (String(e).startsWith("cancelled:")) {
           setNotice("Распознавание отменено. Предыдущий текст сохранён.");
@@ -441,6 +457,8 @@ export function App() {
   };
 
   onHotkey.current = target => {
+    setHotkeyReady(true);
+    setHotkeyError(null);
     if (showSettings) return;
     switch (hotkeyAction(status, operation.current, hasNativeDraft && !!preview.trim())) {
       case "stop": void onStop(); break;
@@ -520,7 +538,7 @@ export function App() {
             catch { setNotice("Не удалось сохранить настройку автовставки."); }
           }} />
       </label>
-      {hotkeyError && <p className="error-card" role="alert">{hotkeyError}</p>}
+      {hotkeyError && <p className="error-card" role="alert">{hotkeyError} <button type="button" disabled={busy} onClick={() => void reconnectHotkey()}>Повторить подключение</button></p>}
       {settings.target === "auto" && (
         <p className="notice" role="status">
           {detectedSession

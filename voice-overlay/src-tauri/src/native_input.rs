@@ -3,20 +3,23 @@ use tauri::AppHandle;
 #[cfg(target_os = "windows")]
 use tauri::Manager;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct InputTarget {
-    pub window: isize,
-    pub focus: isize,
-    pub process: u32,
-    pub title: String,
-}
+#[path = "input_target.rs"]
+mod input_target;
+pub use input_target::InputTarget;
 
 #[cfg(any(target_os = "linux", test))]
 #[path = "linux_input.rs"]
 mod linux;
 
+#[cfg(target_os = "linux")]
+#[path = "wayland_input.rs"]
+pub(crate) mod wayland_input;
+#[cfg(any(target_os = "linux", test))]
+#[path = "wayland_policy.rs"]
+mod wayland_policy;
+
 #[tauri::command]
-pub fn enable_voice_hotkey(app: AppHandle) -> Result<bool, String> {
+pub async fn enable_voice_hotkey(app: AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
         windows::enable(app)?;
@@ -25,6 +28,19 @@ pub fn enable_voice_hotkey(app: AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     {
         use tauri::Emitter;
+        if wayland_input::is_wayland() {
+            let errors = app.clone();
+            wayland_input::enable(
+                move |target| {
+                    let _ = app.emit("voice-hotkey", target);
+                },
+                move |message| {
+                    let _ = errors.emit("voice-hotkey-error", message);
+                },
+            )
+            .await?;
+            return Ok(true);
+        }
         linux::enable(move |target| {
             let _ = app.emit("voice-hotkey", target);
         })?;
@@ -58,6 +74,9 @@ pub async fn paste_voice_text(
     #[cfg(target_os = "linux")]
     {
         let _ = app;
+        if wayland_input::is_wayland() {
+            return wayland_input::paste(target, text).await;
+        }
         tauri::async_runtime::spawn_blocking(move || linux::paste(target, text))
             .await
             .map_err(|e| e.to_string())?
@@ -65,7 +84,7 @@ pub async fn paste_voice_text(
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = (app, target, text);
-        Err("Единый глобальный хоткей поддерживается на Windows и Linux X11.".into())
+        Err("Единый глобальный хоткей поддерживается на Windows и Linux.".into())
     }
 }
 

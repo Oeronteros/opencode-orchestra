@@ -37,6 +37,18 @@ test("voice-overlay help and invalid options do not start installation", () => {
   assert.doesNotMatch(invalid.stdout, /Preparing voice-overlay/)
 })
 
+test("voice-model help and invalid model names never start a download", () => {
+  const help = runCli("voice-model", "--help")
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /voice-model <name>/)
+  assert.match(help.stdout, /large-v3-turbo-q5_0/)
+  for (const args of [[], ["../../secret"], ["small", "extra"]]) {
+    const result = runCli("voice-model", ...args)
+    assert.equal(result.status, 1)
+    assert.doesNotMatch(result.stdout, /Installing voice model/)
+  }
+})
+
 test("built CLI emits zsh completion", () => {
   const result = runCli("completion", "zsh")
   assert.equal(result.status, 0)

@@ -1,7 +1,5 @@
 # OpenCode Orchestra
 
-Managed browser workflows (OpenCode V2 >=2.0.16, Node >=22.12): [persistent profiles, Playwright/DevTools routing, first login and permissions](docs/browser.md). New installs scaffold `browser.mode=auto`; existing configurations remain unchanged and default off. Browser Code Mode is currently disabled; live tests report skipped when Chrome is unavailable.
-
 [![npm version](https://img.shields.io/npm/v/@oeronteros-1/opencode-orchestra)](https://www.npmjs.com/package/@oeronteros-1/opencode-orchestra)
 [![license](https://img.shields.io/npm/l/@oeronteros-1/opencode-orchestra)](LICENSE)
 [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-4f46e5)](https://opencode.ai/docs/plugins/)
@@ -16,12 +14,13 @@ OpenCode Orchestra turns a complex request into a controlled multi-agent workflo
 - Automatic model discovery, budget modes, per-agent overrides, and fallback chains
 - Dependency-aware execution with hard concurrency, depth, and ownership limits
 - Optional isolated Git worktrees for parallel editors
+- Managed Chrome with persistent profiles, Playwright for UI workflows, and DevTools for diagnostics
 - Local dashboard for live activity, tokens, cost, models, agents, and MCP health
 - Diagnostics, MCP smoke tests, bounded autonomous loops, and offline voice input
 
 ## Quick start
 
-Requirements: [OpenCode v2](https://opencode.ai/), Bun 1.2 or newer, and a supported OpenCode model provider.
+Requirements: [OpenCode v2](https://opencode.ai/), Bun 1.2 or newer, Node.js 22.12 or newer, and a supported OpenCode model provider. Managed browsing additionally requires OpenCode 2.0.16 or newer and a separately installed Chrome.
 
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest install
@@ -41,7 +40,7 @@ Useful status commands:
 /orchestra-resume
 ```
 
-The installer is idempotent. It backs up the OpenCode configuration before changing it and preserves existing plugins and MCP entries unless `--force` is explicitly supplied.
+The installer is idempotent. It backs up the OpenCode configuration before changing it and preserves existing plugins and MCP entries. `--force` replaces companion MCP entries managed by the installer; existing browser MCP entries and `orchestra.jsonc` are preserved. New configurations enable managed browsing with `browser.mode: "auto"`; existing configurations without a browser section keep it off.
 
 ### OpenCode v2 support and migration
 
@@ -108,7 +107,7 @@ The default limits are eight workers, eight concurrent workers, and a delegation
 
 ### Resume after restart
 
-Orchestra stores the sealed plan, node states, dependency results, and validated Git commits locally in `.orchestra/orchestration/runs.json`. After a restart, active and queued nodes become pending and can be retried safely; completed nodes are not run again.
+Orchestra stores the sealed plan, node states, dependency results, and validated Git commits locally in `.orchestra/orchestration/runs.json`. After a restart, active and queued repository nodes become pending; completed nodes are not run again. Interrupted browser nodes become blocked and require site-state inspection before an explicit retry, so external mutations are not automatically repeated.
 
 ```text
 /orchestra-resume
@@ -186,10 +185,10 @@ The default installer configures the Orchestra plugin and attempts to provision 
 - the official Git MCP, restricted to the active repository
 - the [GitHub MCP server](https://github.com/github/github-mcp-server) for remote repositories, issues, and pull requests
 - ast-grep MCP for structural code search
-- Playwright MCP for browser inspection
+- pinned Playwright MCP and Chrome DevTools MCP packages for managed browsing
 - the local voice overlay and Whisper model on supported platforms
 
-Provisioning failures for optional companions do not prevent the core plugin from being configured. Dead local MCP commands are not written when provisioning fails.
+Provisioning failures for optional companions do not prevent the core plugin from being configured. Failed Codebase Memory or MemoryGraph provisioning does not write a dead local command. Git and ast-grep entries can still be configured after a failed warmup because `uvx` retries when they launch. Browser MCPs are package dependencies, registered lazily by the OpenCode v2 runtime; Chrome itself is not downloaded by the installer.
 
 To connect GitHub MCP once, install [GitHub CLI](https://cli.github.com/) and enter this command **inside OpenCode**:
 
@@ -209,6 +208,7 @@ Common installation options:
 --no-git
 --no-ast-grep
 --no-playwright
+--browser-mode MODE
 --no-superpowers
 --no-voice
 --no-deps
@@ -222,6 +222,41 @@ Inspect changes without writing files or downloading dependencies:
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest install --dry-run
 ```
+
+`--browser-mode` accepts `off`, `auto`, `playwright`, or `devtools` and only affects a newly created Orchestra configuration. `--no-playwright` scaffolds `off`; combine it with `--browser-mode devtools` for DevTools only. Combining it with `auto` or `playwright` is an error. `--no-deps` skips companion provisioning but does not remove the browser MCP dependencies from the npm package.
+
+## Managed browser
+
+Orchestra uses its own Chrome profiles without a browser extension. In `auto` mode, UI navigation and forms prefer Playwright; deep diagnostics and performance use Chrome DevTools. Both backends attach to the same managed browser. Ordinary documentation research continues to use web search, webfetch, and Context7.
+
+For an existing installation, add this to global or project `orchestra.jsonc` to enable browsing:
+
+```jsonc
+{
+  "browser": {
+    "mode": "auto",
+    "profile": "default",
+    "profiles": ["default", "work-account"],
+    "sharedProfiles": [],
+    "headless": false
+  }
+}
+```
+
+Restart OpenCode after editing the configuration. Run these commands from the project directory:
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest browser status --directory .
+bunx @oeronteros-1/opencode-orchestra@latest browser login --directory . --profile default
+bunx @oeronteros-1/opencode-orchestra@latest browser profiles --directory .
+bunx @oeronteros-1/opencode-orchestra@latest browser select --directory . --profile work-account
+```
+
+Sign in directly in the Chrome window opened by `browser login`, then close Chrome or press Ctrl+C before using that profile in OpenCode. Cookies and localStorage persist across browser restarts; sites may still expire authentication. Profiles are scoped to the repository, with Git worktrees sharing its identity. Account names must be listed in `browser.profiles`; cross-project sharing requires an explicit `sharedProfiles` entry. `browser select` writes a project override that takes effect after restarting OpenCode.
+
+Browser scenarios are serialized and require one page tab. Sealed task contracts limit origins and operations, and OpenCode permissions still apply. Existing user-managed browser MCPs block duplicate managed servers. Browser Code Mode is disabled. Missing Chrome or a busy profile produces a browser failure while repository orchestration remains available.
+
+Use `browser.executable` for an absolute Chrome path and `browser.nodeExecutable` for real Node when OpenCode runs under Bun. See [docs/browser.md](docs/browser.md) for profile storage, permissions, backend handoff, artifacts, and troubleshooting.
 
 ## Model routing
 
@@ -315,13 +350,15 @@ Bounded-loop state itself is in memory and is lost when OpenCode restarts. A non
 
 ## Voice input
 
-For OpenCode 2 on Windows and Linux X11, launch `bunx @oeronteros-1/opencode-orchestra@latest voice-overlay` once, then focus the prompt in TUI, Desktop or any browser. **Ctrl+Alt+Space** starts recording; press it again to stop, transcribe locally and paste through the system clipboard. Send the prompt manually. No fixed server port or web proxy is required for this shortcut. Keep the same window, tab and input focused while dictating. A changed window, title or native focus retains the text for retry with the same shortcut; unsent text survives an overlay restart. The overlay can be minimized while recording; its shortcut stays active. The Auto insert switch is on by default; turning it off keeps an editable result for explicit insertion with the same shortcut. Linux X11 requires xclip, EWMH and XTEST; terminals use Ctrl+Shift+V. Wayland retains the existing TUI/server and inline browser paths; the global native shortcut is not yet supported there.
+For OpenCode 2 on Windows and Linux, launch `bunx @oeronteros-1/opencode-orchestra@latest voice-overlay` once, then focus the prompt in TUI, Desktop or any browser. **Ctrl+Alt+Space** starts recording; press it again to stop, transcribe locally and paste through the system clipboard. Send the prompt manually. No fixed server port or web proxy is required for this shortcut. Keep the same window, tab and input focused while dictating. A changed window, title or native focus retains the text for retry with the same shortcut; unsent text survives an overlay restart. The overlay can be minimized while recording; its shortcut stays active. The Auto insert switch is on by default; turning it off keeps an editable result for explicit insertion with the same shortcut. Linux X11 requires xclip, EWMH and XTEST; terminals use Ctrl+Shift+V. The new Wayland backend supports GNOME through the bundled Shell extension, Plasma through portals and kdotool, and Sway/Hyprland through wl-clipboard, wtype and compositor IPC. It needs an updated Linux companion and [desktop setup](voice-overlay/linux/README.md); the source changes have not yet been published. When focus validation rejects a Wayland target, the editable text remains in the overlay.
 
 The standard installer provisions local ffmpeg and Whisper binaries for Linux x64 and Windows x64 and downloads the `ggml-base.bin` model. No audio is sent to a remote transcription service.
 
-For legacy **OpenCode 1.x** TUI sessions, run `opencode-orchestra voice-tui`. Press **Ctrl+X, then E** or run `/editor`, speak, and press the same shortcut again (or Enter). OpenCode restores the transcript to that session's draft without submitting it. `Ctrl+C` cancels recording and preserves the draft. The launcher sets `EDITOR` and `VISUAL` for that OpenCode process; no separate window or fixed port is needed. Run plain `opencode` when you want a regular text editor.
+All voice paths support Russian, English and Chinese with `base`, `small` or `large-v3-turbo-q5_0`. Install an additional model with `opencode-orchestra voice-model large-v3-turbo-q5_0` (about 547 MiB, verified with SHA-256), or substitute `small`. Select the model and speech language in the overlay or inline web microphone settings. `auto` detects the language of each recording; short or mixed-language recordings may work better with an explicit language.
 
-Set `ORCHESTRA_VOICE_MODEL=small` to use the small model or `ORCHESTRA_VOICE_DEVICE` to select a microphone. The old manual TUI window remains available:
+For legacy **OpenCode 1.x** TUI sessions, run `bunx @oeronteros-1/opencode-orchestra@latest voice-tui`. Press **Ctrl+X, then E** or run `/editor`, speak, and press the same shortcut again (or Enter). OpenCode restores the transcript to that session's draft without submitting it. `Ctrl+C` cancels recording and preserves the draft. The launcher sets `EDITOR` and `VISUAL` for that OpenCode process; no separate window or fixed port is needed. Run plain `opencode` when you want a regular text editor.
+
+For the external editor, set `ORCHESTRA_VOICE_MODEL=base|small|large-v3-turbo-q5_0` and `ORCHESTRA_VOICE_LANGUAGE=ru|en|zh|auto` (choose one value for each; defaults: `base`, `ru`), or `ORCHESTRA_VOICE_DEVICE` to select a microphone. The overlay and web microphone have their own saved settings. To use the old manual TUI window, select its TUI 1.x server compatibility mode:
 
 ```bash
 opencode --port 4096
@@ -338,7 +375,7 @@ opencode web --port 4096
 bunx @oeronteros-1/opencode-orchestra@latest web
 ```
 
-Then open `http://127.0.0.1:4097`. The microphone button is added next to the prompt submit button and inserts recognized text into the draft without sending it.
+Then open `http://127.0.0.1:4097`. The microphone button is added next to the prompt submit button and inserts recognized text into the draft by default. Its settings also offer explicit insert-and-send. If the session changes while recording or transcribing, the result stays in an editable recovery panel; restoring it never sends automatically.
 
 See [voice-overlay/README.md](voice-overlay/README.md) for platform requirements and troubleshooting.
 
@@ -369,6 +406,7 @@ A practical starting configuration:
     "agents": {},
     "fallback": { "enabled": true, "maxRetries": 2, "agents": {} }
   },
+  "browser": { "mode": "auto", "profile": "default", "profiles": ["default"] },
   "orchestration": {
     "parallelWorkers": 8,
     "maxWorkers": 8,
@@ -400,6 +438,13 @@ The complete contract and bounds are defined in [schema/opencode-orchestra.schem
 |---|---|
 | `install` | Configure OpenCode and provision companion MCPs |
 | `dashboard` | Start the local telemetry dashboard |
+| `browser status`, `browser profiles` | Inspect managed browser requirements and configured profiles |
+| `browser login`, `browser restart` | Open the selected profile in visible managed Chrome |
+| `browser select` | Select a configured profile in project configuration |
+| `browser reset --profile NAME --confirm NAME` | Delete an unlocked profile's authentication and site data |
+| `voice-overlay` | Launch the offline voice overlay and global shortcut |
+| `voice-tui [args]` | Launch legacy OpenCode 1.x with a voice editor |
+| `voice-editor <file>` | Record into the draft file supplied by OpenCode `/editor` |
 | `voice-web`, `web` | Proxy OpenCode Web with an inline offline microphone |
 | `doctor` | Diagnose configuration, MCPs, and local toolchain paths |
 | `mcp-smoke` | Launch enabled local MCPs and test `initialize`, `tools/list`, and safe calls |
@@ -447,19 +492,38 @@ The local ledger records tokens, cost, model and agent identifiers, MCP success 
 ## Requirements and development
 
 - Bun 1.2+ for the recommended installer flow
-- Node.js 22+ for development and Node-based tooling
+- Node.js 22.12+ for development and Node-based tooling
+- OpenCode 2.0.16+ and separately installed Chrome for managed browsing
 - Python 3.10+ only when provisioning the PyPI MemoryGraph companion
 - Git for worktree-based parallel editing and the Git MCP
 
 ```bash
 npm ci
 npm run check
-npm run test:mcp-live
 npm run build
 npm pack --dry-run
 ```
 
-The regular test suite is self-contained. `test:mcp-live` launches configured external MCP tools and is intended for an environment where those companions are installed.
+The regular test suite is self-contained; live browser checks are skipped unless explicitly enabled. Optional integration checks:
+
+```bash
+npm run test:mcp-live
+npm run test:browser-live
+npm run test:browser-e2e
+```
+
+`test:mcp-live` launches external MCP tools and requires installed companions. `test:browser-live` uses a temporary test-only profile and local fixture; missing Chrome is reported as skipped. `test:browser-e2e` runs the repository's Playwright regression fixture. Set `ORCHESTRA_TEST_CHROME` to an absolute Chrome executable for either browser check, or explicitly install Playwright Chromium for E2E with `npx playwright install chromium`.
+
+The voice overlay has a separate dependency install and checks:
+
+```bash
+npm --prefix voice-overlay ci
+npm --prefix voice-overlay run typecheck
+npm --prefix voice-overlay test
+npm --prefix voice-overlay run build:frontend
+```
+
+Use `npm run dev:dashboard` for the dashboard. Native voice development (`npm run dev:voice`, `npm run build:voice`) additionally requires Rust, platform Tauri dependencies, and the voice sidecars described in [voice-overlay/README.md](voice-overlay/README.md).
 
 ## Troubleshooting
 

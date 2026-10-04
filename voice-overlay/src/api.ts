@@ -55,8 +55,8 @@ export function stopRecording(): Promise<string> {
   return invoke<string>("stop_recording");
 }
 
-export function transcribe(wav: string, model: string): Promise<string> {
-  return invoke<string>("transcribe", { wav, model });
+export function transcribe(wav: string, model: string, language: string): Promise<string> {
+  return invoke<string>("transcribe", { wav, model, language });
 }
 
 export function listSessions(cfg: ServerConfig): Promise<SessionRef[]> {

@@ -1,5 +1,7 @@
 export type DestinationMode = 'auto' | 'tui' | 'web'
 export type PostTranscriptionAction = 'insert' | 'insert-and-submit'
+export type VoiceModel = 'base' | 'small' | 'large-v3-turbo-q5_0'
+export type VoiceLanguage = 'ru' | 'en' | 'zh' | 'auto'
 export type VoiceInvocationContext =
   | { source: 'web'; route: string }
   | { source: 'tui' }
@@ -14,13 +16,34 @@ export type VoiceDestination =
 export interface VoicePreferences {
   target: DestinationMode
   postTranscriptionAction: PostTranscriptionAction
-  model: 'base' | 'small'
+  model: VoiceModel
+  language: VoiceLanguage
   device: string
   sessionId: string
 }
 
 /** Pure policy, also serialized for the injected client. Keep free of runtime imports. */
 export function createVoicePolicy() {
+  const models: { id: VoiceModel; label: string }[] = [
+    { id: 'base', label: 'base — быстрая (~142 МиБ)' },
+    { id: 'small', label: 'small — точнее (~466 МиБ)' },
+    { id: 'large-v3-turbo-q5_0', label: 'large-v3-turbo-q5_0 (~547 МиБ)' }
+  ]
+  const languages: { id: VoiceLanguage; label: string }[] = [
+    { id: 'ru', label: 'Русский' },
+    { id: 'en', label: 'English' },
+    { id: 'zh', label: '中文' },
+    { id: 'auto', label: 'Автоопределение' }
+  ]
+  function model(value: unknown): VoiceModel {
+    if (!models.some(option => option.id === value)) throw new Error('Unknown voice model')
+    return value as VoiceModel
+  }
+  function language(value: unknown): VoiceLanguage {
+    if (!languages.some(option => option.id === value)) throw new Error('Unknown voice language')
+    return value as VoiceLanguage
+  }
+  function modelFile(value: unknown): string { return `ggml-${model(value)}.bin` }
   function preferences(value: unknown): VoicePreferences {
     const raw =
       value && typeof value === 'object'
@@ -33,7 +56,8 @@ export function createVoicePolicy() {
         raw.postTranscriptionAction === 'insert-and-submit'
           ? 'insert-and-submit'
           : 'insert',
-      model: raw.model === 'small' ? 'small' : 'base',
+      model: models.some(option => option.id === raw.model) ? raw.model as VoiceModel : 'base',
+      language: languages.some(option => option.id === raw.language) ? raw.language as VoiceLanguage : 'ru',
       device: typeof raw.device === 'string' ? raw.device : '',
       sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : ''
     }
@@ -57,7 +81,7 @@ export function createVoicePolicy() {
       ? { type: 'session', sessionId: selected }
       : { type: 'picker' }
   }
-  return { preferences, resolve }
+  return { preferences, resolve, models, languages, model, language, modelFile }
 }
 
 export function normalizeOverlaySettings(value: unknown) {

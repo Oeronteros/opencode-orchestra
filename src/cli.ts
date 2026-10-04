@@ -23,6 +23,7 @@ import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 import { ensureVerifiedVoiceModel, installVoiceFiles, launchVoiceOverlay, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
 import { startVoiceWeb } from "./voice-web.js"
 import { runVoiceEditor, voiceEditorCommand } from "./voice-editor.js"
+import { createVoicePolicy, type VoiceModel } from "./voice-context.js"
 import { createAgentSet } from "./agents/build.js"
 import { DEFAULT_CONFIG } from "./config/defaults.js"
 import { loadPrompts } from "./prompts/load.js"
@@ -760,6 +761,8 @@ function usage(): string {
     "  voice-editor <file>  Record into the draft file supplied by OpenCode /editor",
     "  voice-tui [args]      Launch OpenCode with the voice editor bound to Ctrl+X, E",
     "  voice-overlay        Launch the floating offline voice window (Windows/Linux)",
+    "  voice-model <name>    Install a verified base, small or large-v3-turbo-q5_0 model",
+    "                       TUI: ORCHESTRA_VOICE_MODEL, ORCHESTRA_VOICE_LANGUAGE=ru|en|zh|auto",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
     "  eval        Run the built-in reproducible evaluation suite",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",
@@ -807,6 +810,7 @@ function usage(): string {
 type ParsedCommand =
   | { command: "browser"; options: BrowserCommandOptions }
   | { command: "voice-overlay" }
+  | { command: "voice-model"; model: VoiceModel }
   | { command: "voice-web"; options: { upstream?: string; port?: number } }
   | { command: "voice-editor"; file: string }
   | { command: "voice-tui"; args: string[] }
@@ -821,6 +825,11 @@ type ParsedCommand =
 function parseArguments(argv: string[]): ParsedCommand | "help" {
   if (argv[0] === "browser") return { command: "browser", options: parseBrowserArguments(argv.slice(1)) }
   if (argv[0] === "--help" || argv[0] === "-h") return "help"
+  if (argv[0] === "voice-model") {
+    if (argv.length === 2 && (argv[1] === "--help" || argv[1] === "-h")) return "help"
+    if (argv.length !== 2) throw new Error("voice-model requires exactly one model name")
+    return { command: "voice-model", model: createVoicePolicy().model(argv[1]) }
+  }
   if (argv[0] === "voice-overlay") {
     if (argv.length === 2 && (argv[1] === "--help" || argv[1] === "-h")) return "help"
     if (argv.length !== 1) throw new Error("voice-overlay does not accept arguments")
@@ -978,6 +987,14 @@ async function main(): Promise<void> {
       console.log(usage())
       return
     }
+    if (parsed.command === "voice-model") {
+      const dir = voiceModelDir(process.platform, process.env)
+      if (!dir) throw new Error("Cannot locate the voice model directory on this platform")
+      console.log(`Installing voice model ${parsed.model} (SHA-256 verified)…`)
+      await ensureVerifiedVoiceModel(dir, { model: parsed.model })
+      console.log(`Voice model ready: ${path.join(dir, createVoicePolicy().modelFile(parsed.model))}`)
+      return
+    }
     if (parsed.command === "voice-web") {
       const web = await startVoiceWeb(parsed.options)
       console.log(`OpenCode с микрофоном: ${web.url}`)
@@ -998,7 +1015,7 @@ async function main(): Promise<void> {
       if (typeof result.command !== "string") throw new Error("Voice overlay executable path is invalid")
       const binary = path.resolve(result.command)
       await launchVoiceOverlay(binary)
-      console.log("Voice overlay launched. Windows / Linux X11: Ctrl+Alt+Space starts/stops dictation in OpenCode 2 TUI, Desktop or browser. Keep the input focused; submission is manual. Linux requires xclip.")
+      console.log("Voice overlay launched. Ctrl+Alt+Space starts/stops dictation in OpenCode 2 TUI, Desktop or browser. Keep the input focused; submission is manual. Linux X11 requires xclip; Wayland requires desktop integration described in voice-overlay/linux/README.md.")
       return
     }
     if (parsed.command === "voice-editor") {
@@ -1071,7 +1088,7 @@ async function main(): Promise<void> {
     console.log(`Voice overlay: ${dependencyLine(result.dependencies.voice)}`)
     if (result.dependencies.voice.status === "installed" || result.dependencies.voice.status === "existing") {
       console.log("Floating voice window: bunx @oeronteros-1/opencode-orchestra@latest voice-overlay")
-      console.log("Windows / Linux X11 / OpenCode 2: Ctrl+Alt+Space — единый голосовой ввод для TUI, Desktop и браузера. Для Linux нужен xclip.")
+      console.log("Windows / Linux / OpenCode 2: Ctrl+Alt+Space — голосовой ввод для TUI, Desktop и браузера. X11: xclip; настройка Wayland: voice-overlay/linux/README.md.")
       console.log("Внешний редактор TUI: opencode-orchestra voice-tui, затем Ctrl+X, E для записи.")
       console.log("Web с текущей вкладкой и выбором микрофона: запусти bunx @oeronteros-1/opencode-orchestra@latest web и открой http://127.0.0.1:4097.")
     }

@@ -1,0 +1,41 @@
+name: voice-linux-input
+
+on:
+  pull_request:
+    paths:
+      - 'voice-overlay/**'
+      - '.github/workflows/voice-linux-input.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'voice-overlay/**'
+      - '.github/workflows/voice-linux-input.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install isolated display tools
+        run: sudo apt-get update && sudo apt-get install -y xclip xvfb xauth dbus-daemon
+      - name: Test GNOME extension behavior
+        run: node --test voice-overlay/linux/gnome/extension.test.mjs
+      - name: Test Linux backends without GTK
+        run: dbus-run-session -- cargo test --locked --manifest-path voice-overlay/linux/check/Cargo.toml -- --test-threads=1
+      - name: Exercise X11 input in a dedicated display
+        env:
+          ORCHESTRA_X11_SMOKE: '1'
+          XDG_SESSION_TYPE: x11
+        run: xvfb-run -a cargo test --locked --manifest-path voice-overlay/linux/check/Cargo.toml x11_shortcut_clipboard_focus_guard_and_paste -- --ignored --test-threads=1
+      - name: Exercise Wayland D-Bus contract in an isolated session
+        env:
+          ORCHESTRA_WAYLAND_SMOKE: '1'
+        run: dbus-run-session -- cargo test --locked --manifest-path voice-overlay/linux/check/Cargo.toml wayland_gnome_dbus_focus_clipboard_and_toggle -- --ignored --test-threads=1

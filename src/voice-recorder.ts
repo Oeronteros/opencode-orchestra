@@ -4,6 +4,15 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { voiceManagedDir, voiceModelDir, voiceSidecarNames } from './voice.js'
+import { createVoicePolicy, type VoiceModel, type VoiceLanguage } from './voice-context.js'
+
+export function voiceRecorderPreferences(env: NodeJS.ProcessEnv) {
+  const policy = createVoicePolicy()
+  return {
+    model: policy.model(env.ORCHESTRA_VOICE_MODEL ?? 'base'),
+    language: policy.language(env.ORCHESTRA_VOICE_LANGUAGE ?? 'ru')
+  }
+}
 
 const MIN_WAV_BYTES = 16000
 const MAX_SECONDS = 120
@@ -78,16 +87,16 @@ function waitForClose(child: ChildProcessWithoutNullStreams, timeout: number): P
 }
 
 export class VoiceRecorder {
-  private recording: { child: ChildProcessWithoutNullStreams; folder: string; wav: string; closed: Promise<number | null>; stderr: string } | undefined
+  private recording: { child: ChildProcessWithoutNullStreams; folder: string; wav: string; model: VoiceModel; language: VoiceLanguage; closed: Promise<number | null>; stderr: string } | undefined
 
   async start(): Promise<void> {
     if (this.recording) throw new Error('Запись уже идёт.')
+    const { model, language } = voiceRecorderPreferences(process.env)
     const ffmpeg = await recordingFfmpeg()
     const whisper = executable('whisper')
-    const model = process.env.ORCHESTRA_VOICE_MODEL === 'small' ? 'small' : 'base'
     const modelDir = voiceModelDir(process.platform, process.env)
     if (!modelDir || !existsSync(path.join(modelDir, `ggml-${model}.bin`)))
-      throw new Error(`Модель ${model} не найдена. Запустите opencode-orchestra install.`)
+      throw new Error(`Модель ${model} не найдена. Запустите opencode-orchestra voice-model ${model}.`)
     if (!existsSync(whisper)) throw new Error('Whisper не установлен.')
     let input: string[]
     if (process.env.VOICE_FFMPEG_TEST_INPUT) input = ['-f', 'lavfi', '-i', process.env.VOICE_FFMPEG_TEST_INPUT]
@@ -110,7 +119,7 @@ export class VoiceRecorder {
     const closed = waitForClose(child, (MAX_SECONDS + 5) * 1000)
     // The process can fail before Stop is pressed; keep the rejection observed.
     void closed.catch(() => undefined)
-    this.recording = { child, folder, wav, closed, get stderr() { return stderr } }
+    this.recording = { child, folder, wav, model, language, closed, get stderr() { return stderr } }
     const early = await Promise.race([
       closed.then(code => ({ code }), error => ({ error })),
       new Promise<null>(resolve => setTimeout(() => resolve(null), 300)),
@@ -134,10 +143,9 @@ export class VoiceRecorder {
       const code = await active.closed
       if (code !== 0) throw new Error(`Ошибка записи: ${active.stderr.trim() || `ffmpeg: ${code}`}`)
       if ((await stat(active.wav)).size < MIN_WAV_BYTES) throw new Error('Запись слишком короткая.')
-      const model = process.env.ORCHESTRA_VOICE_MODEL === 'small' ? 'small' : 'base'
       const modelDir = voiceModelDir(process.platform, process.env)!
       const result = await capture(executable('whisper'), [
-        '-m', path.join(modelDir, `ggml-${model}.bin`), '-l', 'ru', '-f', active.wav,
+        '-m', path.join(modelDir, createVoicePolicy().modelFile(active.model)), '-l', active.language, '-f', active.wav,
         '-otxt', '-of', path.join(active.folder, 'result'),
       ], 600_000)
       if (result.code !== 0) throw new Error(`Ошибка распознавания: ${result.output.trim() || `whisper: ${result.code}`}`)

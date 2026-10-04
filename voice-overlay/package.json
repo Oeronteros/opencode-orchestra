@@ -9,7 +9,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js linux/gnome/extension.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

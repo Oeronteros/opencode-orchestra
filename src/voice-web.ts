@@ -7,8 +7,7 @@ import path from 'node:path'
 import {
   voiceManagedDir,
   voiceModelDir,
-  voiceSidecarNames,
-  VOICE_MODEL_FILE
+  voiceSidecarNames
 } from './voice.js'
 import { voiceWebClient } from './voice-web-client.js'
 import { createVoicePolicy } from './voice-context.js'
@@ -29,9 +28,12 @@ export function injectVoice(html: string): string {
 export async function transcribeWebAudio(
   audio: Buffer,
   signal?: AbortSignal,
-  model = 'base'
+  model = 'base',
+  language = 'ru'
 ): Promise<string> {
-  if (!['base', 'small'].includes(model)) throw new Error('Unknown voice model')
+  const policy = createVoicePolicy()
+  const modelFile = policy.modelFile(model)
+  policy.language(language)
   if (
     audio.length < 46 ||
     audio.length > 44 + 120 * 32000 ||
@@ -63,12 +65,9 @@ export async function transcribeWebAudio(
       path.join(managed, names[1]!),
       [
         '-m',
-        path.join(
-          models,
-          model === 'base' ? VOICE_MODEL_FILE : 'ggml-small.bin'
-        ),
+        path.join(models, modelFile),
         '-l',
-        'ru',
+        language,
         '-f',
         wav,
         '-otxt',
@@ -91,7 +90,8 @@ export async function startVoiceWeb(
     transcribe?: (
       audio: Buffer,
       signal?: AbortSignal,
-      model?: string
+      model?: string,
+      language?: string
     ) => Promise<string>
   } = {}
 ) {
@@ -165,9 +165,14 @@ export async function startVoiceWeb(
         res.writeHead(403).end()
         return
       }
-      const model = req.headers['x-orchestra-model'] ?? 'base'
-      if (model !== 'base' && model !== 'small') {
-        res.writeHead(400).end(JSON.stringify({ error: 'Неизвестная модель.' }))
+      let model: string
+      let language: string
+      try {
+        const policy = createVoicePolicy()
+        model = policy.model(req.headers['x-orchestra-model'] ?? 'base')
+        language = policy.language(req.headers['x-orchestra-language'] ?? 'ru')
+      } catch {
+        res.writeHead(400).end(JSON.stringify({ error: 'Неизвестная модель или язык речи.' }))
         return
       }
       res.setHeader('Content-Type', 'application/json')
@@ -207,7 +212,8 @@ export async function startVoiceWeb(
         const text = await (options.transcribe ?? transcribeWebAudio)(
           Buffer.concat(chunks),
           controller.signal,
-          model
+          model,
+          language
         )
         if (controller.signal.aborted || res.destroyed) return
         res.end(JSON.stringify({ text }))

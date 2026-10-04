@@ -262,11 +262,13 @@ export function voiceWebClient(
   )
   const modelPicker = addSelect(
     'Модель',
-    [
-      ['base', 'base — быстрая (~140 МБ)'],
-      ['small', 'small — точнее (~460 МБ)']
-    ],
+    policy.models.map(({ id, label }) => [id, label]),
     preferences.model
+  )
+  const languagePicker = addSelect(
+    'Язык речи',
+    policy.languages.map(({ id, label }) => [id, label]),
+    preferences.language
   )
   const behaviorPicker = addSelect(
     'После распознавания',
@@ -299,6 +301,7 @@ export function voiceWebClient(
     preferences = policy.preferences({
       ...preferences,
       model: modelPicker.value,
+      language: languagePicker.value,
       device: devicePicker.value,
       postTranscriptionAction: behaviorPicker.value
     })
@@ -531,7 +534,8 @@ export function voiceWebClient(
             headers: {
               'Content-Type': 'application/octet-stream',
               'X-Orchestra-Voice': '1',
-              'X-Orchestra-Model': job.preferences.model
+              'X-Orchestra-Model': job.preferences.model,
+              'X-Orchestra-Language': job.preferences.language
             },
             body: wav,
             signal: job.controller.signal

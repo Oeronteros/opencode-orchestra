@@ -100,6 +100,28 @@ describe("VOICE_MODEL_URL", () => {
 })
 
 describe("ensureVerifiedVoiceModel", () => {
+  it("installs Turbo beside existing models, reuses a verified file and preserves it on a bad replacement", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "voice-model-"))
+    try {
+      await writeFile(path.join(root, VOICE_MODEL_FILE), "existing base")
+      const data = Buffer.from("verified turbo model fixture")
+      const sha256 = createHash("sha256").update(data).digest("hex")
+      const target = path.join(root, "ggml-large-v3-turbo-q5_0.bin")
+      let downloads = 0
+      const options = { model: "large-v3-turbo-q5_0" as const, sha256, fetch: async (url: string | URL | Request) => {
+        downloads++
+        assert.equal(url, "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin")
+        return new Response(data)
+      } }
+      await ensureVerifiedVoiceModel(root, options)
+      await ensureVerifiedVoiceModel(root, options)
+      assert.equal(downloads, 1)
+      assert.deepEqual(await readFile(target), data)
+      await assert.rejects(ensureVerifiedVoiceModel(root, { ...options, sha256: "0".repeat(64) }), /SHA-256 mismatch/)
+      assert.deepEqual(await readFile(target), data)
+      assert.equal(await readFile(path.join(root, VOICE_MODEL_FILE), "utf8"), "existing base")
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
   it("atomically replaces a corrupt model only after hash verification", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "voice-model-"))
     try {

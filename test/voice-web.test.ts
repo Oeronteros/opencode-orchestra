@@ -8,6 +8,84 @@ import {
   normalizeOverlaySettings
 } from '../src/voice-context.js'
 import { startVoiceWeb, transcribeWebAudio } from '../src/voice-web.js'
+import { voiceRecorderPreferences } from '../src/voice-recorder.js'
+
+test('speech preferences preserve Turbo and all languages, migrate legacy settings and reject unsupported CLI values', () => {
+  const policy = createVoicePolicy()
+  for (const { id: model } of policy.models) {
+    for (const { id: language } of policy.languages) {
+      assert.equal(normalizeOverlaySettings({ model, language }).model, model)
+      assert.equal(normalizeOverlaySettings({ model, language }).language, language)
+      assert.deepEqual(voiceRecorderPreferences({ ORCHESTRA_VOICE_MODEL: model, ORCHESTRA_VOICE_LANGUAGE: language }), { model, language })
+    }
+  }
+  assert.deepEqual(voiceRecorderPreferences({}), { model: 'base', language: 'ru' })
+  assert.equal(policy.preferences({ language: 'invalid' }).language, 'ru')
+  assert.throws(() => voiceRecorderPreferences({ ORCHESTRA_VOICE_MODEL: '../../secret' }), /Unknown voice model/)
+  assert.throws(() => voiceRecorderPreferences({ ORCHESTRA_VOICE_LANGUAGE: '--translate' }), /Unknown voice language/)
+})
+
+test('web transcription forwards all model/language combinations and rejects invalid languages before calling Whisper', async () => {
+  const calls: { model: string | undefined; language: string | undefined }[] = []
+  const web = await startVoiceWeb({ port: 0, transcribe: async (_audio, _signal, model, language) => {
+    calls.push({ model, language })
+    return 'Привет hello 你好'
+  } })
+  try {
+    const endpoint = web.url + '/__orchestra_voice/transcribe'
+    const headers = { Origin: web.url, 'X-Orchestra-Voice': '1' }
+    for (const { id: model } of createVoicePolicy().models) {
+      for (const { id: language } of createVoicePolicy().languages) {
+        const response = await fetch(endpoint, { method: 'POST', headers: { ...headers, 'X-Orchestra-Model': model, 'X-Orchestra-Language': language }, body: 'audio' })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { text: 'Привет hello 你好' })
+        assert.deepEqual(calls.at(-1), { model, language })
+      }
+    }
+    for (const language of ['fr', '--translate', 'en,zh', '']) {
+      const response = await fetch(endpoint, { method: 'POST', headers: { ...headers, 'X-Orchestra-Language': language }, body: 'audio' })
+      assert.equal(response.status, 400)
+    }
+    assert.equal(calls.length, 12)
+    const legacy = await fetch(endpoint, { method: 'POST', headers, body: 'audio' })
+    assert.equal(legacy.status, 200)
+    assert.deepEqual(calls.at(-1), { model: 'base', language: 'ru' })
+    await assert.rejects(transcribeWebAudio(Buffer.from('invalid'), undefined, 'base', '--translate'), /Unknown voice language/)
+  } finally {
+    web.server.closeAllConnections()
+    await new Promise<void>(resolve => web.server.close(() => resolve()))
+  }
+})
+
+for (const remote of [false, true]) {
+  for (const { id: language } of createVoicePolicy().languages) {
+    test(`browser ${remote ? 'remote' : 'inline'} saves and snapshots Turbo/${language}, preserving multilingual text`, async () => {
+      const browser = voiceBrowser({ remote, preferences: { sessionId: 'ses_one' } })
+      await new Promise(resolve => setImmediate(resolve))
+      const select = (label: string) => browser.elements.find(el => el.tag === 'label' && el.textContent === label)!.children[0]!
+      select('Модель').value = 'large-v3-turbo-q5_0'
+      select('Язык речи').value = language
+      browser.byText('Сохранить').click()
+      const saved = JSON.parse(browser.storage.get('orchestra-voice-settings:v1')!)
+      assert.equal(saved.model, 'large-v3-turbo-q5_0')
+      assert.equal(saved.language, language)
+      const reloaded = voiceBrowser({ remote, preferences: saved })
+      await new Promise(resolve => setImmediate(resolve))
+      reloaded.onFetch(async () => ({ ok: true, json: async () => ({ text: 'Привет hello 你好' }) }))
+      await reloaded.button.click()
+      // Mutating settings while recording cannot alter the request's snapshot.
+      const languageSelect = reloaded.elements.find(el => el.tag === 'label' && el.textContent === 'Язык речи')!.children[0]!
+      languageSelect.value = 'auto'
+      reloaded.byText('Сохранить').click()
+      await reloaded.recording.stop()
+      const request = reloaded.requests.find(req => req.url.includes('/transcribe'))!
+      assert.equal(request.init.headers['X-Orchestra-Model'], 'large-v3-turbo-q5_0')
+      assert.equal(request.init.headers['X-Orchestra-Language'], language)
+      if (remote) assert.match(reloaded.storage.get('orchestra-voice-remote-pending:v1')!, /Привет hello 你好/)
+      else assert.equal(reloaded.inserted[0]?.text, ' Привет hello 你好')
+    })
+  }
+}
 
 test('voice web injects the UI, proxies API bodies and gates transcription to its own origin', async () => {
   const upstream = http
@@ -281,6 +359,7 @@ test('overlay config migration retains credentials and legacy destination, sanit
   assert.deepEqual(normalizeOverlaySettings(old), {
     ...old,
     browserPort: 4097,
+    language: 'ru',
     postTranscriptionAction: 'insert'
   })
   assert.equal(normalizeOverlaySettings({ destination: 'web' }).target, 'web')

@@ -1,7 +1,5 @@
 # OpenCode Orchestra
 
-无需扩展的托管浏览器：[持久配置文件、Playwright/DevTools、首次登录与权限](docs/browser.md)。需要 OpenCode V2 >=2.0.16、Node >=22.12 和单独安装的 Chrome。新安装启用 `browser.mode=auto`；现有配置保持不变，缺省为 `off`。浏览器 Code Mode 暂时禁用。
-
 [![npm version](https://img.shields.io/npm/v/@oeronteros-1/opencode-orchestra)](https://www.npmjs.com/package/@oeronteros-1/opencode-orchestra)
 [![license](https://img.shields.io/npm/l/@oeronteros-1/opencode-orchestra)](LICENSE)
 [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-4f46e5)](https://opencode.ai/docs/plugins/)
@@ -16,12 +14,13 @@ OpenCode Orchestra 将复杂请求转化为可控的多智能体工作流。它�
 - 自动发现模型、预算模式、按智能体覆盖模型，以及 fallback 链
 - 依赖感知执行，并严格限制并发数、委派深度和文件所有权
 - 可选的隔离 Git worktree，用于并行编辑
+- 带持久配置文件的托管 Chrome，使用 Playwright 执行 UI 工作流，使用 DevTools 进行诊断
 - 本地控制面板，展示实时活动、token、成本、模型、智能体和 MCP 状态
 - 诊断、MCP 冒烟测试、有界自主循环，以及离线语音输入
 
 ## 快速开始
 
-要求：[OpenCode v2](https://opencode.ai/)、Bun 1.2 或更高版本，以及 OpenCode 支持的模型提供商。
+要求：[OpenCode v2](https://opencode.ai/)、Bun 1.2 或更高版本、Node.js 22.12 或更高版本，以及 OpenCode 支持的模型提供商。托管浏览器还需要 OpenCode 2.0.16 或更高版本，以及单独安装的 Chrome。
 
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest install
@@ -41,7 +40,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install
 /orchestra-resume
 ```
 
-安装程序是幂等的。修改 OpenCode 配置前会创建备份，并保留已有的插件和 MCP 配置；只有显式传入 `--force` 时才会替换现有条目。
+安装程序是幂等的。修改 OpenCode 配置前会创建备份，并保留已有的插件和 MCP 配置。`--force` 会替换安装程序管理的配套 MCP 条目；现有浏览器 MCP 和 `orchestra.jsonc` 仍会保留。新配置通过 `browser.mode: "auto"` 启用托管浏览器；现有配置未包含浏览器部分时，浏览器保持关闭。
 
 ### OpenCode v2 支持与迁移
 
@@ -108,7 +107,7 @@ bunx @oeronteros-1/opencode-orchestra@latest dashboard
 
 ### 重启后恢复
 
-Orchestra 会把密封计划、节点状态、依赖结果和已验证的 Git 提交保存在本地 `.orchestra/orchestration/runs.json`。重启后，运行中或排队中的节点会恢复为待处理状态；已经完成的节点不会重复执行。
+Orchestra 会把密封计划、节点状态、依赖结果和已验证的 Git 提交保存在本地 `.orchestra/orchestration/runs.json`。重启后，运行中或排队中的仓库节点会恢复为待处理状态；已经完成的节点不会重复执行。中断的浏览器节点会被阻塞，需要检查网站状态后显式重试，避免自动重复外部修改。
 
 ```text
 /orchestra-resume
@@ -173,10 +172,10 @@ Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展�
 - 官方 Git MCP，并限制在当前仓库中；
 - [GitHub MCP](https://github.com/github/github-mcp-server)，用于远程仓库、Issue 和 Pull Request；
 - ast-grep MCP，用于结构化代码搜索；
-- Playwright MCP，用于浏览器检查；
+- 固定版本的 Playwright MCP 和 Chrome DevTools MCP 包，用于托管浏览器；
 - 在支持的平台上安装本地语音浮窗和 Whisper 模型。
 
-可选配套工具安装失败不会阻止核心插件配置。若本地 MCP provisioning 失败，安装程序不会写入一个无法工作的命令。
+可选配套工具安装失败不会阻止核心插件配置。Codebase Memory 或 MemoryGraph 准备失败时，不会写入无法工作的命令。Git 和 ast-grep 即使预热失败也可能被配置，因为 `uvx` 会在启动时重试。浏览器 MCP 是包依赖，由 OpenCode v2 运行时按需注册；安装程序不会下载 Chrome 本身。
 
 只需连接 GitHub MCP 一次：安装 [GitHub CLI](https://cli.github.com/)，然后**在 OpenCode 内**输入：
 
@@ -196,6 +195,7 @@ Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展�
 --no-git
 --no-ast-grep
 --no-playwright
+--browser-mode MODE
 --no-superpowers
 --no-voice
 --no-deps
@@ -209,6 +209,41 @@ Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展�
 ```bash
 bunx @oeronteros-1/opencode-orchestra@latest install --dry-run
 ```
+
+`--browser-mode` 接受 `off`、`auto`、`playwright` 或 `devtools`，仅影响新创建的 Orchestra 配置。`--no-playwright` 将新配置设为 `off`；与 `--browser-mode devtools` 组合时仅启用 DevTools。与 `auto` 或 `playwright` 组合会报错。`--no-deps` 跳过配套工具的准备，但浏览器 MCP 仍是 npm 包的依赖项。
+
+## 托管浏览器
+
+Orchestra 使用自己的 Chrome 配置文件，无需浏览器扩展。在 `auto` 模式下，UI 导航和表单优先使用 Playwright；深度诊断和性能分析使用 Chrome DevTools。两个后端连接到同一个托管浏览器。普通文档研究继续使用网页搜索、webfetch 和 Context7。
+
+对于现有安装，请在全局或项目 `orchestra.jsonc` 中加入以下配置以启用浏览器：
+
+```jsonc
+{
+  "browser": {
+    "mode": "auto",
+    "profile": "default",
+    "profiles": ["default", "work-account"],
+    "sharedProfiles": [],
+    "headless": false
+  }
+}
+```
+
+修改配置后重启 OpenCode。在项目目录中运行：
+
+```bash
+bunx @oeronteros-1/opencode-orchestra@latest browser status --directory .
+bunx @oeronteros-1/opencode-orchestra@latest browser login --directory . --profile default
+bunx @oeronteros-1/opencode-orchestra@latest browser profiles --directory .
+bunx @oeronteros-1/opencode-orchestra@latest browser select --directory . --profile work-account
+```
+
+在 `browser login` 打开的 Chrome 窗口中直接登录，然后关闭 Chrome 或按 Ctrl+C，再在 OpenCode 中使用该配置文件。Cookie 和 localStorage 会跨浏览器重启保留，但网站仍可能使登录失效。配置文件按仓库隔离，Git worktree 共享仓库身份。账户名称必须列在 `browser.profiles` 中；跨项目共享需要显式配置 `sharedProfiles`。`browser select` 写入项目覆盖配置，重启 OpenCode 后生效。
+
+浏览器场景串行执行，并要求只有一个页面标签。密封任务合同限制 origins 和操作，OpenCode 权限仍然生效。现有用户浏览器 MCP 会阻止创建重复的托管服务器。浏览器 Code Mode 已禁用。缺少 Chrome 或配置文件被占用时，浏览器场景会失败，但仓库编排仍然可用。
+
+可通过 `browser.executable` 指定 Chrome 的绝对路径；OpenCode 在 Bun 下运行时，可通过 `browser.nodeExecutable` 指定真正的 Node。配置文件存储、权限、后端切换、产物和故障排除请参阅 [docs/browser.md](docs/browser.md)。
 
 ## 模型路由
 
@@ -302,26 +337,32 @@ bounded loop 本身的状态保存在内存中，OpenCode 重启后会丢失。�
 
 ## 语音输入
 
-Windows 和 Linux X11 上的 OpenCode 2 支持统一快捷键：启动 `bunx @oeronteros-1/opencode-orchestra@latest voice-overlay`，将光标放在 TUI、Desktop 或浏览器的输入框，然后按 **Ctrl+Alt+Space** 开始录音，再按一次停止并粘贴本地识别结果。不会自动发送，也不需要固定服务器端口。录音期间请保持原窗口、标签页和输入框；窗口或焦点改变时，文本会保留，可使用相同快捷键重试。录音时可最小化窗口，快捷键仍然有效。自动插入开关默认开启；关闭后结果保留在预览和剪贴板，可用同一快捷键手动插入。Linux X11 需要 xclip、EWMH 和 XTEST，终端使用 Ctrl+Shift+V。Wayland 暂不支持全局快捷键和原生自动插入，可使用原有 TUI 和浏览器语音方式。
+Windows 和 Linux 上的 OpenCode 2 支持统一快捷键：启动 `bunx @oeronteros-1/opencode-orchestra@latest voice-overlay`，将光标放在 TUI、Desktop 或浏览器的输入框，然后按 **Ctrl+Alt+Space** 开始录音，再按一次停止并粘贴本地识别结果。不会自动发送，也不需要固定服务器端口。录音期间请保持原窗口、标签页和输入框；窗口或焦点改变时，文本会保留，可使用相同快捷键重试。录音时可最小化窗口，快捷键仍然有效。自动插入开关默认开启；关闭后结果保留在预览和剪贴板，可用同一快捷键手动插入。Linux X11 需要 xclip、EWMH 和 XTEST，终端使用 Ctrl+Shift+V。源码已加入 Wayland 支持：GNOME 扩展、Plasma portal 与 kdotool、Sway/Hyprland 的 wl-clipboard、wtype 和 IPC。需要更新的 Linux 构建及[桌面配置](voice-overlay/linux/README.md)；目前尚未发布。焦点检查失败时，识别文本保留在浮窗中。
 
 标准安装程序会为 Linux x64 和 Windows x64 安装预构建的本地语音浮窗，并下载 Whisper `ggml-base.bin` 模型。音频不会发送到远程转写服务。
 
-在终端 UI 中启动：
+对于旧版 **OpenCode 1.x** TUI，使用外部语音编辑器启动：
 
 ```bash
-bunx @oeronteros-1/opencode-orchestra@latest voice-overlay
+bunx @oeronteros-1/opencode-orchestra@latest voice-tui
 ```
+
+按 **Ctrl+X，然后 E** 或运行 `/editor` 开始录音，再按相同快捷键或 Enter 停止。文本会返回该会话的草稿，不会自动发送；Ctrl+C 取消录音并保留原草稿。启动器为该 OpenCode 进程设置 `EDITOR` 和 `VISUAL`，无需单独窗口或固定端口。外部编辑器可通过 `ORCHESTRA_VOICE_DEVICE` 选择麦克风，或在手动安装 small 模型后设置 `ORCHESTRA_VOICE_MODEL=small`。
 
 对于 OpenCode Web，请在不同终端中运行：
 
 ```bash
 opencode web --port 4096
-opencode-orch web
+bunx @oeronteros-1/opencode-orchestra@latest web
 ```
 
-然后打开 `http://127.0.0.1:4097`。麦克风按钮会显示在提交按钮旁边，识别出的文本会插入草稿，但不会自动发送。
+然后打开 `http://127.0.0.1:4097`。麦克风按钮会显示在提交按钮旁边，默认将识别文本插入草稿。设置中也可显式选择插入并发送。如果录音或转写期间切换会话，结果会保留在可编辑的恢复面板中；恢复结果不会自动发送。
 
 平台要求和故障排除请参阅 [voice-overlay/README.md](voice-overlay/README.md)。
+
+所有语音输入模式（全局快捷键、悬浮窗口、TUI 外部编辑器及网页麦克风）均支持俄语、英语和中文，以及 `base`、`small` 和 `large-v3-turbo-q5_0` 模型。使用 `opencode-orchestra voice-model large-v3-turbo-q5_0` 安装 Turbo 模型（约 547 MiB，校验 SHA-256），也可将模型名替换为 `small`。在悬浮窗口或网页麦克风设置中选择模型和语音语言；`auto` 会为每段录音自动检测语言。短录音或混合语言录音可能需要明确指定语言。
+
+TUI 外部编辑器使用 `ORCHESTRA_VOICE_MODEL=base|small|large-v3-turbo-q5_0` 和 `ORCHESTRA_VOICE_LANGUAGE=ru|en|zh|auto`，每个变量选择一个值，默认值为 `base` 和 `ru`。悬浮窗口和网页麦克风分别保存自己的设置。
 
 ## 配置
 
@@ -350,6 +391,7 @@ opencode-orch web
     "agents": {},
     "fallback": { "enabled": true, "maxRetries": 2, "agents": {} }
   },
+  "browser": { "mode": "auto", "profile": "default", "profiles": ["default"] },
   "orchestration": {
     "parallelWorkers": 8,
     "maxWorkers": 8,
@@ -381,6 +423,13 @@ opencode-orch web
 |---|---|
 | `install` | 配置 OpenCode 并准备配套 MCP |
 | `dashboard` | 启动本地遥测控制面板 |
+| `browser status`、`browser profiles` | 检查托管浏览器要求和已配置的账户名称 |
+| `browser login`、`browser restart` | 在可见的托管 Chrome 中打开所选配置文件 |
+| `browser select` | 在项目配置中选择已配置的账户 |
+| `browser reset --profile NAME --confirm NAME` | 删除未锁定配置文件的登录和网站数据 |
+| `voice-overlay` | 启动离线语音浮窗和全局快捷键 |
+| `voice-tui [args]` | 使用语音编辑器启动旧版 OpenCode 1.x |
+| `voice-editor <file>` | 将识别文本写入 OpenCode `/editor` 提供的草稿文件 |
 | `voice-web`、`web` | 为 OpenCode Web 添加内联离线麦克风代理 |
 | `doctor` | 诊断配置、MCP 和本地工具路径 |
 | `mcp-smoke` | 启动已启用的本地 MCP，并测试 `initialize`、`tools/list` 和安全调用 |
@@ -426,19 +475,38 @@ Orchestra 按以下顺序解析价格：
 ## 环境要求与开发
 
 - 推荐安装流程需要 Bun 1.2+
-- 开发和 Node 工具需要 Node.js 22+
+- 开发和 Node 工具需要 Node.js 22.12+
+- 托管浏览器需要 OpenCode 2.0.16+ 和单独安装的 Chrome
 - 只有安装 PyPI MemoryGraph 配套工具时才需要 Python 3.10+
 - 基于 worktree 的并行编辑和 Git MCP 需要 Git
 
 ```bash
 npm ci
 npm run check
-npm run test:mcp-live
 npm run build
 npm pack --dry-run
 ```
 
-常规测试套件是自包含的。`test:mcp-live` 会启动外部 MCP 工具，适用于已经安装这些配套工具的环境。
+常规测试套件是自包含的；实时浏览器检查在未显式启用时会跳过。可选集成检查：
+
+```bash
+npm run test:mcp-live
+npm run test:browser-live
+npm run test:browser-e2e
+```
+
+`test:mcp-live` 启动外部 MCP，需要已安装的配套工具。`test:browser-live` 使用临时测试配置文件和本地测试站点；缺少 Chrome 时报告 skipped。`test:browser-e2e` 运行仓库的 Playwright 回归测试。可为任一浏览器检查设置 `ORCHESTRA_TEST_CHROME`，指向 Chrome 的绝对路径；E2E 也可以通过 `npx playwright install chromium` 显式安装 Playwright Chromium。
+
+语音浮窗需要单独安装依赖并检查：
+
+```bash
+npm --prefix voice-overlay ci
+npm --prefix voice-overlay run typecheck
+npm --prefix voice-overlay test
+npm --prefix voice-overlay run build:frontend
+```
+
+Dashboard 开发使用 `npm run dev:dashboard`。原生语音开发命令 `npm run dev:voice` 和 `npm run build:voice` 还需要 Rust、平台 Tauri 依赖和 [voice-overlay/README.md](voice-overlay/README.md) 中描述的语音 sidecar。
 
 ## 故障排除
 
