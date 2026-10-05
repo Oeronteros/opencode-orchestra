@@ -1,6 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ServerConfig, SessionRef } from "./lib/opencode";
 import type { InputTarget } from "./lib/hotkey";
+import type { WidgetSnapshot } from "./lib/widget";
+
+export function updateVoiceWidget(snapshot: WidgetSnapshot): Promise<void> {
+  return invoke("update_voice_widget", { snapshot });
+}
+
+export function attachVoiceWindow(): Promise<string> {
+  return invoke("attach_voice_window");
+}
 
 export function enableVoiceHotkey(): Promise<boolean> {
   return invoke<boolean>("enable_voice_hotkey");

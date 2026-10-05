@@ -21,6 +21,7 @@ import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 import { ensureVerifiedVoiceModel, installVoiceFiles, launchVoiceOverlay, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
+import { launchWslVoiceOverlay, usesWindowsVoiceHost } from "./voice-wsl.js"
 import { startVoiceWeb } from "./voice-web.js"
 import { runVoiceEditor, voiceEditorCommand } from "./voice-editor.js"
 import { createVoicePolicy, type VoiceModel } from "./voice-context.js"
@@ -760,7 +761,7 @@ function usage(): string {
     "              --upstream http://127.0.0.1:4096 --port 4097",
     "  voice-editor <file>  Record into the draft file supplied by OpenCode /editor",
     "  voice-tui [args]      Launch OpenCode with the voice editor bound to Ctrl+X, E",
-    "  voice-overlay        Launch the floating offline voice window (Windows/Linux)",
+    "  voice-overlay        Launch the floating offline voice window (Windows/Linux/WSL)",
     "  voice-model <name>    Install a verified base, small or large-v3-turbo-q5_0 model",
     "                       TUI: ORCHESTRA_VOICE_MODEL, ORCHESTRA_VOICE_LANGUAGE=ru|en|zh|auto",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
@@ -1002,6 +1003,12 @@ async function main(): Promise<void> {
       return
     }
     if (parsed.command === "voice-overlay") {
+      if (usesWindowsVoiceHost()) {
+        console.log("WSL detected. Preparing the Windows voice-overlay for the host terminal / WSLg window…")
+        await launchWslVoiceOverlay()
+        console.log("Windows voice overlay launched for WSL. Click ‘Привязать к окну TUI / Desktop’ and focus your OpenCode window within three seconds. Recording shows a red pulse and timer; Ctrl+Alt+Space also starts/stops recording. Submission is manual.")
+        return
+      }
       if (voiceOverlayPackageFor(process.platform, process.arch) === null) {
         throw new Error(`Voice overlay is not supported on ${process.platform}/${process.arch}`)
       }

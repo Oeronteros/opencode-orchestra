@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   appendToPrompt,
+  attachVoiceWindow,
+  updateVoiceWidget,
   enableVoiceHotkey,
   pasteVoiceText,
   browserTarget,
@@ -25,6 +27,11 @@ import { WindowHeader } from "./WindowHeader";
 import { hotkeyAction, parseVoiceDraft, VOICE_HOTKEY, type InputTarget } from "./lib/hotkey";
 
 const DRAFT_KEY = "voice-overlay-native-draft:v1";
+const WIDGET_KEY = "voice-overlay-attached-button:v1";
+function loadWidgetEnabled() {
+  try { return localStorage.getItem(WIDGET_KEY) !== "false"; }
+  catch { return true; }
+}
 function loadVoiceDraft() {
   try { return parseVoiceDraft(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")); }
   catch { return null; }
@@ -75,6 +82,11 @@ export function App() {
   const [recognizing, setRecognizing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [widgetEnabled, setWidgetEnabled] = useState(loadWidgetEnabled);
+  const [attachCountdown, setAttachCountdown] = useState(0);
+  const [attachedTitle, setAttachedTitle] = useState<string | null>(null);
+  const [widgetError, setWidgetError] = useState<string | null>(null);
+  const supportsWidget = /win/i.test(navigator.platform);
   const operation = useRef(false);
   const timer = useRef<number | null>(null);
   const invocation = useRef<OverlaySettings>(settings);
@@ -84,6 +96,31 @@ export function App() {
   const draftTab = useRef<BrowserTarget | null>(null);
   const sessionRequest = useRef(0);
   const manual = settings.target === "web";
+
+  useEffect(() => {
+    if (!supportsWidget) return;
+    void updateVoiceWidget({
+      enabled: settings.nativeInput && widgetEnabled,
+      status: starting ? "starting" : status,
+      elapsed,
+      blocked: starting || sending || status === "transcribing" || showSettings || attachCountdown > 0,
+      pending: hasNativeDraft && !!preview.trim(),
+      message: error ?? notice,
+    }).catch(e => setWidgetError(String(e)));
+  }, [supportsWidget, settings.nativeInput, widgetEnabled, starting, sending, status, elapsed, showSettings, attachCountdown, hasNativeDraft, preview, error, notice]);
+
+  useEffect(() => {
+    if (attachCountdown === 0) return;
+    let disposed = false;
+    const timeout = window.setTimeout(() => {
+      if (attachCountdown > 1) { setAttachCountdown(attachCountdown - 1); return; }
+      void attachVoiceWindow().then(title => {
+        if (!disposed) { setAttachedTitle(title || "Окно без заголовка"); setWidgetError(null); }
+      }).catch(e => { if (!disposed) setWidgetError(String(e)); })
+        .finally(() => { if (!disposed) setAttachCountdown(0); });
+    }, 1000);
+    return () => { disposed = true; window.clearTimeout(timeout); };
+  }, [attachCountdown]);
 
   useEffect(() => {
     let disposed = false;
@@ -459,7 +496,7 @@ export function App() {
   onHotkey.current = target => {
     setHotkeyReady(true);
     setHotkeyError(null);
-    if (showSettings) return;
+    if (showSettings || attachCountdown > 0) return;
     switch (hotkeyAction(status, operation.current, hasNativeDraft && !!preview.trim())) {
       case "stop": void onStop(); break;
       case "retry": void onSend(target); break;
@@ -528,6 +565,26 @@ export function App() {
       {settings.nativeInput && <p className="notice" role="status">
         {hotkeyReady ? `${VOICE_HOTKEY} — начать / остановить. Сначала поставьте курсор в нужное поле ввода.` : hotkeyError ? "Глобальный хоткей недоступен. Подробности ниже." : "Подключаем глобальный хоткей…"}
       </p>}
+      {supportsWidget && settings.nativeInput && <section className="window-attachment" aria-label="Кнопка поверх окна">
+        <label className="auto-insert-toggle">
+          <span>Микрофон поверх окна OpenCode</span>
+          <input type="checkbox" role="switch" checked={widgetEnabled} disabled={busy || attachCountdown > 0}
+            onChange={event => {
+              setWidgetEnabled(event.target.checked);
+              try { localStorage.setItem(WIDGET_KEY, String(event.target.checked)); }
+              catch { setWidgetError("Не удалось сохранить настройку кнопки."); }
+            }} />
+        </label>
+        {widgetEnabled && <>
+          <button type="button" disabled={busy || attachCountdown > 0} onClick={() => setAttachCountdown(3)}>
+            {attachCountdown > 0 ? `Выберите окно · ${attachCountdown}` : "Привязать к окну TUI / Desktop"}
+          </button>
+          <small role="status">{attachCountdown > 0
+            ? "Переключитесь в нужное окно и поставьте курсор в поле ввода."
+            : attachedTitle ? `Привязано: ${attachedTitle}` : "OpenCode определяется автоматически. Для другого заголовка привяжите окно вручную."}</small>
+        </>}
+        {widgetError && <small role="alert" className="field-note">{widgetError}</small>}
+      </section>}
       <label className="auto-insert-toggle">
         <span>Автовставка в поле сессии</span>
         <input type="checkbox" role="switch" checked={settings.autoInsert} disabled={busy}

@@ -1,5 +1,73 @@
 # Voice integration: implementation and verification
 
+## WSL host overlay launcher (2026-10-05)
+
+The user clarified that their Linux environment is WSL. The CLI detects WSL
+from its distro/interop variables or Microsoft kernel release and launches the
+Windows overlay, which can attach to the actual Windows Terminal / WSLg window.
+This avoids relying on EWMH or compositor window placement in WSLg. The host
+microphone, ffmpeg, Whisper and Windows models provide the same recording pulse,
+timer and processing indicator. Ordinary Linux keeps its existing native path.
+
+The launcher queries the actual Windows user's application directories through
+a fixed PowerShell script and converts paths with wslpath argv. It refreshes an
+available Windows companion, validates executable/sidecar presence, and prepares
+the base model in the Windows data directory. Explicit Windows builds are never
+overwritten; paths with spaces, Unicode and shell metacharacters are not injected
+into command text. Missing interop or incomplete installs produce actionable errors.
+`scripts/voice-wsl-overlay.sh` uses the locally staged Windows build and the built
+CLI; `ORCHESTRA_VOICE_WINDOWS_BINARY` chooses another complete bundle.
+`ORCHESTRA_VOICE_LINUX_NATIVE=1` preserves an explicitly requested Linux desktop
+path inside WSL. Browser/editor/model commands retain their existing Linux paths.
+
+Verified: root and dashboard TypeScript checking, plugin build and 73 scoped
+voice/WSL/editor/web/CLI tests, including six WSL host tests. Native recognition
+also accepts msrdc.exe windows with an OpenCode title, alongside explicit binding
+for other WSLg titles. The local Windows overlay bundle was rebuilt.
+
+Live WSL interop, WSLg clipboard propagation and physical microphone dictation
+remain unverified: this execution host reports that the Windows Subsystem for
+Linux is not installed. No distro or subsystem was installed for these tests.
+
+## Attached Windows microphone button (2026-10-05)
+
+The overlay has a separate compact Windows WebView that follows the selected
+foreground window, hides when another application is active, and preserves
+the target's native focus. OpenCode Desktop executable names and known terminal
+titles containing the standalone word OpenCode are detected automatically.
+An explicit three-second capture supports arbitrary TUI titles. Binding uses
+the window handle and process, is revalidated on each click, and is not persisted
+across runs. The visibility switch is persisted. Placement is relative to the
+window's lower-right corner; this does not locate the composer inside a WebView.
+
+Recording shows a red pulse, a stop icon, an explicit recording label and elapsed
+time. Recognition shows a spinner and disables clicks. The pulse is a status
+animation, not an audio amplitude meter. The second WebView mirrors the existing
+App recorder; it does not create another recorder or submit prompts. Pending
+drafts reuse the original focus guard and can be retried from the widget.
+Closing the main window explicitly exits the process despite the second window.
+Showing the widget uses SW_SHOWNOACTIVATE on every show, while WS_EX_NOACTIVATE
+prevents click activation. Locks are released before synchronous UI-thread queries.
+
+Verified: overlay TypeScript checking and production frontend build; 37 JS tests;
+30 Rust tests with two pre-existing interactive display tests ignored; offline
+Windows GNU native build using the repository's cached toolchain. The new
+`scripts/voice-widget-smoke.mjs` drives both actual React interfaces with a mocked
+Tauri transport: start/stop, elapsed time, disabled recognition, preserved draft
+and retry without recording again, manual submission, and persisted visibility.
+Screenshots were inspected at the widget's actual 204×76 viewport. This fixture
+does not use a microphone, clipboard or user application.
+
+A separately launched native build with an isolated WebView2 profile was also
+checked after window initialization: both windows exist, the widget has
+WS_EX_NOACTIVATE, WS_EX_APPWINDOW is removed, and closing the main window exits
+the process with code 0. The runnable build and sidecars are staged locally in
+`.cache/voice-widget-build`; the installed executable was not replaced.
+
+Remaining interactive checks: actual OpenCode TUI/Desktop window following and
+click focus, mixed-DPI monitor moves, and physical microphone dictation/insertion.
+The attached widget is Windows-only; existing Linux shortcut behavior is unchanged.
+
 ## Linux X11, minimize and automatic insertion (2026-10-02)
 
 The native shortcut now also uses X11 GrabKey and XTEST on Linux, with xclip

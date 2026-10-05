@@ -80,4 +80,25 @@ input[type="radio"] { accent-color: #bfdfa9; }
 .settings-actions .primary-button { flex: 1; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes recording-pulse { 50% { box-shadow: 0 0 0 9px #f69c8012, 0 0 32px #f69c8018; } }
+.window-attachment { margin: 12px 16px 0; padding: 12px; border: 1px solid #ffffff12; border-radius: 12px; }
+.window-attachment .auto-insert-toggle { margin: 0 0 10px; }
+.window-attachment button { width: 100%; font-size: 11px; }
+.window-attachment small { display: block; margin-top: 8px; font-size: 11px; color: #a9b8ad; line-height: 1.5; overflow-wrap: anywhere; }
+.voice-widget-document, .voice-widget-document body { background: transparent; min-width: 0; overflow: hidden; }
+.voice-widget-shell { padding: 9px; }
+.voice-widget-button { display: flex; align-items: center; gap: 10px; width: 100%; height: 58px; border-radius: 16px; padding: 9px 12px; background: #232931; border-color: #586372; color: #edf1f7; box-shadow: 0 3px 8px #0006; }
+.voice-widget-button:hover:not(:disabled) { background: #303945; border-color: #9ab4d3; }
+.voice-widget-button:disabled { opacity: .85; }
+.voice-widget-icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; color: #b7d9ff; }
+.voice-widget-icon svg { width: 23px; height: 23px; }
+.voice-widget-icon .stop-icon { width: 15px; height: 15px; background: currentColor; border-radius: 4px; }
+.voice-widget-icon .spinner { width: 23px; height: 23px; border-color: #b7d9ff30; border-top-color: #b7d9ff; }
+.voice-widget-copy { display: grid; gap: 4px; text-align: left; min-width: 0; }
+.voice-widget-copy strong { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.voice-widget-copy small { font-size: 10px; color: #a9b4c2; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.voice-widget-shell[data-status="recording"] .voice-widget-button { background: #382329; border-color: #f1838c; animation: widget-recording-pulse 1.4s ease-in-out infinite; }
+.voice-widget-shell[data-status="recording"] .voice-widget-icon { color: #ff9ca6; }
+.voice-widget-shell[data-status="recording"] small { color: #edb7bd; }
+.voice-widget-dot { width: 5px; height: 5px; border-radius: 50%; background: #ff8795; margin-left: auto; flex-shrink: 0; }
+@keyframes widget-recording-pulse { 50% { box-shadow: 0 0 0 5px #ff738326, 0 0 9px #ff738344; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

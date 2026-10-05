@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager, State};
 use tokio::sync::{watch, Mutex};
 mod browser_bridge;
 mod native_input;
+mod window_attachment;
 mod sidecars;
 pub use sidecars::sidecar_file;
 
@@ -772,11 +773,22 @@ fn main() {
                 transcription: Mutex::new(None),
                 app_dir,
             });
+            window_attachment::setup(app.handle())?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "overlay" && matches!(event, tauri::WindowEvent::Destroyed) {
+                // The hidden widget must not keep the recorder/hotkey process alive.
+                window.app_handle().exit(0);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             native_input::enable_voice_hotkey,
             native_input::paste_voice_text,
+            window_attachment::voice_widget_snapshot,
+            window_attachment::update_voice_widget,
+            window_attachment::attach_voice_window,
+            window_attachment::toggle_voice_widget,
             browser_bridge::browser_target,
             browser_bridge::insert_in_browser,
             health_check,

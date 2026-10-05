@@ -89,7 +89,7 @@ pub async fn paste_voice_text(
 }
 
 #[cfg(target_os = "windows")]
-mod windows {
+pub(crate) mod windows {
     use super::*;
     use std::{
         ffi::c_void,
@@ -189,7 +189,7 @@ mod windows {
         format!("{action}: {}", std::io::Error::last_os_error())
     }
 
-    fn capture() -> Result<InputTarget, String> {
+    pub(crate) fn capture() -> Result<InputTarget, String> {
         unsafe {
             let window = GetForegroundWindow();
             let mut process = 0;

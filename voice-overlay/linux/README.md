@@ -1,5 +1,55 @@
 # Горячая клавиша и вставка на Linux
 
+## WSL: кнопка поверх терминала Windows / WSLg
+
+Если OpenCode запущен в WSL, команда `opencode-orchestra voice-overlay`
+автоматически запускает **Windows-оверлей** через WSL interop. Он привязывается
+к реальному окну Windows Terminal или Desktop/WSLg и показывает ту же кнопку,
+красную пульсацию, таймер записи и индикатор распознавания. При смене приложения
+кнопка скрывается. Микрофон, Whisper и модели в этом режиме работают на Windows.
+
+В оверлее нажмите **«Привязать к окну TUI / Desktop»** и за три секунды
+переключитесь в окно OpenCode, установив курсор в поле ввода. Главное окно
+оверлея можно свернуть. Повторное нажатие микрофона останавливает запись;
+отправка текста остаётся ручной. При другом окне/поле результат сохраняется.
+Терминал с `OpenCode` в заголовке определяется автоматически; произвольный
+заголовок можно привязать вручную. Для Desktop через WSLg тоже можно использовать
+ручную привязку к его окну на Windows.
+
+Нужен Windows-комплект оверлея с этой кнопкой, установленный рядом с ffmpeg,
+Whisper и DLL. По умолчанию CLI находит его в Windows `%LOCALAPPDATA%`, а модели
+в `%APPDATA%`. Если Windows companion доступен этому CLI, он обновляет установку;
+иначе используется существующая. При неполной установке CLI сообщает команду
+установки, которую нужно выполнить в Windows PowerShell.
+
+Для собранного из этого репозитория оверлея, из WSL:
+
+В корне этого checkout можно выполнить **`bash scripts/voice-wsl-overlay.sh`**:
+скрипт использует локальную сборку из `.cache/voice-widget-build`, если она есть.
+Для явного указания пути:
+
+```bash
+ORCHESTRA_VOICE_WINDOWS_BINARY='/mnt/c/Users/Oe-Admin/Desktop/opencode-orchestra/.cache/voice-widget-build/voice-overlay.exe' \
+  node /mnt/c/Users/Oe-Admin/Desktop/opencode-orchestra/dist/cli.js voice-overlay
+```
+
+Переменная принимает абсолютный путь `/mnt/.../voice-overlay.exe` либо Windows
+путь `C:\...\voice-overlay.exe`; путь с пробелами заключайте в кавычки. Явная
+локальная сборка не заменяется npm companion. Обычный запуск после выпуска
+обновлённого CLI: `opencode-orchestra voice-overlay`.
+
+Нужны включённый WSL interop, доступный `powershell.exe` в PATH и команда
+`wslpath`. Внутри полноценного Linux desktop, запущенного в WSL, прежний нативный
+Linux-оверлей можно выбрать явно: `ORCHESTRA_VOICE_LINUX_NATIVE=1`.
+`voice-web`, `/voice`, `voice-tui` и `voice-model` сохраняют свои Linux-пути;
+модели Windows-оверлея выбирайте/устанавливайте на стороне Windows.
+
+WSLg не предоставляет полноценный Linux desktop; Windows-программы можно
+запускать из WSL как `.exe` ([Microsoft: interop](https://learn.microsoft.com/en-us/windows/wsl/interop),
+[WSLg](https://learn.microsoft.com/en-us/windows/wsl/tutorials/gui-apps)).
+Этот режим не требует GNOME/KDE, xclip или доступа к XWayland для определения
+окна Windows Terminal.
+
 В исходниках добавлен нативный Wayland backend. Для него нужна **новая Linux-сборка**
 voice-overlay; ранее опубликованный npm companion не содержит эту поддержку.
 Горячая клавиша запускает и останавливает запись, распознавание остаётся локальным,
