@@ -11,31 +11,54 @@ pub const SEGMENT_SECONDS: usize = 30;
 pub const SEGMENT_BYTES: usize = SEGMENT_SECONDS * BYTES_PER_SECOND;
 
 /// Returns `(data_start, data_bytes)` for the canonical ffmpeg profile.
+///
+/// Walks the RIFF chunk list instead of assuming a 44-byte header: ffmpeg
+/// inserts a `LIST`/`INFO` chunk before `data`, and the recorder may read the
+/// file while ffmpeg still writes a placeholder `data` size.
 pub fn parse_pcm_wav(wav: &[u8]) -> Option<(usize, usize)> {
-    if wav.len() < WAV_HEADER_BYTES {
-        return None;
-    }
-    if &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" || &wav[12..16] != b"fmt " {
+    if wav.len() < WAV_HEADER_BYTES || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
         return None;
     }
     let u32_at = |offset: usize| u32::from_le_bytes(wav[offset..offset + 4].try_into().unwrap());
     let u16_at = |offset: usize| u16::from_le_bytes(wav[offset..offset + 2].try_into().unwrap());
-    if u32_at(16) != 16 || u16_at(20) != 1 || u16_at(22) != 1 {
-        return None;
+    let mut offset = 12usize;
+    let mut fmt_ok = false;
+    while offset + 8 <= wav.len() {
+        let id = &wav[offset..offset + 4];
+        let size = u32_at(offset + 4) as usize;
+        let body = offset + 8;
+        if id == b"fmt " {
+            if size < 16 || body + 16 > wav.len() {
+                return None;
+            }
+            fmt_ok = u16_at(body) == 1
+                && u16_at(body + 2) == 1
+                && u32_at(body + 4) == SAMPLE_RATE as u32
+                && u32_at(body + 8) == BYTES_PER_SECOND as u32
+                && u16_at(body + 12) == 2
+                && u16_at(body + 14) == 16;
+        } else if id == b"data" {
+            if !fmt_ok {
+                return None;
+            }
+            let available = wav.len() - body;
+            // While recording, ffmpeg writes 0/0xFFFFFFFF until the header is
+            // finalized: trust the bytes actually present in that case.
+            let declared = if size == 0 || size == u32::MAX as usize {
+                available
+            } else {
+                size.min(available)
+            };
+            let data_bytes = declared & !1;
+            if data_bytes == 0 {
+                return None;
+            }
+            return Some((body, data_bytes));
+        }
+        // RIFF chunks are word-aligned: odd sizes carry a pad byte.
+        offset = body + size + (size & 1);
     }
-    if u32_at(24) != SAMPLE_RATE as u32 || u32_at(28) != BYTES_PER_SECOND as u32 {
-        return None;
-    }
-    if u16_at(32) != 2 || u16_at(34) != 16 || &wav[36..40] != b"data" {
-        return None;
-    }
-    let declared = u32_at(40) as usize;
-    let available = wav.len() - WAV_HEADER_BYTES;
-    let data_bytes = declared.min(available) & !1;
-    if data_bytes == 0 {
-        return None;
-    }
-    Some((WAV_HEADER_BYTES, data_bytes))
+    None
 }
 
 pub fn wrap_pcm_as_wav(pcm: &[u8]) -> Vec<u8> {
@@ -170,6 +193,39 @@ mod tests {
         vec![0u8; SAMPLE_RATE * ms / 1000 * 2]
     }
 
+    /// Canonical WAV plus the `LIST`/`INFO`/`ISFT` software metadata chunk that
+    /// recent ffmpeg builds insert between `fmt ` and `data`.
+    fn with_info_chunk(pcm: &[u8]) -> Vec<u8> {
+        let software = b"Lavf63.1.102\0";
+        let isft_size = (4 + software.len()) as u32;
+        let list_body = 4 + 4 + 4 + software.len();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&(SAMPLE_RATE as u32).to_le_bytes());
+        out.extend_from_slice(&(BYTES_PER_SECOND as u32).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"LIST");
+        out.extend_from_slice(&(list_body as u32).to_le_bytes());
+        out.extend_from_slice(b"INFOISFT");
+        out.extend_from_slice(&isft_size.to_le_bytes());
+        out.extend_from_slice(software);
+        if list_body % 2 == 1 {
+            out.push(0);
+        }
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+        out.extend_from_slice(pcm);
+        let riff = (out.len() - 8) as u32;
+        out[4..8].copy_from_slice(&riff.to_le_bytes());
+        out
+    }
+
     #[test]
     fn wav_roundtrip_and_rejection() {
         let pcm = tone(100);
@@ -213,6 +269,29 @@ mod tests {
         assert_eq!(&sliced[44..], &pcm[640 * 10..640 * 40]);
         let unaligned = slice_wav(&wav, 3, 640 * 40);
         assert_eq!(parse_pcm_wav(&unaligned).unwrap().1, 640 * 40 - 2);
+    }
+
+    #[test]
+    fn parses_wav_with_a_metadata_chunk_before_data() {
+        let pcm = tone(500);
+        let wav = with_info_chunk(&pcm);
+        assert_eq!(parse_pcm_wav(&wav), Some((78, pcm.len())));
+    }
+
+    #[test]
+    fn trims_and_slices_wavs_with_metadata_chunks() {
+        let mut pcm = silence(1000);
+        pcm.extend(tone(1000));
+        pcm.extend(silence(1000));
+        let wav = with_info_chunk(&pcm);
+        let trimmed = trim_silence(&wav);
+        assert!(trimmed != wav);
+        let (data_start, bytes) = parse_pcm_wav(&trimmed).unwrap();
+        assert_eq!(data_start, WAV_HEADER_BYTES);
+        let kept_ms = bytes as f64 / BYTES_PER_SECOND as f64 * 1000.0;
+        assert!((1300.0..=1500.0).contains(&kept_ms), "kept {kept_ms} ms");
+        let sliced = slice_wav(&wav, 640 * 10, 640 * 40);
+        assert_eq!(&sliced[44..], &pcm[640 * 10..640 * 40]);
     }
 
     #[test]

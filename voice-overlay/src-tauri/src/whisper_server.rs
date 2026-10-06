@@ -31,8 +31,10 @@ pub fn server_args(model: &Path, threads: usize, port: u16) -> Vec<String> {
 
 fn push_field(body: &mut Vec<u8>, name: &str, value: &str) {
     body.extend_from_slice(
-        format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
-            .as_bytes(),
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+        .as_bytes(),
     );
 }
 
@@ -109,6 +111,9 @@ impl WhisperServer {
             });
         }
         let client = reqwest::Client::builder()
+            // Loopback server: never route dictation audio through OS or
+            // environment proxies (a system VPN may answer 503 for 127.0.0.1).
+            .no_proxy()
             .connect_timeout(Duration::from_secs(5))
             .timeout(INFERENCE_TIMEOUT)
             .build()
@@ -169,9 +174,7 @@ impl WhisperServer {
             .body(body)
             .send()
             .await
-            .map_err(|error| {
-                format!("transcribe-failed: whisper-server недоступен: {error}")
-            })?;
+            .map_err(|error| format!("transcribe-failed: whisper-server недоступен: {error}"))?;
         if !response.status().is_success() {
             return Err(format!(
                 "transcribe-failed: whisper-server http {}",
@@ -229,8 +232,12 @@ mod tests {
     async fn free_port_is_bindable_and_missing_binaries_fail_loudly() {
         let port = free_port().await.unwrap();
         assert!(port > 0);
-        assert!(WhisperServer::start(Path::new("definitely-missing-whisper-server"), Path::new("model.bin"), 4)
-            .await
-            .is_err());
+        assert!(WhisperServer::start(
+            Path::new("definitely-missing-whisper-server"),
+            Path::new("model.bin"),
+            4
+        )
+        .await
+        .is_err());
     }
 }

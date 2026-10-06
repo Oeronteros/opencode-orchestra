@@ -10,9 +10,9 @@ use tokio::sync::{watch, Mutex};
 mod audio;
 mod browser_bridge;
 mod native_input;
-mod window_attachment;
 mod sidecars;
 mod whisper_server;
+mod window_attachment;
 pub use sidecars::sidecar_file;
 
 pub const MAX_SECONDS: u64 = 120;
@@ -152,10 +152,26 @@ fn command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
     command
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+/// Loopback endpoints must never be sent through OS or environment proxies:
+/// dictation audio and local server traffic stay on the machine, and a system
+/// VPN/proxy (Windows `ProxyEnable`) may otherwise answer 503 for 127.0.0.1.
+pub fn is_loopback_host(host: &str) -> bool {
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+fn http_client(host: &str) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(15));
+    if is_loopback_host(host) {
+        builder = builder.no_proxy();
+    }
+    builder
         .build()
         .map_err(|e| format!("server-unreachable: {e}"))
 }
@@ -181,7 +197,8 @@ pub fn thread_override(value: Option<&str>) -> Option<usize> {
 /// whisper.cpp defaults to `min(4, logical cores)`; use the physical cores
 /// instead so SMT does not slow the encoder down.
 pub fn voice_threads() -> usize {
-    if let Some(threads) = thread_override(std::env::var("ORCHESTRA_VOICE_THREADS").ok().as_deref()) {
+    if let Some(threads) = thread_override(std::env::var("ORCHESTRA_VOICE_THREADS").ok().as_deref())
+    {
         return threads;
     }
     num_cpus::get_physical().max(1)
@@ -201,7 +218,9 @@ fn accelerator_preference(app: &AppHandle) -> String {
     if let Ok(dir) = app.path().app_data_dir() {
         if let Ok(text) = std::fs::read_to_string(dir.join("accelerator.json")) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(valid) = parse_accelerator(json.get("accelerator").and_then(|value| value.as_str())) {
+                if let Some(valid) =
+                    parse_accelerator(json.get("accelerator").and_then(|value| value.as_str()))
+                {
                     return valid;
                 }
             }
@@ -230,11 +249,28 @@ fn whisper_server_path(app: &AppHandle) -> Option<PathBuf> {
     sidecars::find("whisper-server", &dir, resource.as_deref())
 }
 
+/// Reads up to `limit` bytes from the start of the growing WAV to locate the
+/// `data` chunk. ffmpeg inserts metadata chunks, so the old fixed 44-byte
+/// header offset is not reliable.
+async fn read_head(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut buffer = vec![0u8; limit];
+    let count = file.read(&mut buffer).await?;
+    buffer.truncate(count);
+    Ok(buffer)
+}
+
 /// Reads a data-relative byte range from the WAV being recorded.
-async fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
+async fn read_range(
+    path: &Path,
+    data_start: u64,
+    start: u64,
+    end: u64,
+) -> std::io::Result<Vec<u8>> {
     use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
     let mut file = tokio::fs::File::open(path).await?;
-    file.seek(std::io::SeekFrom::Start(audio::WAV_HEADER_BYTES as u64 + start))
+    file.seek(std::io::SeekFrom::Start(data_start + start))
         .await?;
     let mut buffer = vec![0u8; (end - start) as usize];
     file.read_exact(&mut buffer).await?;
@@ -290,7 +326,7 @@ async fn recording_ffmpeg(app: &AppHandle, needs_pulse: bool) -> Result<PathBuf,
 
 #[tauri::command]
 async fn health_check(host: String, port: u16) -> Result<bool, String> {
-    let resp = http_client()?
+    let resp = http_client(&host)?
         .get(format!("http://{host}:{port}/global/health"))
         .send()
         .await
@@ -303,7 +339,7 @@ async fn health_check(host: String, port: u16) -> Result<bool, String> {
 
 #[tauri::command]
 async fn append_to_prompt(cfg: ServerConfig, text: String) -> Result<bool, String> {
-    let mut req = http_client()?
+    let mut req = http_client(&cfg.host)?
         .post(append_url(&cfg.host, cfg.port))
         .json(&serde_json::json!({ "text": text }));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
@@ -332,7 +368,7 @@ async fn append_to_prompt(cfg: ServerConfig, text: String) -> Result<bool, Strin
 
 #[tauri::command]
 async fn submit_prompt(cfg: ServerConfig) -> Result<bool, String> {
-    let mut req = http_client()?.post(submit_url(&cfg.host, cfg.port));
+    let mut req = http_client(&cfg.host)?.post(submit_url(&cfg.host, cfg.port));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
     }
@@ -397,21 +433,32 @@ fn spawn_progressive(
 ) -> tokio::task::JoinHandle<()> {
     let app = app.clone();
     tokio::spawn(async move {
+        let mut data_start: Option<u64> = None;
         loop {
             tokio::select! {
                 _ = cancel.changed() => break,
                 _ = tokio::time::sleep(Duration::from_millis(1500)) => {}
             }
+            if data_start.is_none() {
+                // The header may still be buffered; retry until the data chunk
+                // offset is known instead of assuming a 44-byte header.
+                if let Ok(head) = read_head(&wav, 4096).await {
+                    data_start = audio::parse_pcm_wav(&head).map(|(start, _)| start as u64);
+                }
+            }
+            let Some(data_start) = data_start else {
+                continue;
+            };
             let Ok(metadata) = tokio::fs::metadata(&wav).await else {
                 continue;
             };
-            let available = metadata.len().saturating_sub(audio::WAV_HEADER_BYTES as u64);
+            let available = metadata.len().saturating_sub(data_start);
             let start = consumed.load(Ordering::SeqCst);
             let end = start + audio::SEGMENT_BYTES as u64;
             if available < end {
                 continue;
             }
-            let Ok(pcm) = read_range(&wav, start, end).await else {
+            let Ok(pcm) = read_range(&wav, data_start, start, end).await else {
                 // ffmpeg has not flushed the segment yet; retry next tick.
                 continue;
             };
@@ -841,7 +888,8 @@ async fn transcribe_via_server(
             previous.kill().await;
         }
         let threads = voice_threads();
-        *guard = Some(whisper_server::WhisperServer::start(server_path, model_path, threads).await?);
+        *guard =
+            Some(whisper_server::WhisperServer::start(server_path, model_path, threads).await?);
     }
     let mut cancelled = false;
     let result = {
@@ -898,7 +946,7 @@ pub struct SessionInfo {
 
 #[tauri::command]
 async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
-    let mut req = http_client()?.get(session_url(&cfg.host, cfg.port));
+    let mut req = http_client(&cfg.host)?.get(session_url(&cfg.host, cfg.port));
     if let Some(auth) = basic_auth_value(&cfg.username, &cfg.password) {
         req = req.header("Authorization", auth);
     }
@@ -908,7 +956,7 @@ async fn list_sessions(cfg: ServerConfig) -> Result<Vec<SessionInfo>, String> {
         .map_err(|e| format!("server-unreachable: {e}"))?;
     // Older servers do not expose the cross-project session API.
     if resp.status().as_u16() == 404 {
-        let mut req = http_client()?.get(format!(
+        let mut req = http_client(&cfg.host)?.get(format!(
             "http://{}:{}/session?roots=true&limit=1000",
             cfg.host, cfg.port
         ));
@@ -986,7 +1034,7 @@ async fn send_to_session(
     }
     // Resolve afresh, including when the selection was restored from settings.
     // Session lookup is global; prompt execution needs the session's directory.
-    let mut lookup = http_client()?.get(format!(
+    let mut lookup = http_client(&cfg.host)?.get(format!(
         "http://{}:{}/session/{}",
         cfg.host, cfg.port, session_id
     ));
@@ -1012,7 +1060,7 @@ async fn send_to_session(
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "fallback: сервер не вернул каталог сессии".to_string())?;
-    let mut req = http_client()?
+    let mut req = http_client(&cfg.host)?
         .post(message_url(&cfg.host, cfg.port, &session_id))
         .query(&[("directory", directory)])
         .json(&serde_json::json!({ "parts": [{ "type": "text", "text": text }] }));
@@ -1316,6 +1364,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn loopback_hosts_bypass_system_proxies() {
+        for host in [
+            "127.0.0.1",
+            "127.1.2.3",
+            "localhost",
+            "LOCALHOST",
+            "::1",
+            "[::1]",
+            " 127.0.0.1 ",
+        ] {
+            assert!(is_loopback_host(host), "{host}");
+        }
+        for host in ["192.168.1.5", "10.0.0.1", "example.com", ""] {
+            assert!(!is_loopback_host(host), "{host}");
+        }
+    }
+
     #[tokio::test]
     async fn tui_submission_checks_server_acknowledgement() {
         use std::io::{Read, Write};
@@ -1421,7 +1487,10 @@ mod tests {
         for value in ["auto", "cpu", "cuda", "cuda11", "vulkan"] {
             assert_eq!(parse_accelerator(Some(value)), Some(value.to_string()));
         }
-        assert_eq!(parse_accelerator(Some(" vulkan ")), Some("vulkan".to_string()));
+        assert_eq!(
+            parse_accelerator(Some(" vulkan ")),
+            Some("vulkan".to_string())
+        );
         for value in ["", "cuda12", "../evil"] {
             assert_eq!(parse_accelerator(Some(value)), None);
         }

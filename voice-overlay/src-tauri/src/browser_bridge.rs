@@ -19,7 +19,7 @@ async fn request(
         "http://{}:{}/__orchestra_voice/bridge/{}",
         cfg.host, cfg.port, endpoint
     );
-    let client = crate::http_client()?;
+    let client = crate::http_client(&cfg.host)?;
     let request = if let Some(body) = body {
         client.post(url).json(&body)
     } else {
