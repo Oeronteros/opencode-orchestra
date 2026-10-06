@@ -3,7 +3,7 @@ import { browserDiagnostics, refreshBrowserStatus } from "../browser/diagnostics
 import type { BrowserStatus } from "../browser/runtime.js"
 import { randomBytes } from "node:crypto"
 import { spawn } from "node:child_process"
-import { createReadStream } from "node:fs"
+import { createReadStream, readdirSync } from "node:fs"
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import os from "node:os"
@@ -300,13 +300,76 @@ interface ConnectedModelsCacheEntry {
 }
 const connectedModelsCache = new Map<string, ConnectedModelsCacheEntry>()
 
-export function discoverConnectedModels(directory: string): Promise<string[]> {
-  return new Promise((resolve) => {
-    const executable = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "opencode"
+/** One way to ask an OpenCode installation for its provider/model catalog. */
+export interface ModelDiscoveryCommand {
+  executable: string
+  args: string[]
+}
+
+const MODEL_DISCOVERY_TIMEOUT_MS = 10_000
+const MODEL_DISCOVERY_BUDGET_MS = 20_000
+
+function directoriesIn(root: string): string[] {
+  try {
+    return readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+  } catch {
+    return []
+  }
+}
+
+/** Natural ordering keeps `2.0.9` before `2.0.23`. */
+function newestVersion(names: string[]): string | undefined {
+  return [...names].sort((left, right) => left.localeCompare(right, undefined, { numeric: true })).at(-1)
+}
+
+function desktopCliRoots(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
+  if (platform === "win32") return env.APPDATA ? [path.join(env.APPDATA, "ai.opencode.desktop", "cli")] : []
+  if (platform === "darwin") return [path.join(os.homedir(), "Library", "Application Support", "ai.opencode.desktop", "cli")]
+  return [path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "ai.opencode.desktop", "cli")]
+}
+
+/**
+ * Candidate commands that expose the connected provider/model catalog, in
+ * priority order. The classic CLI lives on PATH, while the desktop app keeps
+ * its `opencode-cli` binary in per-user directories that PATH never includes;
+ * those are probed explicitly so desktop installs still list every model.
+ */
+export function modelDiscoveryCommands(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): ModelDiscoveryCommand[] {
+  const commands: ModelDiscoveryCommand[] = []
+  if (platform === "win32") {
+    const comspec = env.ComSpec ?? env.COMSPEC ?? "cmd.exe"
     // Let cmd.exe resolve PATHEXT: npm installs a .cmd shim, while native
-    // Windows installations provide opencode.exe.
-    const args = process.platform === "win32" ? ["/d", "/s", "/c", "opencode models"] : ["models"]
-    const child = spawn(executable, args, { cwd: directory, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+    // Windows installations provide opencode.exe or opencode-cli.exe.
+    commands.push(
+      { executable: comspec, args: ["/d", "/s", "/c", "opencode models"] },
+      { executable: comspec, args: ["/d", "/s", "/c", "opencode-cli models"] },
+    )
+  } else {
+    commands.push(
+      { executable: "opencode", args: ["models"] },
+      { executable: "opencode-cli", args: ["models"] },
+    )
+  }
+  const binary = platform === "win32" ? "opencode-cli.exe" : "opencode-cli"
+  for (const root of desktopCliRoots(platform, env)) {
+    const version = newestVersion(directoriesIn(root))
+    if (version) commands.push({ executable: path.join(root, version, binary), args: ["models"] })
+  }
+  if (platform === "win32" && env.LOCALAPPDATA) {
+    commands.push({ executable: path.join(env.LOCALAPPDATA, "Programs", "@opencodedesktop", "resources", binary), args: ["models"] })
+  }
+  return commands
+}
+
+function runModelDiscovery(command: ModelDiscoveryCommand, directory: string, timeoutMs: number): Promise<string[]> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command.executable, command.args, { cwd: directory, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+    } catch {
+      resolve([])
+      return
+    }
     let stdout = ""
     let settled = false
     const finish = (models: string[]) => {
@@ -318,15 +381,31 @@ export function discoverConnectedModels(directory: string): Promise<string[]> {
     const timer = setTimeout(() => {
       child.kill()
       finish([])
-    }, 10_000)
+    }, timeoutMs)
     timer.unref?.()
-    child.stdout.setEncoding("utf8")
-    child.stdout.on("data", (chunk: string) => { stdout += chunk })
+    child.stdout?.setEncoding("utf8")
+    child.stdout?.on("data", (chunk: string) => { stdout += chunk })
     child.once("error", () => finish([]))
     child.once("close", (code) => finish(code === 0
       ? [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[^\s/]+\/[^\s]+$/.test(line)))].sort()
       : []))
   })
+}
+
+/**
+ * Read the provider/model catalog of the OpenCode installation that owns this
+ * project. Layouts differ between the standalone CLI and the desktop app, so
+ * every candidate is tried until one returns models.
+ */
+export async function discoverConnectedModels(directory: string): Promise<string[]> {
+  const deadline = Date.now() + MODEL_DISCOVERY_BUDGET_MS
+  for (const command of modelDiscoveryCommands()) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    const models = await runModelDiscovery(command, directory, Math.min(MODEL_DISCOVERY_TIMEOUT_MS, remaining))
+    if (models.length > 0) return models
+  }
+  return []
 }
 
 async function connectedModels(directory: string): Promise<string[]> {

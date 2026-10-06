@@ -3,7 +3,7 @@ import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promi
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { discoverConnectedModels, startDashboard } from "../src/dashboard/server.js"
+import { discoverConnectedModels, modelDiscoveryCommands, startDashboard } from "../src/dashboard/server.js"
 import { projectId, readProjects, registerProject } from "../src/dashboard/registry.js"
 
 test("Windows model discovery supports native executables and npm shims", { skip: process.platform !== "win32" }, async (t) => {
@@ -31,6 +31,50 @@ test("Windows model discovery supports native executables and npm shims", { skip
         await rm(root, { recursive: true, force: true })
       }
     })
+  }
+})
+
+test("model discovery probes desktop CLI installs outside PATH", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-desktop-cli-"))
+  try {
+    const roaming = path.join(root, "Roaming")
+    const local = path.join(root, "Local")
+    // The newest version must win even though `2.0.9` sorts after `2.0.23`
+    // lexicographically.
+    await mkdir(path.join(roaming, "ai.opencode.desktop", "cli", "2.0.23"), { recursive: true })
+    await mkdir(path.join(roaming, "ai.opencode.desktop", "cli", "2.0.9"), { recursive: true })
+    assert.deepEqual(modelDiscoveryCommands("win32", { ComSpec: "cmd.exe", APPDATA: roaming, LOCALAPPDATA: local }), [
+      { executable: "cmd.exe", args: ["/d", "/s", "/c", "opencode models"] },
+      { executable: "cmd.exe", args: ["/d", "/s", "/c", "opencode-cli models"] },
+      { executable: path.join(roaming, "ai.opencode.desktop", "cli", "2.0.23", "opencode-cli.exe"), args: ["models"] },
+      { executable: path.join(local, "Programs", "@opencodedesktop", "resources", "opencode-cli.exe"), args: ["models"] },
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Windows model discovery falls back to the desktop CLI binary", { skip: process.platform !== "win32" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-desktop-models-"))
+  const emptyPath = path.join(root, "empty")
+  const roaming = path.join(root, "Roaming")
+  const cliDirectory = path.join(roaming, "ai.opencode.desktop", "cli", "2.0.23")
+  const previousPath = process.env.PATH
+  const previousAppData = process.env.APPDATA
+  try {
+    await mkdir(emptyPath, { recursive: true })
+    await mkdir(cliDirectory, { recursive: true })
+    await copyFile(process.execPath, path.join(cliDirectory, "opencode-cli.exe"))
+    await writeFile(path.join(root, "models"), 'console.log("desktop/model"); console.log("desktop/model"); console.log("not a model")\n')
+    process.env.PATH = emptyPath
+    process.env.APPDATA = roaming
+    assert.deepEqual(await discoverConnectedModels(root), ["desktop/model"])
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH
+    else process.env.PATH = previousPath
+    if (previousAppData === undefined) delete process.env.APPDATA
+    else process.env.APPDATA = previousAppData
+    await rm(root, { recursive: true, force: true })
   }
 })
 
