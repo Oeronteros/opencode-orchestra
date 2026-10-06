@@ -7,6 +7,11 @@ export function updateVoiceWidget(snapshot: WidgetSnapshot): Promise<void> {
   return invoke("update_voice_widget", { snapshot });
 }
 
+/** Hides the window to the system tray; the hotkey and recording keep running. */
+export function minimizeToTray(): Promise<void> {
+  return invoke<void>("minimize_to_tray");
+}
+
 export function attachVoiceWindow(): Promise<string> {
   return invoke("attach_voice_window");
 }

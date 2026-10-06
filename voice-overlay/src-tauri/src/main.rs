@@ -3,6 +3,8 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{watch, Mutex};
 mod audio;
@@ -1039,6 +1041,66 @@ async fn send_to_session(
     Ok(true)
 }
 
+/// Restores the overlay from the tray (also used by the tray menu).
+fn show_overlay_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// Kills the warm whisper server before leaving, then exits the process.
+fn exit_voice_app(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::block_on(async {
+        let state = app.state::<AppState>();
+        let server = { state.whisper.lock().await.take() };
+        if let Some(mut server) = server {
+            server.kill().await;
+        }
+    });
+    app.exit(0);
+}
+
+/// Tray icon: left click restores the window, the menu can restore or quit.
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "Открыть окно", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut builder = TrayIconBuilder::with_id("voice-overlay")
+        .tooltip("Голосовой ввод OpenCode")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_overlay_window(app),
+            "quit" => exit_voice_app(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_overlay_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+/// Custom title-bar minimize: hide to the tray instead of the taskbar so the
+/// global hotkey and an in-progress recording keep running.
+#[tauri::command]
+async fn minimize_to_tray(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.hide().map_err(|error| error.to_string())
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
     if let Some(action) = std::env::args().nth(1) {
@@ -1080,20 +1142,13 @@ fn main() {
                 app_dir,
             });
             window_attachment::setup(app.handle())?;
+            setup_tray(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
             if window.label() == "overlay" && matches!(event, tauri::WindowEvent::Destroyed) {
                 // The hidden widget must not keep the recorder/hotkey process alive.
-                let app = window.app_handle();
-                tauri::async_runtime::block_on(async {
-                    let state = app.state::<AppState>();
-                    let server = { state.whisper.lock().await.take() };
-                    if let Some(mut server) = server {
-                        server.kill().await;
-                    }
-                });
-                app.exit(0);
+                exit_voice_app(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1111,6 +1166,7 @@ fn main() {
             list_microphones,
             start_recording,
             stop_recording,
+            minimize_to_tray,
             transcribe,
             cancel_transcription,
             list_sessions,
