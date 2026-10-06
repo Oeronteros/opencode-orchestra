@@ -1,12 +1,16 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{watch, Mutex};
+mod audio;
 mod browser_bridge;
 mod native_input;
 mod window_attachment;
 mod sidecars;
+mod whisper_server;
 pub use sidecars::sidecar_file;
 
 pub const MAX_SECONDS: u64 = 120;
@@ -25,12 +29,30 @@ pub struct Recording {
     pub wav: PathBuf,
     pub child: tokio::process::Child,
     pub folder: tempfile::TempDir,
+    pub model: String,
+    pub language: String,
+    pub chunks: Arc<Mutex<Vec<String>>>,
+    pub consumed: Arc<AtomicU64>,
+    pub pump_cancel: watch::Sender<bool>,
+    pub pump: tokio::task::JoinHandle<()>,
+}
+
+/// Completed recording handed from `stop_recording` to `transcribe`, together
+/// with any segments already recognized while the user was speaking.
+#[derive(Debug)]
+pub struct PendingVoice {
+    pub folder: tempfile::TempDir,
+    pub model: String,
+    pub language: String,
+    pub chunks: Vec<String>,
+    pub consumed: u64,
 }
 
 pub struct AppState {
     pub recording: Mutex<Option<Recording>>,
-    pub pending: Mutex<Option<tempfile::TempDir>>,
+    pub pending: Mutex<Option<PendingVoice>>,
     pub transcription: Mutex<Option<watch::Sender<bool>>>,
+    pub whisper: Mutex<Option<whisper_server::WhisperServer>>,
     pub app_dir: PathBuf,
 }
 
@@ -142,6 +164,79 @@ fn sidecar_path(app: &AppHandle, base: &str) -> Result<PathBuf, String> {
         .parent()
         .ok_or("transcribe-failed: executable directory missing")?;
     sidecars::resolve(base, dir, app.path().resource_dir().ok().as_deref())
+}
+
+/// Bounded explicit thread override for local whisper inference.
+pub fn thread_override(value: Option<&str>) -> Option<usize> {
+    let raw = value?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let parsed: usize = raw.parse().ok()?;
+    (1..=128).contains(&parsed).then_some(parsed)
+}
+
+/// whisper.cpp defaults to `min(4, logical cores)`; use the physical cores
+/// instead so SMT does not slow the encoder down.
+pub fn voice_threads() -> usize {
+    if let Some(threads) = thread_override(std::env::var("ORCHESTRA_VOICE_THREADS").ok().as_deref()) {
+        return threads;
+    }
+    num_cpus::get_physical().max(1)
+}
+
+pub fn parse_accelerator(value: Option<&str>) -> Option<String> {
+    match value?.trim() {
+        "auto" | "cpu" | "cuda" | "cuda11" | "vulkan" => Some(value?.trim().to_string()),
+        _ => None,
+    }
+}
+
+fn accelerator_preference(app: &AppHandle) -> String {
+    if let Some(valid) = parse_accelerator(std::env::var("ORCHESTRA_VOICE_ACCEL").ok().as_deref()) {
+        return valid;
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        if let Ok(text) = std::fs::read_to_string(dir.join("accelerator.json")) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(valid) = parse_accelerator(json.get("accelerator").and_then(|value| value.as_str())) {
+                    return valid;
+                }
+            }
+        }
+    }
+    "auto".to_string()
+}
+
+/// Resolves the optional warm server: accelerator subdirectories first, then
+/// the CPU root layout. `None` means "fall back to the one-shot CLI".
+fn whisper_server_path(app: &AppHandle) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.to_path_buf();
+    let resource = app.path().resource_dir().ok();
+    let preference = accelerator_preference(app);
+    let accel_dirs: Vec<&str> = match preference.as_str() {
+        "auto" => vec!["cuda", "cuda11", "vulkan"],
+        "cpu" => Vec::new(),
+        other => vec![other],
+    };
+    for accel in accel_dirs {
+        if let Some(path) = sidecars::find("whisper-server", &dir.join(accel), None) {
+            return Some(path);
+        }
+    }
+    sidecars::find("whisper-server", &dir, resource.as_deref())
+}
+
+/// Reads a data-relative byte range from the WAV being recorded.
+async fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(audio::WAV_HEADER_BYTES as u64 + start))
+        .await?;
+    let mut buffer = vec![0u8; (end - start) as usize];
+    file.read_exact(&mut buffer).await?;
+    Ok(buffer)
 }
 
 async fn recording_ffmpeg(app: &AppHandle, needs_pulse: bool) -> Result<PathBuf, String> {
@@ -286,12 +381,69 @@ async fn list_microphones(app: AppHandle) -> Result<Vec<String>, String> {
     Ok(devices)
 }
 
+/// Recognizes completed 30 s segments while the user is still speaking, so
+/// only the tail is left after Stop. `consumed` advances only after a segment
+/// was transcribed successfully; interrupted work is retried as the tail.
+fn spawn_progressive(
+    app: &AppHandle,
+    wav: PathBuf,
+    model: String,
+    language: String,
+    chunks: Arc<Mutex<Vec<String>>>,
+    consumed: Arc<AtomicU64>,
+    mut cancel: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let app = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.changed() => break,
+                _ = tokio::time::sleep(Duration::from_millis(1500)) => {}
+            }
+            let Ok(metadata) = tokio::fs::metadata(&wav).await else {
+                continue;
+            };
+            let available = metadata.len().saturating_sub(audio::WAV_HEADER_BYTES as u64);
+            let start = consumed.load(Ordering::SeqCst);
+            let end = start + audio::SEGMENT_BYTES as u64;
+            if available < end {
+                continue;
+            }
+            let Ok(pcm) = read_range(&wav, start, end).await else {
+                // ffmpeg has not flushed the segment yet; retry next tick.
+                continue;
+            };
+            let segment = audio::wrap_pcm_as_wav(&pcm);
+            match transcribe_bytes(&app, &segment, &model, &language, cancel.clone()).await {
+                Ok(text) => {
+                    if !text.is_empty() {
+                        let mut guard = chunks.lock().await;
+                        guard.push(text);
+                        let _ = app.emit("voice-partial", audio::merge_segments(&guard, ""));
+                    }
+                    consumed.store(end, Ordering::SeqCst);
+                }
+                Err(error) => {
+                    if error.starts_with("cancelled:") {
+                        break;
+                    }
+                    // Keep the bytes pending: stop_recording retries them as
+                    // the tail instead of losing speech.
+                    eprintln!("voice-overlay: segment transcription failed: {error}");
+                    break;
+                }
+            }
+        }
+    })
+}
+
 #[tauri::command]
 async fn start_recording(
     app: AppHandle,
     state: State<'_, AppState>,
     device: Option<String>,
     model: String,
+    language: Option<String>,
 ) -> Result<bool, String> {
     // Hold the async lock through initialization so two starts cannot open the mic.
     let mut slot = state.recording.lock().await;
@@ -301,7 +453,12 @@ async fn start_recording(
         return Err("busy: предыдущая запись ещё обрабатывается".to_string());
     }
     model_path(&app, &model)?;
-    sidecar_path(&app, "whisper")?;
+    let language = allowed_language(language.as_deref().unwrap_or("ru"))?.to_string();
+    // The warm server replaces the one-shot CLI when installed; keep requiring
+    // a whisper binary of either kind so older installs still work.
+    if whisper_server_path(&app).is_none() {
+        sidecar_path(&app, "whisper")?;
+    }
     let device = if cfg!(target_os = "windows")
         && device.as_deref().unwrap_or("").is_empty()
         && std::env::var("VOICE_FFMPEG_TEST_INPUT").is_err()
@@ -361,10 +518,24 @@ async fn start_recording(
         .stderr(Stdio::from(stderr_file))
         .spawn()
         .map_err(|e| format!("no-ffmpeg: не удалось запустить ffmpeg: {e}"))?;
+    let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let consumed = Arc::new(AtomicU64::new(0));
+    let (pump_cancel, pump_cancel_rx) = watch::channel(false);
+    let pump = spawn_progressive(
+        &app,
+        wav.clone(),
+        model.clone(),
+        language.clone(),
+        chunks.clone(),
+        consumed.clone(),
+        pump_cancel_rx,
+    );
     // Report failed audio-device initialization instead of pretending to record.
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     if let Some(exit) = child.try_wait().map_err(|e| format!("no-mic: {e}"))? {
         if !exit.success() {
+            let _ = pump_cancel.send(true);
+            pump.abort();
             let detail = std::fs::read_to_string(wav.with_extension("stderr")).unwrap_or_default();
             return Err(format!(
                 "{}: {}",
@@ -378,7 +549,17 @@ async fn start_recording(
         }
     }
     // FFmpeg owns the duration limit and finalizes the WAV itself (-t).
-    *slot = Some(Recording { wav, child, folder });
+    *slot = Some(Recording {
+        wav,
+        child,
+        folder,
+        model,
+        language,
+        chunks,
+        consumed,
+        pump_cancel,
+        pump,
+    });
     Ok(true)
 }
 
@@ -388,6 +569,11 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
     let mut rec = slot
         .take()
         .ok_or_else(|| "idle: запись не запущена".to_string())?;
+    // No more audio will be appended: stop progressive work first. A segment
+    // that was interrupted stays pending because `consumed` only advances on
+    // success, and it will be retried as the tail below.
+    let _ = rec.pump_cancel.send(true);
+    rec.pump.abort();
     let finished = tokio::time::timeout(Duration::from_secs(5), async {
         if let Some(mut stdin) = rec.child.stdin.take() {
             use tokio::io::AsyncWriteExt as _;
@@ -413,7 +599,16 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
     if size < MIN_WAV_BYTES {
         return Err("empty-recording: запись пустая (короче полсекунды). Нажми Record, дождись и потом Stop.".to_string());
     }
-    *state.pending.lock().await = Some(rec.folder);
+    let _ = rec.pump.await;
+    let chunks = rec.chunks.lock().await.clone();
+    let consumed = rec.consumed.load(Ordering::SeqCst);
+    *state.pending.lock().await = Some(PendingVoice {
+        folder: rec.folder,
+        model: rec.model.clone(),
+        language: rec.language.clone(),
+        chunks,
+        consumed,
+    });
     Ok(rec.wav.to_string_lossy().into_owned())
 }
 
@@ -471,7 +666,8 @@ async fn transcribe(
     model: String,
     language: Option<String>,
 ) -> Result<String, String> {
-    let language = allowed_language(language.as_deref().unwrap_or("ru"))?;
+    allowed_language(language.as_deref().unwrap_or("ru"))?;
+    allowed_model_file(&model)?;
     let mut slot = state.transcription.lock().await;
     if slot.is_some() {
         return Err("busy: распознавание уже выполняется".to_string());
@@ -479,52 +675,123 @@ async fn transcribe(
     let mut pending = state.pending.lock().await;
     if pending
         .as_ref()
-        .map(|folder| folder.path().join("audio.wav"))
+        .map(|voice| voice.folder.path().join("audio.wav"))
         != Some(PathBuf::from(&wav))
     {
         return Err("transcribe-failed: неизвестная запись".to_string());
     }
-    let folder = pending.take().unwrap();
+    let voice = pending.take().unwrap();
     drop(pending);
     let (sender, receiver) = watch::channel(false);
     *slot = Some(sender);
     drop(slot);
-    let result = transcribe_file(&app, &wav, &model, language, receiver).await;
+    let result = transcribe_pending(&app, &voice, receiver).await;
     // The process has exited before TempDir removes WAV, stderr and transcript.
-    drop(folder);
+    drop(voice);
     *state.transcription.lock().await = None;
     result
 }
 
-async fn transcribe_file(
+/// Transcribes what is left: recognized progressive segments plus the tail.
+async fn transcribe_pending(
     app: &AppHandle,
-    wav: &str,
+    voice: &PendingVoice,
+    cancel: watch::Receiver<bool>,
+) -> Result<String, String> {
+    let wav = voice.folder.path().join("audio.wav");
+    let bytes = tokio::fs::read(&wav)
+        .await
+        .map_err(|e| format!("transcribe-failed: {e}"))?;
+    if voice.consumed == 0 && voice.chunks.is_empty() {
+        let text = transcribe_bytes(app, &bytes, &voice.model, &voice.language, cancel).await?;
+        if text.is_empty() {
+            return Err(
+                "empty-transcript: речь не распознана. Попробуй говорить громче и ближе к микрофону."
+                    .to_string(),
+            );
+        }
+        return Ok(text);
+    }
+    let tail = match audio::parse_pcm_wav(&bytes) {
+        Some((_, data_bytes)) => {
+            let from = (voice.consumed as usize).min(data_bytes) & !1;
+            let to = data_bytes & !1;
+            if to > from {
+                audio::slice_wav(&bytes, from, to)
+            } else {
+                Vec::new()
+            }
+        }
+        None => Vec::new(),
+    };
+    let tail_text = if tail.len() > audio::WAV_HEADER_BYTES {
+        transcribe_bytes(app, &tail, &voice.model, &voice.language, cancel).await?
+    } else {
+        String::new()
+    };
+    let text = audio::merge_segments(&voice.chunks, &tail_text);
+    if text.is_empty() {
+        return Err(
+            "empty-transcript: речь не распознана. Попробуй говорить громче и ближе к микрофону."
+                .to_string(),
+        );
+    }
+    Ok(text)
+}
+
+/// Trims silence, then prefers the warm whisper-server and falls back to the
+/// one-shot CLI with an explicit physical-core thread count.
+async fn transcribe_bytes(
+    app: &AppHandle,
+    wav: &[u8],
     model: &str,
+    language: &str,
+    cancel: watch::Receiver<bool>,
+) -> Result<String, String> {
+    let model_path = model_path(app, model)?;
+    let trimmed = audio::trim_silence(wav);
+    if let Some(server) = whisper_server_path(app) {
+        return transcribe_via_server(app, &server, &model_path, trimmed, language, cancel).await;
+    }
+    transcribe_via_cli(app, &trimmed, &model_path, language, cancel).await
+}
+
+async fn transcribe_via_cli(
+    app: &AppHandle,
+    wav: &[u8],
+    model_path: &Path,
     language: &str,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<String, String> {
-    let model_path = model_path(app, model)?;
     let whisper = sidecar_path(app, "whisper")?;
-    let out_base = format!("{wav}.out");
+    let state = app.state::<AppState>();
+    let folder = tempfile::Builder::new()
+        .prefix("transcribe-")
+        .tempdir_in(&state.app_dir)
+        .map_err(|e| format!("transcribe-failed: {e}"))?;
+    let file = folder.path().join("audio.wav");
+    tokio::fs::write(&file, wav)
+        .await
+        .map_err(|e| format!("transcribe-failed: {e}"))?;
+    let out_base = folder.path().join("result");
     let args = vec![
         "-m".to_string(),
         model_path.to_string_lossy().into_owned(),
         "-l".to_string(),
         language.to_string(),
         "-f".to_string(),
-        wav.to_string(),
+        file.to_string_lossy().into_owned(),
         "-otxt".to_string(),
         "-of".to_string(),
-        out_base.clone(),
+        out_base.to_string_lossy().into_owned(),
+        "-t".to_string(),
+        voice_threads().to_string(),
     ];
-    // Redirect output to files: wait() must not deadlock on full stderr pipes.
-    let stderr = std::fs::File::create(format!("{wav}.whisper.stderr"))
-        .map_err(|e| format!("transcribe-failed: {e}"))?;
     let mut child = command(whisper)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(stderr)
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("transcribe-failed: не удалось запустить whisper: {e}"))?;
     let status = tokio::select! {
@@ -546,17 +813,55 @@ async fn transcribe_file(
             status.code().unwrap_or(-1)
         ));
     }
-    let text = std::fs::read_to_string(format!("{out_base}.txt"))
+    let text = std::fs::read_to_string(format!("{}.txt", out_base.to_string_lossy()))
         .map_err(|e| format!("transcribe-failed: нет результата: {e}"))?
         .trim()
         .to_string();
-    if text.is_empty() {
-        return Err(
-            "empty-transcript: речь не распознана. Попробуй говорить громче и ближе к микрофону."
-                .to_string(),
-        );
-    }
     Ok(text)
+}
+
+async fn transcribe_via_server(
+    app: &AppHandle,
+    server_path: &Path,
+    model_path: &Path,
+    wav: Vec<u8>,
+    language: &str,
+    mut cancel: watch::Receiver<bool>,
+) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    let mut guard = state.whisper.lock().await;
+    let needs_restart = guard
+        .as_ref()
+        .map(|server| server.model() != model_path)
+        .unwrap_or(true);
+    if needs_restart {
+        if let Some(mut previous) = guard.take() {
+            previous.kill().await;
+        }
+        let threads = voice_threads();
+        *guard = Some(whisper_server::WhisperServer::start(server_path, model_path, threads).await?);
+    }
+    let mut cancelled = false;
+    let result = {
+        let server = guard
+            .as_mut()
+            .ok_or_else(|| "transcribe-failed: whisper-server недоступен".to_string())?;
+        tokio::select! {
+            result = server.transcribe(&wav, language) => result,
+            _ = cancel.changed() => {
+                cancelled = true;
+                Err("cancelled: распознавание отменено".to_string())
+            }
+        }
+    };
+    if cancelled {
+        // The server may still be busy with the aborted request; restart it
+        // for the next dictation instead of queueing behind dead work.
+        if let Some(mut server) = guard.take() {
+            server.kill().await;
+        }
+    }
+    result
 }
 
 pub fn session_url(host: &str, port: u16) -> String {
@@ -771,6 +1076,7 @@ fn main() {
                 recording: Mutex::new(None),
                 pending: Mutex::new(None),
                 transcription: Mutex::new(None),
+                whisper: Mutex::new(None),
                 app_dir,
             });
             window_attachment::setup(app.handle())?;
@@ -779,7 +1085,15 @@ fn main() {
         .on_window_event(|window, event| {
             if window.label() == "overlay" && matches!(event, tauri::WindowEvent::Destroyed) {
                 // The hidden widget must not keep the recorder/hotkey process alive.
-                window.app_handle().exit(0);
+                let app = window.app_handle();
+                tauri::async_runtime::block_on(async {
+                    let state = app.state::<AppState>();
+                    let server = { state.whisper.lock().await.take() };
+                    if let Some(mut server) = server {
+                        server.kill().await;
+                    }
+                });
+                app.exit(0);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1032,6 +1346,30 @@ mod tests {
     fn sidecar_name_carries_base_and_triple() {
         let name = sidecar_file("binaries/ffmpeg").unwrap();
         assert!(name.starts_with("binaries/ffmpeg-"), "{name}");
+    }
+
+    #[test]
+    fn thread_override_is_bounded_and_parses_env_values() {
+        assert_eq!(thread_override(Some("8")), Some(8));
+        assert_eq!(thread_override(Some(" 6 ")), Some(6));
+        assert_eq!(thread_override(Some("0")), None);
+        assert_eq!(thread_override(Some("-2")), None);
+        assert_eq!(thread_override(Some("9999")), None);
+        assert_eq!(thread_override(Some("half")), None);
+        assert_eq!(thread_override(None), None);
+        assert!(voice_threads() >= 1);
+    }
+
+    #[test]
+    fn accelerator_preference_accepts_known_values_only() {
+        for value in ["auto", "cpu", "cuda", "cuda11", "vulkan"] {
+            assert_eq!(parse_accelerator(Some(value)), Some(value.to_string()));
+        }
+        assert_eq!(parse_accelerator(Some(" vulkan ")), Some("vulkan".to_string()));
+        for value in ["", "cuda12", "../evil"] {
+            assert_eq!(parse_accelerator(Some(value)), None);
+        }
+        assert_eq!(parse_accelerator(None), None);
     }
 
     #[test]

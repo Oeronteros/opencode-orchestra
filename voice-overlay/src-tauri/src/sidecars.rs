@@ -54,6 +54,15 @@ pub fn resolve(base: &str, exe_dir: &Path, resource_dir: Option<&Path>) -> Resul
         })
 }
 
+/// Optional sidecar lookup (no error): used for `whisper-server`, whose
+/// absence must fall back to the one-shot CLI instead of failing.
+pub fn find(base: &str, exe_dir: &Path, resource_dir: Option<&Path>) -> Option<PathBuf> {
+    candidates(base, exe_dir, resource_dir)
+        .ok()?
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
 #[cfg(test)]
 pub fn supports_pulse(devices: &str) -> bool {
     supports_input(devices, "pulse")
@@ -84,13 +93,16 @@ mod tests {
             } else {
                 "transcribe-failed:"
             }));
+            assert_eq!(find(base, &exe, Some(&resources)), None);
             let paths = candidates(base, &exe, Some(&resources)).unwrap();
             for candidate in paths.iter().rev() {
                 std::fs::write(candidate, "binary").unwrap();
                 assert_eq!(resolve(base, &exe, Some(&resources)).unwrap(), *candidate);
+                assert_eq!(find(base, &exe, Some(&resources)).unwrap(), *candidate);
             }
             assert_eq!(resolve(base, &exe, None).unwrap(), paths[0]);
         }
+        assert_eq!(find("whisper-server", &exe, Some(&resources)), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

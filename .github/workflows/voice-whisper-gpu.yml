@@ -1,0 +1,54 @@
+name: voice-whisper-gpu
+
+# Manual-only: builds whisper-server with the Vulkan backend for Windows and
+# Linux and uploads artifacts. Windows CUDA binaries come from the pinned
+# whisper.cpp release via `voice-accelerator cuda`; there is no Linux CUDA
+# release asset, so Linux GPU builds come from here or a local build.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: whisper.cpp tag to build
+        required: false
+        default: b4938
+
+permissions:
+  contents: read
+
+jobs:
+  vulkan:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: whisper-vulkan-linux-x64
+          - os: windows-2022
+            artifact: whisper-vulkan-win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Vulkan whisper-server (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake glslc libvulkan-dev
+          scripts/build-whisper-vulkan.sh "${{ inputs.version }}" "$GITHUB_WORKSPACE/dist/whisper-vulkan"
+
+      - name: Build Vulkan whisper-server (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          choco install vulkan-sdk -y --no-progress
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $sdk) { throw "Vulkan SDK not found after installation" }
+          "VULKAN_SDK=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$($sdk.FullName)\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          scripts/build-whisper-vulkan.ps1 -Version "${{ inputs.version }}" -Destination "$env:GITHUB_WORKSPACE\dist\whisper-vulkan"
+
+      - name: Upload Vulkan build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/whisper-vulkan

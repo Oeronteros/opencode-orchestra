@@ -21,6 +21,7 @@ import { smokeMcp } from "./mcp/smoke.js"
 import { resolvePluginVersion } from "./plugin-status.js"
 import { homeDirectory, spawnWithCmdFallback } from "./spawn.js"
 import { ensureVerifiedVoiceModel, installVoiceFiles, launchVoiceOverlay, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceSidecarNames } from "./voice.js"
+import { acceleratorAsset, installAccelerator, isVoiceAccelerator, listAcceleratorBuild, readAccelerator, VOICE_ACCELERATORS, type VoiceAccelerator } from "./voice-accelerator.js"
 import { launchWslVoiceOverlay, usesWindowsVoiceHost } from "./voice-wsl.js"
 import { startVoiceWeb } from "./voice-web.js"
 import { runVoiceEditor, voiceEditorCommand } from "./voice-editor.js"
@@ -764,6 +765,9 @@ function usage(): string {
     "  voice-overlay        Launch the floating offline voice window (Windows/Linux/WSL)",
     "  voice-model <name>    Install a verified base, small or large-v3-turbo-q5_0 model",
     "                       TUI: ORCHESTRA_VOICE_MODEL, ORCHESTRA_VOICE_LANGUAGE=ru|en|zh|auto",
+    "  voice-accelerator [auto|cpu|cuda|cuda11|vulkan]",
+    "                       Show or choose the local Whisper accelerator",
+    "                       (Windows CUDA download; Vulkan from a local build)",
     "  doctor      Diagnose config, MCPs, and toolchain paths",
     "  eval        Run the built-in reproducible evaluation suite",
     "  mcp-smoke   Launch configured local MCPs and test their protocol",
@@ -812,6 +816,7 @@ type ParsedCommand =
   | { command: "browser"; options: BrowserCommandOptions }
   | { command: "voice-overlay" }
   | { command: "voice-model"; model: VoiceModel }
+  | { command: "voice-accelerator"; accelerator: VoiceAccelerator | null }
   | { command: "voice-web"; options: { upstream?: string; port?: number } }
   | { command: "voice-editor"; file: string }
   | { command: "voice-tui"; args: string[] }
@@ -830,6 +835,14 @@ function parseArguments(argv: string[]): ParsedCommand | "help" {
     if (argv.length === 2 && (argv[1] === "--help" || argv[1] === "-h")) return "help"
     if (argv.length !== 2) throw new Error("voice-model requires exactly one model name")
     return { command: "voice-model", model: createVoicePolicy().model(argv[1]) }
+  }
+  if (argv[0] === "voice-accelerator") {
+    if (argv.length === 2 && (argv[1] === "--help" || argv[1] === "-h")) return "help"
+    if (argv.length === 1) return { command: "voice-accelerator", accelerator: null }
+    if (argv.length === 2 && isVoiceAccelerator(argv[1])) {
+      return { command: "voice-accelerator", accelerator: argv[1] }
+    }
+    throw new Error(`voice-accelerator accepts one of: ${VOICE_ACCELERATORS.join(", ")}`)
   }
   if (argv[0] === "voice-overlay") {
     if (argv.length === 2 && (argv[1] === "--help" || argv[1] === "-h")) return "help"
@@ -994,6 +1007,32 @@ async function main(): Promise<void> {
       console.log(`Installing voice model ${parsed.model} (SHA-256 verified)…`)
       await ensureVerifiedVoiceModel(dir, { model: parsed.model })
       console.log(`Voice model ready: ${path.join(dir, createVoicePolicy().modelFile(parsed.model))}`)
+      return
+    }
+    if (parsed.command === "voice-accelerator") {
+      if (parsed.accelerator === null) {
+        const current = await readAccelerator(process.platform, process.env)
+        console.log(`Текущий ускоритель Whisper: ${current}`)
+        const managed = voiceManagedDir(process.platform, process.env)
+        for (const accelerator of ["cuda", "cuda11", "vulkan"] as const) {
+          const dir = managed === null ? null : path.join(managed, accelerator)
+          const files = dir === null ? [] : await listAcceleratorBuild(dir)
+          if (files.length > 0) console.log(`Установлено: ${accelerator} — ${dir}`)
+        }
+        console.log(`Доступно: ${VOICE_ACCELERATORS.join(", ")}. Пример: opencode-orchestra voice-accelerator cuda`)
+        return
+      }
+      const asset = acceleratorAsset(process.platform, process.arch, parsed.accelerator)
+      if (asset !== null) {
+        console.log(`Скачиваю ${asset.label} (~${Math.round(asset.sizeBytes / 1024 / 1024)} МиБ) из закреплённой сборки whisper.cpp…`)
+      }
+      const result = await installAccelerator(parsed.accelerator)
+      if (result.dir === null) {
+        console.log(`Ускоритель: ${result.accelerator}. Локальный CPU-сервер продолжает использоваться.`)
+      } else {
+        console.log(`Ускоритель ${result.accelerator} установлен: ${result.dir}`)
+      }
+      console.log("Перезапустите окно voice-overlay или voice-web, чтобы он подхватил сборку.")
       return
     }
     if (parsed.command === "voice-web") {

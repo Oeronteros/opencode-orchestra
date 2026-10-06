@@ -10,19 +10,19 @@ import { fileURLToPath } from "node:url"
 const PLATFORMS = {
   "linux-x64": {
     binary: "voice-overlay",
-    sidecars: ["ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu"],
+    sidecars: ["ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu", "whisper-server-x86_64-unknown-linux-gnu"],
     // whisper-cli needs its .so libs co-located (RUNPATH=$ORIGIN); the exact
     // set varies per release (libwhisper, libggml*, libparakeet, versioned).
     libs: ["lib*.so*"],
   },
   "linux-arm64": {
     binary: "voice-overlay",
-    sidecars: ["ffmpeg-aarch64-unknown-linux-gnu", "whisper-aarch64-unknown-linux-gnu"],
+    sidecars: ["ffmpeg-aarch64-unknown-linux-gnu", "whisper-aarch64-unknown-linux-gnu", "whisper-server-aarch64-unknown-linux-gnu"],
     libs: ["lib*.so*"],
   },
   "win32-x64": {
     binary: "voice-overlay.exe",
-    sidecars: ["ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe"],
+    sidecars: ["ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe", "whisper-server-x86_64-pc-windows-msvc.exe"],
     libs: ["*.dll"],
   },
 }

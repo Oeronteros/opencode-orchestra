@@ -1,10 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, open, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { voiceManagedDir, voiceModelDir, voiceSidecarNames } from './voice.js'
 import { createVoicePolicy, type VoiceModel, type VoiceLanguage } from './voice-context.js'
+import { VoiceSegmentTracker, mergeVoiceSegments, wrapPcmAsWav } from './voice-audio.js'
+import { transcribeVoice, voiceServerAvailable } from './voice-transcribe.js'
 
 export function voiceRecorderPreferences(env: NodeJS.ProcessEnv) {
   const policy = createVoicePolicy()
@@ -86,8 +88,25 @@ function waitForClose(child: ChildProcessWithoutNullStreams, timeout: number): P
   })
 }
 
+interface ActiveRecording {
+  child: ChildProcessWithoutNullStreams
+  folder: string
+  wav: string
+  model: VoiceModel
+  language: VoiceLanguage
+  closed: Promise<number | null>
+  stderr: string
+  tracker: VoiceSegmentTracker
+  abort: AbortController
+  timer: NodeJS.Timeout | undefined
+  pumpTask: Promise<void> | undefined
+  chunks: string[]
+  failed: Error | undefined
+  progressive: boolean
+}
+
 export class VoiceRecorder {
-  private recording: { child: ChildProcessWithoutNullStreams; folder: string; wav: string; model: VoiceModel; language: VoiceLanguage; closed: Promise<number | null>; stderr: string } | undefined
+  private recording: ActiveRecording | undefined
 
   async start(): Promise<void> {
     if (this.recording) throw new Error('Запись уже идёт.')
@@ -119,7 +138,23 @@ export class VoiceRecorder {
     const closed = waitForClose(child, (MAX_SECONDS + 5) * 1000)
     // The process can fail before Stop is pressed; keep the rejection observed.
     void closed.catch(() => undefined)
-    this.recording = { child, folder, wav, model, language, closed, get stderr() { return stderr } }
+    const progressive = await voiceServerAvailable().catch(() => false)
+    const active: ActiveRecording = {
+      child, folder, wav, model, language, closed,
+      get stderr() { return stderr },
+      tracker: new VoiceSegmentTracker(),
+      abort: new AbortController(),
+      timer: undefined,
+      pumpTask: undefined,
+      chunks: [],
+      failed: undefined,
+      progressive,
+    }
+    this.recording = active
+    if (progressive) {
+      active.timer = setInterval(() => this.schedulePump(active), 1500)
+      active.timer.unref?.()
+    }
     const early = await Promise.race([
       closed.then(code => ({ code }), error => ({ error })),
       new Promise<null>(resolve => setTimeout(() => resolve(null), 300)),
@@ -130,11 +165,42 @@ export class VoiceRecorder {
     }
   }
 
+  /** Transcribes completed 30 s segments while the user is still speaking. */
+  private schedulePump(active: ActiveRecording): void {
+    if (active.pumpTask !== undefined || active.failed !== undefined) return
+    active.pumpTask = this.pump(active).finally(() => { active.pumpTask = undefined })
+  }
+
+  private async pump(active: ActiveRecording): Promise<void> {
+    try {
+      const info = await stat(active.wav)
+      const available = Math.max(0, info.size - 44)
+      const completed = active.tracker.take(available)
+      if (completed.length === 0) return
+      const handle = await open(active.wav, 'r')
+      try {
+        for (const range of completed) {
+          const buffer = Buffer.alloc(range.to - range.from)
+          await handle.read(buffer, 0, buffer.length, 44 + range.from)
+          const text = await transcribeVoice(wrapPcmAsWav(buffer), active.model, active.language, {
+            signal: active.abort.signal,
+          })
+          if (text !== '') active.chunks.push(text)
+        }
+      } finally {
+        await handle.close()
+      }
+    } catch (error) {
+      active.failed = error instanceof Error ? error : new Error(String(error))
+    }
+  }
+
   async stop(): Promise<string> {
     const active = this.recording
     if (!active) throw new Error('Запись не запущена.')
     this.recording = undefined
     try {
+      if (active.timer !== undefined) clearInterval(active.timer)
       if (active.child.exitCode === null && !active.child.killed) {
         active.child.stdin.on('error', () => undefined)
         active.child.stdin.write('q\n')
@@ -143,13 +209,25 @@ export class VoiceRecorder {
       const code = await active.closed
       if (code !== 0) throw new Error(`Ошибка записи: ${active.stderr.trim() || `ffmpeg: ${code}`}`)
       if ((await stat(active.wav)).size < MIN_WAV_BYTES) throw new Error('Запись слишком короткая.')
-      const modelDir = voiceModelDir(process.platform, process.env)!
-      const result = await capture(executable('whisper'), [
-        '-m', path.join(modelDir, createVoicePolicy().modelFile(active.model)), '-l', active.language, '-f', active.wav,
-        '-otxt', '-of', path.join(active.folder, 'result'),
-      ], 600_000)
-      if (result.code !== 0) throw new Error(`Ошибка распознавания: ${result.output.trim() || `whisper: ${result.code}`}`)
-      const text = (await readFile(path.join(active.folder, 'result.txt'), 'utf8')).trim()
+      await active.pumpTask
+      if (active.failed !== undefined) throw active.failed
+      const info = await stat(active.wav)
+      const available = Math.max(0, info.size - 44)
+      const from = active.tracker.pendingFrom
+      let tail = ''
+      if (available - from >= 2) {
+        const handle = await open(active.wav, 'r')
+        try {
+          const buffer = Buffer.alloc((available - from) & ~1)
+          await handle.read(buffer, 0, buffer.length, 44 + from)
+          tail = await transcribeVoice(wrapPcmAsWav(buffer), active.model, active.language, {
+            signal: active.abort.signal,
+          })
+        } finally {
+          await handle.close()
+        }
+      }
+      const text = mergeVoiceSegments(active.chunks, tail)
       if (!text) throw new Error('Речь не распознана.')
       return text
     } finally {
@@ -161,8 +239,11 @@ export class VoiceRecorder {
     const active = this.recording
     if (!active) return
     this.recording = undefined
+    if (active.timer !== undefined) clearInterval(active.timer)
+    active.abort.abort()
     active.child.kill()
     await active.closed.catch(() => undefined)
+    await active.pumpTask?.catch(() => undefined)
     await removeRecordingFolder(active.folder)
   }
 

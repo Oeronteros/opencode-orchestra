@@ -49,6 +49,21 @@ test("voice-model help and invalid model names never start a download", () => {
   }
 })
 
+test("voice-accelerator help and invalid names never download GPU builds", () => {
+  const help = runCli("voice-accelerator", "--help")
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /voice-accelerator/)
+  for (const args of [["../../secret"], ["small"], ["cuda", "extra"]]) {
+    const result = runCli("voice-accelerator", ...args)
+    assert.equal(result.status, 1)
+    assert.doesNotMatch(result.stdout, /Скачиваю/)
+  }
+  const status = runCli("voice-accelerator")
+  assert.equal(status.status, 0)
+  assert.match(status.stdout, /Текущий ускоритель Whisper/)
+  assert.doesNotMatch(status.stdout, /Скачиваю/)
+})
+
 test("built CLI emits zsh completion", () => {
   const result = runCli("completion", "zsh")
   assert.equal(result.status, 0)

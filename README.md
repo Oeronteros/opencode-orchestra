@@ -356,6 +356,8 @@ The standard installer provisions local ffmpeg and Whisper binaries for Linux x6
 
 All voice paths support Russian, English and Chinese with `base`, `small` or `large-v3-turbo-q5_0`. Install an additional model with `opencode-orchestra voice-model large-v3-turbo-q5_0` (about 547 MiB, verified with SHA-256), or substitute `small`. Select the model and speech language in the overlay or inline web microphone settings. `auto` detects the language of each recording; short or mixed-language recordings may work better with an explicit language.
 
+Recognition runs through one long-lived `whisper-server` process (the model stays loaded between dictations), passes `-t` with the physical core count (`ORCHESTRA_VOICE_THREADS` overrides it), trims leading/trailing silence, and recognizes completed 30-second segments while you are still speaking on the overlay and `voice-tui` paths; the web microphone still sends the full recording. On Windows, `opencode-orchestra voice-accelerator cuda` (or `cuda11`) installs the pinned CUDA build; Vulkan is built locally with `scripts/build-whisper-vulkan.ps1`/`.sh` and enabled with `voice-accelerator vulkan`. See [voice-overlay/README.md](voice-overlay/README.md) for details.
+
 For legacy **OpenCode 1.x** TUI sessions, run `bunx @oeronteros-1/opencode-orchestra@latest voice-tui`. Press **Ctrl+X, then E** or run `/editor`, speak, and press the same shortcut again (or Enter). OpenCode restores the transcript to that session's draft without submitting it. `Ctrl+C` cancels recording and preserves the draft. The launcher sets `EDITOR` and `VISUAL` for that OpenCode process; no separate window or fixed port is needed. Run plain `opencode` when you want a regular text editor.
 
 For the external editor, set `ORCHESTRA_VOICE_MODEL=base|small|large-v3-turbo-q5_0` and `ORCHESTRA_VOICE_LANGUAGE=ru|en|zh|auto` (choose one value for each; defaults: `base`, `ru`), or `ORCHESTRA_VOICE_DEVICE` to select a microphone. The overlay and web microphone have their own saved settings. To use the old manual TUI window, select its TUI 1.x server compatibility mode:
@@ -443,6 +445,8 @@ The complete contract and bounds are defined in [schema/opencode-orchestra.schem
 | `browser select` | Select a configured profile in project configuration |
 | `browser reset --profile NAME --confirm NAME` | Delete an unlocked profile's authentication and site data |
 | `voice-overlay` | Launch the offline voice overlay and global shortcut |
+| `voice-model <name>` | Install a verified `base`, `small` or `large-v3-turbo-q5_0` model |
+| `voice-accelerator [auto\|cpu\|cuda\|cuda11\|vulkan]` | Choose the local Whisper accelerator (CUDA/Vulkan) |
 | `voice-tui [args]` | Launch legacy OpenCode 1.x with a voice editor |
 | `voice-editor <file>` | Record into the draft file supplied by OpenCode `/editor` |
 | `voice-web`, `web` | Proxy OpenCode Web with an inline offline microphone |

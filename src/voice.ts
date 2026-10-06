@@ -122,6 +122,17 @@ export function voiceSidecarNames(platform: string, arch: string): string[] | nu
   return [`ffmpeg-${triple}`, `whisper-${triple}`]
 }
 
+/**
+ * Long-lived whisper.cpp HTTP server (keeps the model loaded between
+ * dictations). Optional at runtime: packages before it shipped fall back to
+ * the one-shot `whisper` CLI.
+ */
+export function voiceServerSidecarName(platform: string, arch: string): string | null {
+  const triple = voiceOverlayTriple(platform, arch)
+  if (triple === null) return null
+  return `whisper-server-${triple}`
+}
+
 /** Refresh an existing installation too: otherwise upgrades keep the old binary. */
 export async function installVoiceFiles(packageDir: string, managedDir: string, platform: string, arch: string): Promise<boolean> {
   const executables = [voiceBinaryName(platform), ...(voiceSidecarNames(platform, arch) ?? [])]
@@ -165,17 +176,23 @@ export function voiceManagedDir(platform: string, env: NodeJS.ProcessEnv): strin
   return null
 }
 
-/** App-data `models/` dir (Tauri `app_data_dir()` equivalent). Pure for testability. */
-export function voiceModelDir(platform: string, env: NodeJS.ProcessEnv): string | null {
+/** App-data root shared by models and the accelerator preference. */
+export function voiceDataDir(platform: string, env: NodeJS.ProcessEnv): string | null {
   if (platform === "linux") {
     const base = env["XDG_DATA_HOME"] ?? (env["HOME"] === undefined ? undefined : path.join(env["HOME"], ".local", "share"))
     if (!base) return null
-    return path.join(base, "ai.opencode.voice-overlay", "models")
+    return path.join(base, "ai.opencode.voice-overlay")
   }
   if (platform === "win32") {
     const base = env["APPDATA"]
     if (!base) return null
-    return path.join(base, "ai.opencode.voice-overlay", "models")
+    return path.join(base, "ai.opencode.voice-overlay")
   }
   return null
+}
+
+/** App-data `models/` dir (Tauri `app_data_dir()` equivalent). Pure for testability. */
+export function voiceModelDir(platform: string, env: NodeJS.ProcessEnv): string | null {
+  const dir = voiceDataDir(platform, env)
+  return dir === null ? null : path.join(dir, "models")
 }

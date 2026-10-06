@@ -354,6 +354,8 @@ Bounded Loop позволяет `orch-lead` продолжать одну цел
 
 Во всех режимах доступны русский, английский и китайский языки с моделями `base`, `small` и `large-v3-turbo-q5_0`. Дополнительная модель устанавливается командой `opencode-orchestra voice-model large-v3-turbo-q5_0` (около 547 МиБ, с проверкой SHA-256); вместо неё можно указать `small`. Модель и язык речи выбираются в настройках оверлея или веб-микрофона. `auto` определяет язык каждой записи; для коротких записей или речи на нескольких языках лучше проверить результат и при необходимости выбрать язык явно.
 
+Распознавание идёт через один долгоживущий процесс `whisper-server` (модель остаётся в памяти между диктовками), использует `-t` с числом физических ядер (`ORCHESTRA_VOICE_THREADS` переопределяет), обрезает паузы и на путях оверлея и `voice-tui` распознаёт завершённые 30-секундные сегменты во время речи; браузерный микрофон по-прежнему отправляет запись целиком. На Windows команда `opencode-orchestra voice-accelerator cuda` (или `cuda11`) ставит закреплённую CUDA-сборку; Vulkan собирается локально (`scripts/build-whisper-vulkan.ps1`/`.sh`) и включается командой `voice-accelerator vulkan`. Подробности: [voice-overlay/README.md](voice-overlay/README.md#скорость-распознавания).
+
 Для внешнего TUI-редактора задайте `ORCHESTRA_VOICE_MODEL=base|small|large-v3-turbo-q5_0` и `ORCHESTRA_VOICE_LANGUAGE=ru|en|zh|auto`, выбирая одно значение для каждой переменной. По умолчанию используются `base` и `ru`; оверлей и веб-микрофон сохраняют собственные настройки.
 
 **OpenCode 2 на Windows и Linux — единый хоткей для TUI, Desktop и браузера:**
@@ -456,6 +458,8 @@ bunx @oeronteros-1/opencode-orchestra@latest web
 | `browser select` | Выбрать настроенный профиль в конфигурации проекта |
 | `browser reset --profile NAME --confirm NAME` | Удалить авторизацию и данные сайтов незаблокированного профиля |
 | `voice-overlay` | Запустить офлайн-оверлей и глобальный голосовой хоткей |
+| `voice-model <name>` | Установить проверенную модель `base`, `small` или `large-v3-turbo-q5_0` |
+| `voice-accelerator [auto\|cpu\|cuda\|cuda11\|vulkan]` | Выбрать локальный ускоритель Whisper (CUDA/Vulkan) |
 | `voice-tui [args]` | Запустить старый OpenCode 1.x с голосовым редактором |
 | `voice-editor <file>` | Записать текст в файл черновика, переданный OpenCode `/editor` |
 | `voice-web`, `web` | Добавить офлайн-микрофон в OpenCode Web через локальный proxy |

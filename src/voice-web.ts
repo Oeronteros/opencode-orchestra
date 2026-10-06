@@ -1,23 +1,13 @@
 import http from 'node:http'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
-import {
-  voiceManagedDir,
-  voiceModelDir,
-  voiceSidecarNames
-} from './voice.js'
 import { voiceWebClient } from './voice-web-client.js'
 import { createVoicePolicy } from './voice-context.js'
 import { createOpenCodeAdapter } from './voice-opencode-adapter.js'
+import { disposeVoiceServers, transcribeVoice } from './voice-transcribe.js'
 
 export function voiceClientScript(): string {
   return `(${voiceWebClient.toString()})((${createVoicePolicy.toString()})(), (${createOpenCodeAdapter.toString()})());`
 }
 
-const run = promisify(execFile)
 export function injectVoice(html: string): string {
   return html.replace(
     /<\/head>/i,
@@ -32,8 +22,8 @@ export async function transcribeWebAudio(
   language = 'ru'
 ): Promise<string> {
   const policy = createVoicePolicy()
-  const modelFile = policy.modelFile(model)
-  policy.language(language)
+  const validModel = policy.model(model)
+  const validLanguage = policy.language(language)
   if (
     audio.length < 46 ||
     audio.length > 44 + 120 * 32000 ||
@@ -52,34 +42,7 @@ export async function transcribeWebAudio(
     audio.length % 2
   )
     throw new Error('Invalid PCM WAV recording')
-  const managed = voiceManagedDir(process.platform, process.env)
-  const models = voiceModelDir(process.platform, process.env)
-  const names = voiceSidecarNames(process.platform, process.arch)
-  if (!managed || !models || !names)
-    throw new Error('Голосовой ввод поддерживается на Windows и Linux.')
-  const folder = await mkdtemp(path.join(tmpdir(), 'orchestra-voice-'))
-  try {
-    const wav = path.join(folder, 'audio.wav')
-    await writeFile(wav, audio)
-    await run(
-      path.join(managed, names[1]!),
-      [
-        '-m',
-        path.join(models, modelFile),
-        '-l',
-        language,
-        '-f',
-        wav,
-        '-otxt',
-        '-of',
-        wav
-      ],
-      { timeout: 600_000, windowsHide: true, signal }
-    )
-    return (await readFile(`${wav}.txt`, 'utf8')).trim()
-  } finally {
-    await rm(folder, { recursive: true, force: true })
-  }
+  return transcribeVoice(audio, validModel, validLanguage, { signal })
 }
 
 /** Loopback proxy keeps the web app and microphone API on the same origin. */
@@ -308,6 +271,7 @@ export async function startVoiceWeb(
     server.once('error', reject)
     server.listen(options.port ?? 4097, '127.0.0.1', resolve)
   })
+  server.once('close', () => { void disposeVoiceServers() })
   const address = server.address() as import('node:net').AddressInfo
   return { server, url: `http://127.0.0.1:${address.port}` }
 }

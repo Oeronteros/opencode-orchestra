@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceOverlayTriple, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_SHA256, VOICE_MODEL_URL } from "../src/voice.js"
+import { ensureVerifiedVoiceModel, installVoiceFiles, voiceBinaryName, voiceManagedDir, voiceModelDir, voiceOverlayPackageFor, voiceOverlayTriple, voiceServerSidecarName, voiceSidecarNames, VOICE_MODEL_FILE, VOICE_MODEL_SHA256, VOICE_MODEL_URL } from "../src/voice.js"
 import { createHash } from "node:crypto"
 import { EventEmitter } from "node:events"
 import { type ChildProcess, type spawn } from "node:child_process"
@@ -167,6 +167,19 @@ describe("voiceOverlayTriple", () => {
   it("returns null where no sidecar package exists", () => {
     assert.equal(voiceOverlayTriple("darwin", "arm64"), null)
     assert.equal(voiceOverlayTriple("win32", "arm64"), null)
+  })
+})
+
+describe("voiceServerSidecarName", () => {
+  it("names the optional warm whisper server per platform triple", () => {
+    assert.equal(voiceServerSidecarName("linux", "x64"), "whisper-server-x86_64-unknown-linux-gnu")
+    assert.equal(voiceServerSidecarName("win32", "x64"), "whisper-server-x86_64-pc-windows-msvc.exe")
+    assert.equal(voiceServerSidecarName("darwin", "arm64"), null)
+  })
+  it("stays optional so old packages keep installing", () => {
+    const sidecars = voiceSidecarNames("win32", "x64")!
+    assert.deepEqual(sidecars, ["ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe"])
+    assert.ok(!sidecars.includes(voiceServerSidecarName("win32", "x64")!))
   })
 })
 

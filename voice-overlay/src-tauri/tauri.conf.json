@@ -38,7 +38,7 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
-    "externalBin": ["binaries/ffmpeg", "binaries/whisper"],
+    "externalBin": ["binaries/ffmpeg", "binaries/whisper", "binaries/whisper-server"],
     "resources": []
   }
 }

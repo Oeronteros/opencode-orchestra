@@ -6,8 +6,8 @@ import path from "node:path"
 import test from "node:test"
 
 for (const [platform, binary, sidecars] of [
-  ["linux-x64", "voice-overlay", ["ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu", "libwhisper.so", "libwhisper.so.1", "libggml-cpu.so"]],
-  ["win32-x64", "voice-overlay.exe", ["ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe", "whisper.dll", "ggml-cpu.dll"]],
+  ["linux-x64", "voice-overlay", ["ffmpeg-x86_64-unknown-linux-gnu", "whisper-x86_64-unknown-linux-gnu", "whisper-server-x86_64-unknown-linux-gnu", "libwhisper.so", "libwhisper.so.1", "libggml-cpu.so"]],
+  ["win32-x64", "voice-overlay.exe", ["ffmpeg-x86_64-pc-windows-msvc.exe", "whisper-x86_64-pc-windows-msvc.exe", "whisper-server-x86_64-pc-windows-msvc.exe", "whisper.dll", "ggml-cpu.dll"]],
 ]) {
   test(`stage ${platform} from Tauri output and original sidecars`, async () => {
     // Spaces and non-ASCII characters exercise file URL decoding on both OSes.

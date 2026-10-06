@@ -69,6 +69,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [partial, setPartial] = useState("");
   const [preview, setPreview] = useState<string>(restoredDraft?.text ?? "");
   const [hasNativeDraft, setHasNativeDraft] = useState(restoredDraft !== null);
   const [hotkeyReady, setHotkeyReady] = useState(false);
@@ -128,6 +129,17 @@ export function App() {
     void listen<string>("voice-hotkey-error", event => {
       setError(event.payload);
       setStatus(current => current === "recording" || current === "transcribing" ? current : "error");
+    }).then(unlisten => { if (disposed) unlisten(); else cleanup = unlisten; }).catch(() => {});
+    return () => { disposed = true; cleanup?.(); };
+  }, []);
+
+  // Progressive recognition: segments completed while the user is still
+  // speaking arrive here and are replaced by the final text on Stop.
+  useEffect(() => {
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+    void listen<string>("voice-partial", event => {
+      if (!disposed) setPartial(event.payload);
     }).then(unlisten => { if (disposed) unlisten(); else cleanup = unlisten; }).catch(() => {});
     return () => { disposed = true; cleanup?.(); };
   }, []);
@@ -239,6 +251,7 @@ export function App() {
     setError(null);
     setErrorDetail(null);
     setNotice(null);
+    setPartial("");
     invocation.current = { ...settings };
     recordingTab.current = null;
     recordingNative.current = nativeTarget;
@@ -257,6 +270,7 @@ export function App() {
       await startRecording(
         settings.device === "" ? undefined : settings.device,
         settings.model,
+        settings.language,
       );
     } catch (e) {
       fail(String(e));
@@ -406,6 +420,7 @@ export function App() {
       }
     } finally {
       operation.current = false;
+      setPartial("");
     }
   };
 
@@ -718,6 +733,11 @@ export function App() {
           <span>Локально</span>
         </div>
       </section>
+      {partial !== "" && (status === "recording" || status === "transcribing") && (
+        <p className="notice" role="status">
+          {partial}
+        </p>
+      )}
       {recognizing && (
         <button
           type="button"
