@@ -16,21 +16,31 @@ export interface VoicePcmWav {
   dataBytes: number
 }
 
-/** Validates the canonical header written by ffmpeg with our fixed profile. */
+/** Walks RIFF chunks, including metadata and unfinished ffmpeg data sizes. */
 export function parseVoiceWav(wav: Buffer): VoicePcmWav | null {
   if (wav.length < VOICE_WAV_HEADER_BYTES) return null
   if (wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') return null
-  if (wav.toString('ascii', 12, 16) !== 'fmt ' || wav.readUInt32LE(16) !== 16) return null
-  if (wav.readUInt16LE(20) !== 1 || wav.readUInt16LE(22) !== 1) return null
-  if (wav.readUInt32LE(24) !== VOICE_SAMPLE_RATE) return null
-  if (wav.readUInt32LE(28) !== VOICE_BYTES_PER_SECOND) return null
-  if (wav.readUInt16LE(32) !== 2 || wav.readUInt16LE(34) !== 16) return null
-  if (wav.toString('ascii', 36, 40) !== 'data') return null
-  const declared = wav.readUInt32LE(40)
-  const available = wav.length - VOICE_WAV_HEADER_BYTES
-  const dataBytes = Math.min(declared, available) & ~1
-  if (dataBytes <= 0) return null
-  return { dataStart: VOICE_WAV_HEADER_BYTES, dataBytes }
+  let fmtOk = false
+  for (let offset = 12; offset + 8 <= wav.length;) {
+    const id = wav.toString('ascii', offset, offset + 4)
+    const size = wav.readUInt32LE(offset + 4)
+    const body = offset + 8
+    if (id === 'fmt ') {
+      if (size < 16 || body + 16 > wav.length) return null
+      fmtOk = wav.readUInt16LE(body) === 1 && wav.readUInt16LE(body + 2) === 1
+        && wav.readUInt32LE(body + 4) === VOICE_SAMPLE_RATE
+        && wav.readUInt32LE(body + 8) === VOICE_BYTES_PER_SECOND
+        && wav.readUInt16LE(body + 12) === 2 && wav.readUInt16LE(body + 14) === 16
+    } else if (id === 'data') {
+      if (!fmtOk) return null
+      const available = wav.length - body
+      const declared = size === 0 || size === 0xffffffff ? available : Math.min(size, available)
+      const dataBytes = declared - declared % 2
+      return dataBytes === 0 ? null : { dataStart: body, dataBytes }
+    }
+    offset = body + size + size % 2
+  }
+  return null
 }
 
 export function wrapPcmAsWav(pcm: Buffer): Buffer {
@@ -161,13 +171,25 @@ export class VoiceSegmentTracker {
   get pendingFrom(): number { return this.consumed }
   get count(): number { return this.segments }
 
+  /** Commit one segment only after transcription succeeds. */
+  commit(to: number): void {
+    if (to !== this.consumed + this.segmentBytes) throw new Error('Invalid voice segment order')
+    this.consumed = to
+    this.segments++
+  }
+
+  next(availableBytes: number): { from: number; to: number } | undefined {
+    return availableBytes - this.consumed >= this.segmentBytes
+      ? { from: this.consumed, to: this.consumed + this.segmentBytes }
+      : undefined
+  }
+
   /** Completed segments available in `availableBytes` of captured PCM. */
   take(availableBytes: number): Array<{ from: number; to: number }> {
     const completed: Array<{ from: number; to: number }> = []
-    while (availableBytes - this.consumed >= this.segmentBytes) {
-      completed.push({ from: this.consumed, to: this.consumed + this.segmentBytes })
-      this.consumed += this.segmentBytes
-      this.segments++
+    for (let range = this.next(availableBytes); range !== undefined; range = this.next(availableBytes)) {
+      completed.push(range)
+      this.commit(range.to)
     }
     return completed
   }

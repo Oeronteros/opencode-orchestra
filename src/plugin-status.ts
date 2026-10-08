@@ -41,6 +41,7 @@ export interface PluginStatus {
   mcpStatuses?: McpStatuses
   refreshMcp?: () => Promise<void>
   browserStatus?: () => Promise<import("./browser/runtime.js").BrowserStatus>
+  persistenceStatus?: () => import("./orchestration/state-store.js").PersistenceStatus
 }
 
 export async function detectMcpPresence(configDirectory: string = openCodeConfigDirectory()): Promise<Record<string, boolean>> {
@@ -66,6 +67,7 @@ export async function formatPluginStatus(status: PluginStatus): Promise<string> 
     `configured models: ${status.configuredModels}`,
     `discovered models: ${status.discoveredModels}`,
     `config source: ${status.configSource}`,
+    ...(status.persistenceStatus ? [`persistence: ${JSON.stringify(status.persistenceStatus())}`] : []),
     ...(browser ? [`browser: ${JSON.stringify(browser)}`] : []),
     "",
     "MCP servers:",

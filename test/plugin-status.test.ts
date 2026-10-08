@@ -46,6 +46,7 @@ test("formatPluginStatus renders the plugin identity and runtime fields", async 
     configuredModels: 12,
     discoveredModels: 9,
     configSource: "/tmp/orchestra.jsonc",
+    persistenceStatus: () => ({ state: "error", file: "/tmp/runs.json", error: "Checkpoint is owned by another process" }),
     mcp: { context7: true, codebaseMemory: false, memoryGraph: true, supermemory: false },
   })
 
@@ -56,6 +57,8 @@ test("formatPluginStatus renders the plugin identity and runtime fields", async 
   assert.ok(report.includes("configured models: 12"))
   assert.ok(report.includes("discovered models: 9"))
   assert.ok(report.includes("config source: /tmp/orchestra.jsonc"))
+  assert.ok(report.includes('persistence: {"state":"error"'))
+  assert.ok(report.includes("Checkpoint is owned by another process"))
   assert.ok(report.includes("context7"))
   assert.ok(report.includes("configured"))
 })

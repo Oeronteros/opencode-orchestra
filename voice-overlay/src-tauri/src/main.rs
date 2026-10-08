@@ -161,7 +161,10 @@ pub fn is_loopback_host(host: &str) -> bool {
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_ascii_lowercase();
-    host == "localhost" || host == "::1" || host.starts_with("127.")
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn http_client(host: &str) -> Result<reqwest::Client, String> {
@@ -622,7 +625,6 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
     // that was interrupted stays pending because `consumed` only advances on
     // success, and it will be retried as the tail below.
     let _ = rec.pump_cancel.send(true);
-    rec.pump.abort();
     let finished = tokio::time::timeout(Duration::from_secs(5), async {
         if let Some(mut stdin) = rec.child.stdin.take() {
             use tokio::io::AsyncWriteExt as _;
@@ -632,6 +634,18 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
         rec.child.wait().await
     })
     .await;
+    // Let the pump handle cancellation and kill a busy whisper-server before
+    // the tail starts. Aborting its future immediately leaves inference alive.
+    if tokio::time::timeout(Duration::from_secs(5), &mut rec.pump)
+        .await
+        .is_err()
+    {
+        rec.pump.abort();
+        let _ = (&mut rec.pump).await;
+        if let Some(mut server) = state.whisper.lock().await.take() {
+            server.kill().await;
+        }
+    }
     if finished.is_err() {
         let _ = rec.child.kill().await;
         let _ = rec.child.wait().await;
@@ -648,7 +662,6 @@ async fn stop_recording(state: State<'_, AppState>) -> Result<String, String> {
     if size < MIN_WAV_BYTES {
         return Err("empty-recording: запись пустая (короче полсекунды). Нажми Record, дождись и потом Stop.".to_string());
     }
-    let _ = rec.pump.await;
     let chunks = rec.chunks.lock().await.clone();
     let consumed = rec.consumed.load(Ordering::SeqCst);
     *state.pending.lock().await = Some(PendingVoice {
@@ -879,39 +892,14 @@ async fn transcribe_via_server(
 ) -> Result<String, String> {
     let state = app.state::<AppState>();
     let mut guard = state.whisper.lock().await;
-    let needs_restart = guard
-        .as_ref()
-        .map(|server| server.model() != model_path)
-        .unwrap_or(true);
-    if needs_restart {
-        if let Some(mut previous) = guard.take() {
-            previous.kill().await;
-        }
-        let threads = voice_threads();
-        *guard =
-            Some(whisper_server::WhisperServer::start(server_path, model_path, threads).await?);
+    if *cancel.borrow() {
+        return Err("cancelled: распознавание отменено".to_string());
     }
-    let mut cancelled = false;
-    let result = {
-        let server = guard
-            .as_mut()
-            .ok_or_else(|| "transcribe-failed: whisper-server недоступен".to_string())?;
-        tokio::select! {
-            result = server.transcribe(&wav, language) => result,
-            _ = cancel.changed() => {
-                cancelled = true;
-                Err("cancelled: распознавание отменено".to_string())
-            }
-        }
-    };
-    if cancelled {
-        // The server may still be busy with the aborted request; restart it
-        // for the next dictation instead of queueing behind dead work.
-        if let Some(mut server) = guard.take() {
-            server.kill().await;
-        }
+    tokio::select! {
+        result = whisper_server::WhisperServer::ensure_started(&mut guard, server_path, model_path, voice_threads()) => result?,
+        _ = cancel.changed() => return Err("cancelled: распознавание отменено".to_string()),
     }
-    result
+    whisper_server::WhisperServer::transcribe_with_cancel(&mut guard, &wav, language, cancel).await
 }
 
 pub fn session_url(host: &str, port: u16) -> String {
@@ -1373,12 +1361,46 @@ mod tests {
             "LOCALHOST",
             "::1",
             "[::1]",
+            "[0:0:0:0:0:0:0:1]",
+            "0:0:0:0:0:0:0:1",
             " 127.0.0.1 ",
         ] {
             assert!(is_loopback_host(host), "{host}");
         }
-        for host in ["192.168.1.5", "10.0.0.1", "example.com", ""] {
+        for host in [
+            "192.168.1.5",
+            "10.0.0.1",
+            "example.com",
+            "127.example.com",
+            "127.0.0.1.example.com",
+            "127.999.0.1",
+            "",
+        ] {
             assert!(!is_loopback_host(host), "{host}");
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_http_ignores_proxy_environment() {
+        // Isolate environment variables in subprocesses so parallel tests do
+        // not change each other's proxy configuration.
+        for filter in [
+            "tests::tui_submission_checks_server_acknowledgement",
+            "browser_bridge::tests::",
+            "whisper_server::tests::reuses_a_live_process_and_restarts_a_crashed_process_for_the_same_model",
+        ] {
+            let output = tokio::time::timeout(Duration::from_secs(10),
+                command(std::env::current_exe().unwrap())
+                    .arg(filter)
+                    .env("HTTP_PROXY", "http://127.0.0.1:1")
+                    .env("HTTPS_PROXY", "http://127.0.0.1:1")
+                    .env("ALL_PROXY", "http://127.0.0.1:1")
+                    .env("NO_PROXY", "")
+                    .output()
+            ).await.unwrap().unwrap();
+            assert!(output.status.success(), "{filter}: {} {}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("running 0 tests"));
         }
     }
 

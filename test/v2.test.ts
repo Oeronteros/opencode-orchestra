@@ -5,6 +5,144 @@ import type { Plugin as LegacyPlugin } from "@opencode-ai/plugin"
 import type { Context } from "@opencode/plugin/promise/plugin"
 import { setupV2 } from "../src/v2.js"
 
+function eventContext(context: () => Promise<unknown[]>, subscribe: (signal: AbortSignal) => AsyncIterable<unknown>): Context {
+  const domain = () => ({ transform: async (edit: (editor: Record<string, unknown>) => void) => edit({}), hook: async () => undefined })
+  return {
+    location: { directory: process.cwd() }, options: {}, agent: domain(), command: domain(), tool: domain(), permission: domain(),
+    model: { list: async () => ({ data: [] }) }, session: { ...domain(), context },
+    event: { subscribe: ({ signal }: { signal: AbortSignal }) => subscribe(signal) },
+  } as unknown as Context
+}
+
+function answer(id: string, created: number, finished = true) {
+  return { id, type: "assistant", agent: "orch-lead", model: { providerID: "mock", id: "model" }, content: [],
+    time: { created, ...(finished ? { completed: created + 1 } : {}) }, ...(finished ? { finish: "stop" } : {}) }
+}
+
+async function untilAborted(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return
+  await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+}
+
+for (const failure of ["disconnect", "end"] as const) {
+  test(`V2 reconnects after stream ${failure} and reconciles only finalized messages`, { timeout: 3000 }, async () => {
+    let subscriptions = 0
+    let history: unknown[] = [answer("first", 1)]
+    const finals: string[] = []
+    let notify!: () => void
+    const recovered = new Promise<void>((resolve) => { notify = resolve })
+    const ctx = eventContext(async () => subscriptions === 1 ? [answer("first", 1)] : history, (signal) => ({ async *[Symbol.asyncIterator]() {
+      subscriptions++
+      if (subscriptions === 1) {
+        yield { type: "session.idle", data: { sessionID: "session" } }
+        history = [answer("first", 1), answer("second", 2), answer("unfinished", 3, false)]
+        if (failure === "disconnect") throw new Error("transport disconnected")
+        return
+      }
+      await untilAborted(signal)
+    } }))
+    const cleanup = await setupV2(ctx, (async () => ({ event: async ({ event }: any) => {
+      if (event.type === "message.updated") {
+        finals.push(event.properties.info.id)
+        if (event.properties.info.id === "second") notify()
+      }
+    } })) as LegacyPlugin, { baseDelayMs: 5, maxDelayMs: 10 })
+    try {
+      await recovered
+      assert.equal(subscriptions, 2)
+      assert.deepEqual(finals, ["first", "second"])
+    } finally { await cleanup() }
+  })
+}
+
+test("V2 restores a missed idle event from the session history", { timeout: 3000 }, async () => {
+  let subscriptions = 0
+  const events: string[] = []
+  let notify!: () => void
+  const restored = new Promise<void>((resolve) => { notify = resolve })
+  const ctx = eventContext(async () => [answer("done", 1), { id: "idle", type: "idle", outcome: "succeeded", time: { created: 3 } }],
+    (signal) => ({ async *[Symbol.asyncIterator]() {
+      subscriptions++
+      if (subscriptions === 1) {
+        yield { type: "session.text.delta", data: { sessionID: "session", assistantMessageID: "done", ordinal: 0, delta: "hello" } }
+        throw new Error("lost idle event")
+      }
+      await untilAborted(signal)
+    } }))
+  const cleanup = await setupV2(ctx, (async () => ({ event: async ({ event }: any) => {
+    events.push(event.type)
+    if (event.type === "session.idle") notify()
+  } })) as LegacyPlugin, { baseDelayMs: 5 })
+  try { await restored; assert.deepEqual(events, ["message.part.delta", "message.updated", "session.idle"]) }
+  finally { await cleanup() }
+})
+
+test("V2 deduplication survives histories longer than 2048 responses", { timeout: 3000 }, async () => {
+  let finals = 0
+  let idles = 0
+  let notify!: () => void
+  const processed = new Promise<void>((resolve) => { notify = resolve })
+  const history = Array.from({ length: 2050 }, (_, i) => answer(`answer-${i}`, i))
+  const ctx = eventContext(async () => history, (signal) => ({ async *[Symbol.asyncIterator]() {
+    yield { type: "session.idle", data: { sessionID: "session" } }
+    yield { type: "session.idle", data: { sessionID: "session" } }
+    await untilAborted(signal)
+  } }))
+  const cleanup = await setupV2(ctx, (async () => ({ event: async ({ event }: any) => {
+    if (event.type === "message.updated") finals++
+    if (event.type === "session.idle" && ++idles === 2) notify()
+  } })) as LegacyPlugin)
+  try { await processed; assert.equal(finals, 2050) }
+  finally { await cleanup() }
+})
+
+test("V2 disposal cancels reconnect backoff immediately", { timeout: 3000 }, async () => {
+  let notify!: () => void
+  const failed = new Promise<void>((resolve) => { notify = resolve })
+  let subscriptions = 0
+  const ctx = eventContext(async () => [], () => ({ async *[Symbol.asyncIterator]() { subscriptions++; notify(); throw new Error("offline") } }))
+  const cleanup = await setupV2(ctx, (async () => ({})) as LegacyPlugin, { baseDelayMs: 30_000 })
+  await failed
+  await cleanup()
+  assert.equal(subscriptions, 1)
+})
+
+test("V2 reconciles a transport reconnect announced within the same subscription", { timeout: 3000 }, async () => {
+  let notify!: () => void
+  const recovered = new Promise<void>((resolve) => { notify = resolve })
+  let contextReads = 0
+  const ctx = eventContext(async () => { contextReads++; return [answer("missed", 1)] }, (signal) => ({ async *[Symbol.asyncIterator]() {
+    yield { type: "server.connected", data: {} }
+    yield { type: "session.text.delta", data: { sessionID: "session", assistantMessageID: "missed", ordinal: 0, delta: "hello" } }
+    yield { type: "server.connected", data: {} }
+    await untilAborted(signal)
+  } }))
+  const cleanup = await setupV2(ctx, (async () => ({ event: async ({ event }: any) => {
+    if (event.type === "message.updated") notify()
+  } })) as LegacyPlugin)
+  try { await recovered; assert.equal(contextReads, 1) }
+  finally { await cleanup() }
+})
+
+test("V2 accounts for older responses that finalize after newer ones", { timeout: 3000 }, async () => {
+  const finals: string[] = []
+  let reads = 0
+  let idles = 0
+  let notify!: () => void
+  const processed = new Promise<void>((resolve) => { notify = resolve })
+  const ctx = eventContext(async () => [answer("older", 1, ++reads > 1), answer("newer", 2)], (signal) => ({ async *[Symbol.asyncIterator]() {
+    yield { type: "session.idle", data: { sessionID: "session" } }
+    yield { type: "session.idle", data: { sessionID: "session" } }
+    await untilAborted(signal)
+  } }))
+  const cleanup = await setupV2(ctx, (async () => ({ event: async ({ event }: any) => {
+    if (event.type === "message.updated") finals.push(event.properties.info.id)
+    if (event.type === "session.idle" && ++idles === 2) notify()
+  } })) as LegacyPlugin)
+  try { await processed; assert.deepEqual(finals, ["newer", "older"]) }
+  finally { await cleanup() }
+})
+
 test("V2 setup registers legacy behavior on the new domains and adapts tool execution", async () => {
   const registrations: Record<string, (event: any) => Promise<void> | void> = {}
   const commands: Array<{ name: string; execute: (input: any) => Promise<void> }> = []

@@ -85,7 +85,15 @@ export class WhisperServer {
 
   private async request(wav: Buffer, language: string, signal?: AbortSignal): Promise<string> {
     if (this.disposed) throw new Error('transcribe-failed: whisper-server остановлен')
-    await this.ensureStarted()
+    try {
+      await this.ensureStarted(signal)
+    } catch (error) {
+      if (signal?.aborted) {
+        await this.kill()
+        throw new Error('cancelled: распознавание отменено')
+      }
+      throw error
+    }
     const form = new FormData()
     form.append('file', new Blob([Uint8Array.from(wav)], { type: 'audio/wav' }), 'audio.wav')
     form.append('language', language)
@@ -119,7 +127,8 @@ export class WhisperServer {
     return (await response.text()).trim()
   }
 
-  private async ensureStarted(): Promise<void> {
+  private async ensureStarted(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new Error('aborted')
     if (this.running) return
     if (this.child !== undefined) await this.kill()
     this.stderrTail = ''
@@ -147,12 +156,13 @@ export class WhisperServer {
     child.once('exit', () => {
       if (this.child === child) this.child = undefined
     })
-    await this.waitReady()
+    await this.waitReady(signal)
   }
 
-  private async waitReady(): Promise<void> {
+  private async waitReady(signal?: AbortSignal): Promise<void> {
     const deadline = Date.now() + (this.options.readyTimeoutMs ?? 120_000)
     for (;;) {
+      if (signal?.aborted) throw new Error('aborted')
       if (this.disposed) throw new Error('transcribe-failed: whisper-server остановлен')
       if (this.startError !== null) {
         throw new Error(`transcribe-failed: не удалось запустить whisper-server: ${this.startError.message}`)
@@ -162,14 +172,15 @@ export class WhisperServer {
       }
       try {
         await this.fetchImpl(`http://127.0.0.1:${this.port}/`, {
-          signal: AbortSignal.timeout(1500),
+          signal: signal === undefined ? AbortSignal.timeout(1500)
+            : AbortSignal.any([signal, AbortSignal.timeout(1500)]),
         })
         return
       } catch { /* not listening yet */ }
       if (Date.now() > deadline) {
         throw new Error('transcribe-failed: whisper-server не запустился вовремя')
       }
-      await delay(150)
+      await delay(150, undefined, signal === undefined ? {} : { signal })
     }
   }
 

@@ -55,9 +55,13 @@ function capabilities(model: CatalogModel): CapabilityName[] {
 }
 
 function candidate(providerID: string, model: CatalogModel): ModelCandidateInput {
-  const paid = Boolean(model.cost && (model.cost.input > 0 || model.cost.output > 0))
+  const knownPrice = Number.isFinite(model.cost?.input) && Number.isFinite(model.cost?.output)
+    && model.cost!.input >= 0 && model.cost!.output >= 0
+  // A missing tariff cannot authorize a free call. Keep prices absent so the
+  // pricing resolver and task budget still report the uncertainty.
+  const paid = !knownPrice || model.cost!.input > 0 || model.cost!.output > 0
   const caps = capabilities(model)
-  const price = (model.cost?.input ?? 0) + (model.cost?.output ?? 0)
+  const price = knownPrice ? model.cost!.input + model.cost!.output : 0
   const lifecyclePenalty = model.status === "deprecated" ? 45 : model.experimental || model.status === "alpha" ? 15 : 0
   const priority = Math.max(5, Math.min(95, 70 - Math.log10(1 + price) * 8 - lifecyclePenalty))
   const scores: Record<string, number> = {}
@@ -71,8 +75,7 @@ function candidate(providerID: string, model: CatalogModel): ModelCandidateInput
     capabilities: caps,
     scores,
     ...(contextClass(model.limit?.context) ? { context: contextClass(model.limit?.context) } : {}),
-    ...(model.cost?.input !== undefined ? { priceInput: model.cost.input } : {}),
-    ...(model.cost?.output !== undefined ? { priceOutput: model.cost.output } : {}),
+    ...(knownPrice ? { priceInput: model.cost!.input, priceOutput: model.cost!.output } : {}),
   }
 }
 
@@ -106,8 +109,11 @@ export function applyDiscoveredModels(
   discovered: ModelCandidateInput[],
 ): OrchestraConfig {
   if (config.models.strategy !== "auto" || discovered.length === 0) return config
+  const eligible = config.orchestration.taskBudget.unknownPricing === "block"
+    ? discovered.filter((input) => typeof input !== "string" && input.priceInput !== undefined && input.priceOutput !== undefined)
+    : discovered
   const fill = (current: ModelCandidateInput[], capability: CapabilityName) =>
-    current.length > 0 ? current : best(discovered, capability)
+    current.length > 0 ? current : best(eligible, capability)
 
   return {
     ...config,

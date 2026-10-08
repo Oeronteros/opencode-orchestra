@@ -37,7 +37,6 @@ interface ToolContextLike {
   abort?: AbortSignal
 }
 
-const classificationCache = createClassifierCache()
 const SESSION_LEDGER_ERROR = JSON.stringify({ ok: false, error: "Unable to route task because session ledger access failed." })
 
 export interface PricingContext {
@@ -111,11 +110,11 @@ function assistantFailure(info: unknown, parts: unknown[]): Error | undefined {
   if (info && typeof info === "object" && "error" in info && info.error && typeof info.error === "object") {
     const failure = info.error as { name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; data?: unknown }
     const data = failure.data && typeof failure.data === "object"
-      ? failure.data as { message?: unknown; status?: unknown; statusCode?: unknown }
+      ? failure.data as { message?: unknown; status?: unknown; statusCode?: unknown; responseHeaders?: unknown }
       : undefined
     const message = String(data?.message ?? failure.message ?? failure.name ?? "Assistant generation failed")
     const status = Number(data?.statusCode ?? data?.status ?? failure.statusCode ?? failure.status)
-    return Object.assign(new Error(message), Number.isFinite(status) ? { status } : {})
+    return Object.assign(new Error(message), Number.isFinite(status) ? { status } : {}, { responseHeaders: data?.responseHeaders })
   }
   const failedTool = parts.find((part) => {
     if (!part || typeof part !== "object" || !("type" in part) || part.type !== "tool" || !("state" in part)) return false
@@ -186,6 +185,8 @@ export function createOrchestraTools(
   pricing?: PricingContext,
   dispatch?: DispatchContext,
 ): Record<string, ToolDefinition> {
+  const classificationCache = createClassifierCache()
+  const providerCooldowns = new Map<string, number>()
   const coordinator = dispatch?.coordinator ?? new OrchestrationRunState({
     maxWorkers: config.orchestration.maxWorkers,
     parallelWorkers: config.orchestration.parallelWorkers,
@@ -449,10 +450,11 @@ export function createOrchestraTools(
           }, async (event) => {
             if (event.outcome === "succeeded") return
             await ledger.recordReliabilityEvent(lease.rootSessionID, { ...event, at: Date.now() })
-          })
+          }, { ...(context.abort ? { signal: context.abort } : {}), cooldowns: providerCooldowns })
           if (!result.ok) {
             const runtime = coordinator.complete(lease, false, result.errorKind)
-            return JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, errorKind: result.errorKind, attempts: result.attempts, runtime }, null, 2)
+            return JSON.stringify({ ok: false, agent: args.agent, nodeId: args.nodeId, rootSessionID: lease.rootSessionID, depth: lease.depth, errorKind: result.errorKind, attempts: result.attempts,
+              ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}), runtime }, null, 2)
           }
           let finalOutput = result.value
           while (true) {

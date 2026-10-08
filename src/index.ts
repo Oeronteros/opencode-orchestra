@@ -119,52 +119,6 @@ function createLiveAutoAccept(directory: string, rawOptions: Record<string, unkn
   }
 }
 
-// Stream observers keyed by message part id. These let us flag low-confidence
-// or self-correcting output *while a worker is still generating*, before any
-// finalized answer exists, so escalation can fire early instead of post-hoc.
-const streamObservers = new Map<string, StreamObserver>()
-const flaggedParts = new Set<string>()
-const STREAM_CONFIDENCE_THRESHOLD = 0.6
-
-// Opt-in reply text and prompt text accumulation, keyed by message id. Only
-// populated when `telemetry.storeTexts` is enabled; otherwise dropped.
-const replyBuffers = new Map<string, string>()
-// A chat.message prompt precedes its assistant message and has a different id,
-// so prompts are correlated by session rather than by assistant message id.
-const promptBuffers = new Map<string, string>()
-const MAX_TEXT_BUFFERS = 512
-let storeTextsFlag = false
-
-// Live agent activity identity, mapped per session so streaming deltas can be
-// attributed to an agent + model before the assistant message finalizes.
-// Populated on every LLM request via the chat.params hook.
-const sessionAgent = new Map<string, string>()
-const sessionModel = new Map<string, { providerID: string; modelID: string }>()
-// Per-response accumulated text (independent of telemetry.storeTexts) used to
-// show "what the agent is doing" in the live dashboard panel. Bounded.
-const liveTexts = new Map<string, string>()
-const liveTextLengths = new Map<string, number>()
-// Estimated reasoning accumulation, split from output text so the live output
-// tok/s is not inflated by thinking output. Only lengths are kept; reasoning
-// text is never persisted (same privacy policy as output snippets).
-const liveReasoningLengths = new Map<string, number>()
-// Per-part dedupe between the two delta sources OpenCode can use:
-// `message.part.delta` carries incremental chunks, while
-// `message.part.updated` carries cumulative `part.text`. `livePartSeen` is how
-// many characters per part have already been fed from either source, so the
-// cumulative view only ever appends the unseen suffix (no double counting).
-const livePartSeen = new Map<string, number>()
-// Part type remembered from part events so reasoning deltas (which arrive with
-// field "text", same as output) can be routed to the reasoning estimate.
-const livePartKinds = new Map<string, string>()
-// Message ids finalized by message.updated; guards against a late delta
-// resurrecting an active row that no finish will ever remove.
-const finishedLiveMessages = new Set<string>()
-const recoveryNotices = new Set<string>()
-// Sessions where the plan→build transition reminder was already logged, so a
-// long-lived plan conversation does not re-log the release on every turn.
-const planReleaseNotices = new Set<string>()
-
 const MCP_TOOL_PREFIXES: Array<[prefix: string, server: string]> = [
   ["codebase-memory-mcp_", "codebaseMemory"],
   ["codebase-memory_", "codebaseMemory"],
@@ -188,134 +142,180 @@ export function mcpServerForTool(tool: string): string | undefined {
   return MCP_TOOL_PREFIXES.find(([prefix]) => tool.startsWith(prefix))?.[1]
 }
 
-function pruneOldest(map: Map<string, string>): void {
-  while (map.size > MAX_TEXT_BUFFERS) {
-    const oldest = map.keys().next().value
-    if (oldest === undefined) break
-    map.delete(oldest)
-  }
-}
+export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_workspace }, rawOptions = {}) => {
+  // Stream observers keyed by message part id. These let us flag low-confidence
+  // or self-correcting output *while a worker is still generating*, before any
+  // finalized answer exists, so escalation can fire early instead of post-hoc.
+  const streamObservers = new Map<string, StreamObserver>()
+  const flaggedParts = new Set<string>()
+  const STREAM_CONFIDENCE_THRESHOLD = 0.6
 
-function pruneLiveAccumulators(): void {
-  const pruneNumberMap = (map: Map<string, number>): void => {
+  // Opt-in reply text and prompt text accumulation, keyed by message id. Only
+  // populated when `telemetry.storeTexts` is enabled; otherwise dropped.
+  const replyBuffers = new Map<string, string>()
+  // A chat.message prompt precedes its assistant message and has a different id,
+  // so prompts are correlated by session rather than by assistant message id.
+  const promptBuffers = new Map<string, string>()
+  const MAX_TEXT_BUFFERS = 512
+  let storeTextsFlag = false
+
+  // Live agent activity identity, mapped per session so streaming deltas can be
+  // attributed to an agent + model before the assistant message finalizes.
+  // Populated on every LLM request via the chat.params hook.
+  const sessionAgent = new Map<string, string>()
+  const sessionModel = new Map<string, { providerID: string; modelID: string }>()
+  // Per-response accumulated text (independent of telemetry.storeTexts) used to
+  // show "what the agent is doing" in the live dashboard panel. Bounded.
+  const liveTexts = new Map<string, string>()
+  const liveTextLengths = new Map<string, number>()
+  // Estimated reasoning accumulation, split from output text so the live output
+  // tok/s is not inflated by thinking output. Only lengths are kept; reasoning
+  // text is never persisted (same privacy policy as output snippets).
+  const liveReasoningLengths = new Map<string, number>()
+  // Per-part dedupe between the two delta sources OpenCode can use:
+  // `message.part.delta` carries incremental chunks, while
+  // `message.part.updated` carries cumulative `part.text`. `livePartSeen` is how
+  // many characters per part have already been fed from either source, so the
+  // cumulative view only ever appends the unseen suffix (no double counting).
+  const livePartSeen = new Map<string, number>()
+  // Part type remembered from part events so reasoning deltas (which arrive with
+  // field "text", same as output) can be routed to the reasoning estimate.
+  const livePartKinds = new Map<string, string>()
+  // Message ids finalized by message.updated; guards against a late delta
+  // resurrecting an active row that no finish will ever remove.
+  const finishedLiveMessages = new Set<string>()
+  const recoveryNotices = new Set<string>()
+  // Sessions where the plan→build transition reminder was already logged, so a
+  // long-lived plan conversation does not re-log the release on every turn.
+  const planReleaseNotices = new Set<string>()
+
+  function pruneOldest(map: Map<string, string>): void {
     while (map.size > MAX_TEXT_BUFFERS) {
       const oldest = map.keys().next().value
       if (oldest === undefined) break
       map.delete(oldest)
     }
   }
-  pruneNumberMap(liveReasoningLengths)
-  const pruneSeen = (map: Map<string, number>): void => {
-    while (map.size > MAX_TEXT_BUFFERS * 4) {
-      const oldest = map.keys().next().value
+
+  function pruneLiveAccumulators(): void {
+    const pruneNumberMap = (map: Map<string, number>): void => {
+      while (map.size > MAX_TEXT_BUFFERS) {
+        const oldest = map.keys().next().value
+        if (oldest === undefined) break
+        map.delete(oldest)
+      }
+    }
+    pruneNumberMap(liveReasoningLengths)
+    const pruneSeen = (map: Map<string, number>): void => {
+      while (map.size > MAX_TEXT_BUFFERS * 4) {
+        const oldest = map.keys().next().value
+        if (oldest === undefined) break
+        map.delete(oldest)
+      }
+    }
+    pruneSeen(livePartSeen)
+    while (livePartKinds.size > MAX_TEXT_BUFFERS * 4) {
+      const oldest = livePartKinds.keys().next().value
       if (oldest === undefined) break
-      map.delete(oldest)
+      livePartKinds.delete(oldest)
     }
   }
-  pruneSeen(livePartSeen)
-  while (livePartKinds.size > MAX_TEXT_BUFFERS * 4) {
-    const oldest = livePartKinds.keys().next().value
-    if (oldest === undefined) break
-    livePartKinds.delete(oldest)
-  }
-}
 
-/** Accumulate a text delta, retaining a bounded snippet and exact length. */
-function appendLiveText(messageID: string, delta: string): { text: string; chars: number } {
-  const current = liveTexts.get(messageID) ?? ""
-  const next = current.length > 4_000 ? current.slice(-1_600) + delta : current + delta
-  liveTexts.set(messageID, next)
-  const chars = (liveTextLengths.get(messageID) ?? 0) + delta.length
-  liveTextLengths.set(messageID, chars)
-  pruneOldest(liveTexts)
-  while (liveTextLengths.size > MAX_TEXT_BUFFERS) {
-    const oldest = liveTextLengths.keys().next().value
-    if (oldest === undefined) break
-    liveTextLengths.delete(oldest)
+  /** Accumulate a text delta, retaining a bounded snippet and exact length. */
+  function appendLiveText(messageID: string, delta: string): { text: string; chars: number } {
+    const current = liveTexts.get(messageID) ?? ""
+    const next = current.length > 4_000 ? current.slice(-1_600) + delta : current + delta
+    liveTexts.set(messageID, next)
+    const chars = (liveTextLengths.get(messageID) ?? 0) + delta.length
+    liveTextLengths.set(messageID, chars)
+    pruneOldest(liveTexts)
+    while (liveTextLengths.size > MAX_TEXT_BUFFERS) {
+      const oldest = liveTextLengths.keys().next().value
+      if (oldest === undefined) break
+      liveTextLengths.delete(oldest)
+    }
+    return { text: next.length > 240 ? next.slice(-240) : next, chars }
   }
-  return { text: next.length > 240 ? next.slice(-240) : next, chars }
-}
 
-/** Accumulate reasoning length only; reasoning text itself is never stored. */
-function appendLiveReasoning(messageID: string, delta: string): number {
-  const chars = (liveReasoningLengths.get(messageID) ?? 0) + delta.length
-  liveReasoningLengths.set(messageID, chars)
-  while (liveReasoningLengths.size > MAX_TEXT_BUFFERS) {
-    const oldest = liveReasoningLengths.keys().next().value
-    if (oldest === undefined) break
-    liveReasoningLengths.delete(oldest)
+  /** Accumulate reasoning length only; reasoning text itself is never stored. */
+  function appendLiveReasoning(messageID: string, delta: string): number {
+    const chars = (liveReasoningLengths.get(messageID) ?? 0) + delta.length
+    liveReasoningLengths.set(messageID, chars)
+    while (liveReasoningLengths.size > MAX_TEXT_BUFFERS) {
+      const oldest = liveReasoningLengths.keys().next().value
+      if (oldest === undefined) break
+      liveReasoningLengths.delete(oldest)
+    }
+    return chars
   }
-  return chars
-}
 
-/**
- * OpenCode 1.18.x streams text in dedicated `message.part.delta` events
- * ({sessionID, messageID, partID, field, delta}); the v1 plugin Event union
- * predates that event type, so it is declared and guarded locally.
- */
-interface LivePartDeltaEvent {
-  type: "message.part.delta"
-  properties: {
-    sessionID: string
-    messageID: string
-    partID: string
-    field: string
-    delta: string
-  }
-}
-
-function isLivePartDeltaEvent(event: unknown): event is LivePartDeltaEvent {
-  return typeof event === "object" && event !== null && (event as { type?: unknown }).type === "message.part.delta"
-}
-
-function trackStreamDelta(sessionID: string, part: { id: string; messageID: string }, delta: string): void {
-  if (!delta) return
-  const partID = part.id
-  let observer = streamObservers.get(partID)
-  if (!observer) {
-    observer = createStreamObserver({ threshold: STREAM_CONFIDENCE_THRESHOLD })
-    streamObservers.set(partID, observer)
-  }
-  const observation = observer.push(delta)
-  if (observation.lowConfidence && !flaggedParts.has(partID)) {
-    flaggedParts.add(partID)
-    void logStreamFlag(sessionID, partID, observation).catch(() => undefined)
-  }
-  if (storeTextsFlag) {
-    replyBuffers.set(part.messageID, `${replyBuffers.get(part.messageID) ?? ""}${delta}`)
-    pruneOldest(replyBuffers)
-  }
-}
-
-function endStream(messageID: string): void {
-  // A finalized message no longer needs an accumulated reply after its event
-  // handler has consumed it. Keep the id parameter explicit for lifecycle use.
-  if (!storeTextsFlag) replyBuffers.delete(messageID)
-  // Observers are pruned lazily by size to bound memory over a long session.
-  if (streamObservers.size > 512) {
-    const overflow = streamObservers.size - 512
-    let removed = 0
-    for (const key of streamObservers.keys()) {
-      if (removed >= overflow) break
-      streamObservers.delete(key)
-      flaggedParts.delete(key)
-      removed += 1
+  /**
+   * OpenCode 1.18.x streams text in dedicated `message.part.delta` events
+   * ({sessionID, messageID, partID, field, delta}); the v1 plugin Event union
+   * predates that event type, so it is declared and guarded locally.
+   */
+  interface LivePartDeltaEvent {
+    type: "message.part.delta"
+    properties: {
+      sessionID: string
+      messageID: string
+      partID: string
+      field: string
+      delta: string
     }
   }
-}
 
-// Stub logger: replaced when the plugin body captures `client.app.log`.
-let streamLog: (sessionID: string, message: string, extra: unknown) => Promise<void> = () => Promise.resolve()
+  function isLivePartDeltaEvent(event: unknown): event is LivePartDeltaEvent {
+    return typeof event === "object" && event !== null && (event as { type?: unknown }).type === "message.part.delta"
+  }
 
-function logStreamFlag(sessionID: string, partID: string, observation: { confidence: number; flags: string[] }): Promise<void> {
-  return streamLog(sessionID, "orchestra stream observer flagged low-confidence output", {
-    partID,
-    confidence: observation.confidence,
-    flags: observation.flags,
-  })
-}
+  function trackStreamDelta(sessionID: string, part: { id: string; messageID: string }, delta: string): void {
+    if (!delta) return
+    const partID = part.id
+    let observer = streamObservers.get(partID)
+    if (!observer) {
+      observer = createStreamObserver({ threshold: STREAM_CONFIDENCE_THRESHOLD })
+      streamObservers.set(partID, observer)
+    }
+    const observation = observer.push(delta)
+    if (observation.lowConfidence && !flaggedParts.has(partID)) {
+      flaggedParts.add(partID)
+      void logStreamFlag(sessionID, partID, observation).catch(() => undefined)
+    }
+    if (storeTextsFlag) {
+      replyBuffers.set(part.messageID, `${replyBuffers.get(part.messageID) ?? ""}${delta}`)
+      pruneOldest(replyBuffers)
+    }
+  }
 
-export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_workspace }, rawOptions = {}) => {
+  function endStream(messageID: string): void {
+    // A finalized message no longer needs an accumulated reply after its event
+    // handler has consumed it. Keep the id parameter explicit for lifecycle use.
+    if (!storeTextsFlag) replyBuffers.delete(messageID)
+    // Observers are pruned lazily by size to bound memory over a long session.
+    if (streamObservers.size > 512) {
+      const overflow = streamObservers.size - 512
+      let removed = 0
+      for (const key of streamObservers.keys()) {
+        if (removed >= overflow) break
+        streamObservers.delete(key)
+        flaggedParts.delete(key)
+        removed += 1
+      }
+    }
+  }
+
+  // Stub logger: replaced when the plugin body captures `client.app.log`.
+  let streamLog: (sessionID: string, message: string, extra: unknown) => Promise<void> = () => Promise.resolve()
+
+  function logStreamFlag(sessionID: string, partID: string, observation: { confidence: number; flags: string[] }): Promise<void> {
+    return streamLog(sessionID, "orchestra stream observer flagged low-confidence output", {
+      partID,
+      confidence: observation.confidence,
+      flags: observation.flags,
+    })
+  }
+
   // Experimental OpenCode workspace integration: editors can be assigned isolated git worktrees.
   let loaded: LoadedConfig
   try {
@@ -338,10 +338,23 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
   await registerProject(directory, openCodeConfigDirectory()).catch(() => undefined)
   const discovered = await discoverConnectedModels(client)
   const orchestra = applyDiscoveredModels(applyBudgetPreset(loaded.config), discovered)
+  const unknownTariffs = discovered.filter((model) => typeof model !== "string" && model.priceInput === undefined && model.priceOutput === undefined).length
+  if (unknownTariffs && orchestra.orchestration.taskBudget.unknownPricing === "warn") {
+    await client.app.log({ body: {
+      service: "opencode-orchestra", level: "warn",
+      message: "Provider catalog tariffs unavailable; models are treated as potentially paid",
+      extra: { models: unknownTariffs },
+    } }).catch(() => undefined)
+  }
   const stateStore = new OrchestrationStateStore(
     directory,
     orchestra.orchestration.persistence.directory,
     orchestra.orchestration.persistence.enabled,
+    (error) => client.app.log({ body: {
+      service: "opencode-orchestra", level: "error",
+      message: "OpenCode Orchestra checkpoint persistence failed",
+      extra: { error: error.message },
+    } }).then(() => undefined),
   )
   const coordinator = new OrchestrationRunState({
     maxWorkers: orchestra.orchestration.maxWorkers,
@@ -374,7 +387,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       return result
     },
   )
-  if (orchestra.orchestration.persistence.enabled) actionInbox.start()
+  if (stateStore.status().state === "ready") actionInbox.start()
   const verificationCalls = new Map<string, { sessionID: string; command: string }>()
   const autoAcceptLive = createLiveAutoAccept(directory, rawOptions)
   const prompts = await loadPrompts()
@@ -527,6 +540,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     configSource: loaded.source ?? "plugin options/defaults",
     mcp: await detectMcpPresence(),
     browserStatus: () => browser.status(),
+    persistenceStatus: () => stateStore.status(),
   }
 
   const mcpClient = client as unknown as {
@@ -686,7 +700,7 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
       mcpCalls.clear()
       completedMcpCalls.clear()
       pendingMcpFailures.clear()
-      await stateStore.flush().catch(() => undefined)
+      await stateStore.close().catch(() => undefined)
       coordinator.dispose()
       verificationCalls.clear()
       sessionAgent.clear()

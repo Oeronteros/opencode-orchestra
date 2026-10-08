@@ -16,6 +16,7 @@ const server = http.createServer((req, res) => {
   req.on('data', (chunk: Buffer) => chunks.push(chunk))
   req.on('end', () => {
     const body = Buffer.concat(chunks)
+    if (body.toString('latin1').includes('name="language"\r\n\r\ncrash')) process.exit(3)
     if (capture !== undefined) {
       appendFileSync(capture, `${JSON.stringify({ contentType: req.headers['content-type'], body: body.toString('latin1') })}\n`)
     }

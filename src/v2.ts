@@ -3,6 +3,7 @@ import type { Context } from "@opencode/plugin/promise/plugin"
 import { z } from "zod"
 import { registerBrowserHost } from "./browser/v2.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
+import { abortableDelay } from "./routing/retry.js"
 
 type LegacyClient = PluginInput["client"]
 type LegacyAssistant = { id: string; type: "assistant"; agent: string; model: { providerID: string; id: string }; content: Array<{ type: string; text?: string; id?: string; name?: string; state?: { status: string; error?: unknown } }>; time: { created: number; completed?: number }; finish?: string; cost?: number; tokens?: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } }; error?: unknown }
@@ -30,7 +31,7 @@ function legacyMessage(message: LegacyAssistant, sessionID: string, parentID?: s
 }
 
 /** The V1 orchestration engine uses SDK response envelopes. Keep that contract at this boundary. */
-function legacyClient(ctx: Context): LegacyClient {
+function legacyClient(ctx: Context, trackSession: (id: string) => void): LegacyClient {
   const session = ctx.session as Context["session"] & { interrupt?: (input: { sessionID: string; resume?: boolean }) => Promise<unknown> }
   const select = async (id: string, body: { agent?: string; model?: { providerID: string; modelID: string } }) => {
     if (body.agent) await ctx.session.switchAgent({ sessionID: id, agent: body.agent })
@@ -38,13 +39,14 @@ function legacyClient(ctx: Context): LegacyClient {
   }
   const prompt = async (input: { path: { id: string }; body: { agent?: string; model?: { providerID: string; modelID: string }; parts: Array<{ type: string; text?: string }> }; signal?: AbortSignal }, wait: boolean) => {
     const id = input.path.id
+    trackSession(id)
     const previous = wait ? new Set((await ctx.session.context({ sessionID: id })).map((item) => item.id)) : undefined
     await select(id, input.body)
     const text = input.body.parts.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n")
     await ctx.session.prompt({ sessionID: id, text }, input.signal ? { signal: input.signal } : undefined)
     if (!wait) return { data: undefined }
-    await ctx.session.wait({ sessionID: id })
-    const messages = await ctx.session.context({ sessionID: id })
+    await ctx.session.wait({ sessionID: id }, input.signal ? { signal: input.signal } : undefined)
+    const messages = await ctx.session.context({ sessionID: id }, input.signal ? { signal: input.signal } : undefined)
     const answer = [...messages].reverse().find((item) => item.type === "assistant" && !previous?.has(item.id)) as LegacyAssistant | undefined
     if (!answer) throw new Error("OpenCode V2 completed without an assistant response")
     const user = [...messages].reverse().find((item) => item.type === "user")
@@ -74,7 +76,7 @@ function legacyClient(ctx: Context): LegacyClient {
           tool_call: model.capabilities.tools,
           attachment: model.capabilities.input.includes("image"),
           status: model.status,
-          cost: { input: model.cost[0]?.input ?? 0, output: model.cost[0]?.output ?? 0 },
+          ...(model.cost[0] ? { cost: { input: model.cost[0].input, output: model.cost[0].output } } : {}),
           limit: model.limit,
           modalities: { input: model.capabilities.input, output: model.capabilities.output },
         }
@@ -89,6 +91,7 @@ function legacyClient(ctx: Context): LegacyClient {
           location: { directory: query?.directory ?? ctx.location.directory },
           ...(body.parentID ? { metadata: { orchestraParentID: body.parentID } } : {}),
         })
+        trackSession(created.id)
         return { data: created }
       },
       abort: async ({ path }: { path: { id: string } }) => {
@@ -120,8 +123,9 @@ function permissions(config: RuntimeAgentConfig): Array<{ action: string; resour
   return rules
 }
 
-export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<() => Promise<void>> {
-  const client = legacyClient(ctx)
+export async function setupV2(ctx: Context, initialize: LegacyPlugin, retry: { baseDelayMs?: number; maxDelayMs?: number } = {}): Promise<() => Promise<void>> {
+  const sessions = new Set<string>()
+  const client = legacyClient(ctx, (id) => sessions.add(id))
   const browser = registerBrowserHost(client, ctx)
   const hooks: LegacyHooks = await initialize({ client, directory: ctx.location.directory } as unknown as PluginInput, ctx.options)
   const config: { agent?: Record<string, RuntimeAgentConfig>; command?: Record<string, { template: string; description?: string; agent?: string }> } = {}
@@ -192,10 +196,12 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<(
     event.effect = output.status
   })
   await ctx.session.hook("prompt", async (event) => {
+    sessions.add(event.sessionID)
     const output = { message: { id: event.messageID }, parts: [{ type: "text", text: event.prompt.text }] }
     await hooks["chat.message"]?.({ sessionID: event.sessionID }, output as never)
   })
   await ctx.session.hook("context", async (event) => {
+    sessions.add(event.sessionID)
     await hooks["chat.params"]?.({ sessionID: event.sessionID, agent: event.agent, model: { providerID: event.model.providerID, id: event.model.id } } as never, {} as never)
     if (event.agent === "orch-lead") {
       const history = await ctx.session.context({ sessionID: event.sessionID })
@@ -223,41 +229,103 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin): Promise<(
 
   const controller = new AbortController()
   await browser.install()
-  const seen = new Set<string>()
-  const stream = (async () => {
-    for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+  // Keep only finalized IDs, not response text. A timestamp watermark would
+  // lose a response that completes out of order or after a clock adjustment.
+  // IDs live for the session lifetime and are released on session.deleted.
+  const completed = new Map<string, Set<string>>()
+  const synchronize = async (sessionID: string): Promise<"idle" | "error" | undefined> => {
+    const messages = await ctx.session.context({ sessionID }, { signal: controller.signal })
+    for (let i = 0; i < messages.length; i++) {
+      controller.signal.throwIfAborted()
+      const message = messages[i]
+      if (!message || message.type !== "assistant") continue
+      const answer = message as LegacyAssistant
+      if (answer.time.completed === undefined && answer.finish === undefined && answer.error === undefined) continue
+      const seen = completed.get(sessionID) ?? new Set<string>()
+      if (seen.has(answer.id)) continue
+      const user = messages.slice(0, i).findLast((item) => item.type === "user")
+      await hooks.event?.({ event: { type: "message.updated", properties: legacyMessage(answer, sessionID, user?.id) } as never })
+      seen.add(answer.id)
+      completed.set(sessionID, seen)
+    }
+    // V2 records an idle marker in context. A completed assistant alone may
+    // still be an intermediate tool step, so it cannot imply session.idle.
+    const last = messages.at(-1)
+    return last?.type === "idle" ? (last.outcome === "succeeded" ? "idle" : "error") : undefined
+  }
+  const reconcile = async () => {
+    for (const sessionID of sessions) {
       try {
-        if (event.type === "session.reasoning.delta") {
-          const partID = `${event.data.assistantMessageID}:reasoning:${event.data.ordinal}`
-          await hooks.event?.({ event: { type: "message.part.updated", properties: { part: { type: "reasoning", id: partID, messageID: event.data.assistantMessageID, sessionID: event.data.sessionID }, delta: event.data.delta } } as never })
-        } else if (event.type === "session.text.delta") {
-          await hooks.event?.({ event: { type: "message.part.delta", properties: { sessionID: event.data.sessionID, messageID: event.data.assistantMessageID, partID: `${event.data.assistantMessageID}:${event.data.ordinal}`, field: "text", delta: event.data.delta } } as never })
-        } else if (event.type === "session.idle" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
-          const sessionID = event.data.sessionID
-          const messages = await ctx.session.context({ sessionID }).catch(() => [])
-          for (let i = 0; i < messages.length; i++) {
-            const message = messages[i]
-            if (!message || message.type !== "assistant" || seen.has(message.id)) continue
-            const user = messages.slice(0, i).findLast((item) => item.type === "user")
-            await hooks.event?.({ event: { type: "message.updated", properties: legacyMessage(message as LegacyAssistant, sessionID, user?.id) } as never })
-            seen.add(message.id)
-            if (seen.size > 2_048) {
-              const oldest = seen.values().next().value
-              if (oldest) seen.delete(oldest)
+        const terminal = await synchronize(sessionID)
+        if (terminal) await hooks.event?.({ event: { type: terminal === "idle" ? "session.idle" : "session.error", properties: { sessionID } } as never })
+      } catch (error) {
+        if (!controller.signal.aborted) console.warn("[opencode-orchestra] V2 session reconciliation failed", error)
+      }
+    }
+  }
+  type StreamEvent = ReturnType<Context["event"]["subscribe"]> extends AsyncIterable<infer E> ? E : never
+  let connected = false
+  const processEvent = async (event: StreamEvent) => {
+    if (event.type === "server.connected") {
+      if (connected) await reconcile()
+      connected = true
+    } else if (event.type === "session.reasoning.delta") {
+      sessions.add(event.data.sessionID)
+      const partID = `${event.data.assistantMessageID}:reasoning:${event.data.ordinal}`
+      await hooks.event?.({ event: { type: "message.part.updated", properties: { part: { type: "reasoning", id: partID, messageID: event.data.assistantMessageID, sessionID: event.data.sessionID }, delta: event.data.delta } } as never })
+    } else if (event.type === "session.text.delta") {
+      sessions.add(event.data.sessionID)
+      await hooks.event?.({ event: { type: "message.part.delta", properties: { sessionID: event.data.sessionID, messageID: event.data.assistantMessageID, partID: `${event.data.assistantMessageID}:${event.data.ordinal}`, field: "text", delta: event.data.delta } } as never })
+    } else if (event.type === "session.idle" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+      const sessionID = event.data.sessionID
+      sessions.add(sessionID)
+      await synchronize(sessionID)
+      await hooks.event?.({ event: { type: event.type === "session.idle" ? "session.idle" : "session.error", properties: { sessionID } } as never })
+    } else if (event.type === "session.deleted") {
+      sessions.delete(event.data.sessionID)
+      completed.delete(event.data.sessionID)
+    }
+  }
+  const stream = (async () => {
+    let failures = 0
+    let reconnect = false
+    while (!controller.signal.aborted) {
+      try {
+        const subscription = ctx.event.subscribe({ signal: controller.signal })[Symbol.asyncIterator]()
+        try {
+          // Start the subscription before reading history, so events arriving
+          // during reconciliation remain queued by the SDK.
+          let pending = subscription.next()
+          void pending.catch(() => undefined)
+          if (reconnect) await reconcile()
+          while (!controller.signal.aborted) {
+            const item = await pending
+            if (item.done) break
+            const event = item.value
+            failures = 0
+            pending = subscription.next()
+            void pending.catch(() => undefined)
+            try {
+              await processEvent(event)
+            } catch (error) {
+              if (!controller.signal.aborted) console.warn("[opencode-orchestra] V2 event processing failed", error)
             }
           }
-          await hooks.event?.({ event: { type: event.type === "session.idle" ? "session.idle" : "session.error", properties: { sessionID } } as never })
-        }
+        } finally { await subscription.return?.() }
       } catch (error) {
-        if (!controller.signal.aborted) console.warn("[opencode-orchestra] V2 event processing failed", error)
+        if (!controller.signal.aborted) console.warn("[opencode-orchestra] V2 event stream failed; reconnecting", error)
       }
+      if (controller.signal.aborted) break
+      reconnect = true
+      const delay = Math.min(retry.maxDelayMs ?? 30_000, (retry.baseDelayMs ?? 500) * 2 ** Math.min(failures++, 6))
+      await abortableDelay(delay, controller.signal)
     }
   })().catch((error: unknown) => { if (!controller.signal.aborted) console.warn("[opencode-orchestra] V2 event stream failed", error) })
 
   return async () => {
     controller.abort()
     await stream
-    await hooks.dispose?.()
-    await browser.dispose()
+    try { await hooks.dispose?.() }
+    finally { await browser.dispose() }
   }
 }

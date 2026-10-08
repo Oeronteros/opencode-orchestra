@@ -197,7 +197,7 @@ mod tests {
     /// recent ffmpeg builds insert between `fmt ` and `data`.
     fn with_info_chunk(pcm: &[u8]) -> Vec<u8> {
         let software = b"Lavf63.1.102\0";
-        let isft_size = (4 + software.len()) as u32;
+        let isft_size = software.len() as u32;
         let list_body = 4 + 4 + 4 + software.len();
         let mut out = Vec::new();
         out.extend_from_slice(b"RIFF");
@@ -276,6 +276,28 @@ mod tests {
         let pcm = tone(500);
         let wav = with_info_chunk(&pcm);
         assert_eq!(parse_pcm_wav(&wav), Some((78, pcm.len())));
+    }
+
+    #[test]
+    fn shared_ffmpeg_fixture_supports_growing_headers_and_truncated_chunks() {
+        let wav = include_bytes!("../../../test/fixtures/voice-ffmpeg.wav");
+        assert_eq!(parse_pcm_wav(wav), Some((78, 16000)));
+        for size in [0u32, u32::MAX] {
+            let mut growing = wav[..4096].to_vec();
+            growing[74..78].copy_from_slice(&size.to_le_bytes());
+            assert_eq!(parse_pcm_wav(&growing), Some((78, 4018)));
+        }
+        for end in 0..80 {
+            assert_eq!(parse_pcm_wav(&wav[..end]), None);
+        }
+        let chunk = b"JUNK\x03\x00\x00\x00\x01\x02\x03\x00";
+        let mut padded = wav[..36].to_vec();
+        padded.extend_from_slice(chunk);
+        padded.extend_from_slice(&wav[36..]);
+        assert_eq!(parse_pcm_wav(&padded), Some((90, 16000)));
+        assert_eq!(parse_pcm_wav(&padded[..47]), None);
+        padded[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(parse_pcm_wav(&padded), None);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { spawn } from "node:child_process"
+import { once } from "node:events"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -9,6 +11,89 @@ import { OrchestrationStateStore } from "../src/orchestration/state-store.js"
 import { OrchestrationActionInbox } from "../src/orchestration/action-inbox.js"
 import { planAdaptiveExtension } from "../src/orchestration/adaptive.js"
 import { planTask, type TaskPlan } from "../src/routing/planner.js"
+
+test("checkpoint owners exclude concurrent instances and release on close", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-lock-"))
+  const first = new OrchestrationStateStore(directory, "state", true)
+  const second = new OrchestrationStateStore(directory, "state", true)
+  const third = new OrchestrationStateStore(directory, "state", true)
+  try {
+    await first.load()
+    first.schedule({ version: 1, updatedAt: 1, runs: [] })
+    await first.flush()
+    const before = await readFile(first.file, "utf8")
+    await assert.rejects(second.load(), /owned by process/)
+    second.schedule({ version: 1, updatedAt: 1, runs: [] })
+    await assert.rejects(second.flush())
+    assert.equal(await readFile(first.file, "utf8"), before)
+    assert.equal(second.status().state, "error")
+    await first.close()
+    assert.deepEqual(await third.load(), { version: 1, updatedAt: 1, runs: [] })
+  } finally {
+    await first.close().catch(() => undefined)
+    await second.close().catch(() => undefined)
+    await third.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("checkpoint failure is reported before flush and a later successful save clears it", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-save-error-"))
+  let notify!: () => void
+  const reported = new Promise<void>((resolve) => { notify = resolve })
+  const store = new OrchestrationStateStore(directory, "state", true, () => notify())
+  try {
+    await store.load()
+    await mkdir(store.file)
+    store.schedule({ version: 1, updatedAt: 1, runs: [] })
+    await reported
+    assert.equal(store.status().state, "error")
+    await assert.rejects(store.flush())
+    await rm(store.file, { recursive: true })
+    store.schedule({ version: 1, updatedAt: 1, runs: [] })
+    await store.flush()
+    assert.equal(store.status().state, "ready")
+    assert.equal(store.status().error, undefined)
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test("corrupt checkpoints remain untouched after a failed restore", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-corrupt-"))
+  const store = new OrchestrationStateStore(directory, "state", true)
+  try {
+    await mkdir(path.dirname(store.file), { recursive: true })
+    await writeFile(store.file, "broken json")
+    await assert.rejects(store.load())
+    store.schedule({ version: 1, updatedAt: 1, runs: [] })
+    await assert.rejects(store.flush(), { name: "SyntaxError" })
+    assert.equal(await readFile(store.file, "utf8"), "broken json")
+  } finally { await store.close().catch(() => undefined); await rm(directory, { recursive: true, force: true }) }
+})
+
+test("checkpoint leases are respected across processes and reclaimed after a crash", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-process-lock-"))
+  const moduleURL = new URL("../src/orchestration/state-store.js", import.meta.url).href
+  const script = `import { OrchestrationStateStore } from ${JSON.stringify(moduleURL)}; const store = new OrchestrationStateStore(process.argv[1], 'state', true); await store.load(); console.log('ready'); setInterval(() => {}, 1000);`
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script, directory], { stdio: ["ignore", "pipe", "pipe"] })
+  const blocked = new OrchestrationStateStore(directory, "state", true)
+  const recovered = new OrchestrationStateStore(directory, "state", true)
+  try {
+    await Promise.race([once(child.stdout!, "data"), once(child, "exit").then(() => { throw new Error("Lease owner exited before becoming ready") })])
+    await assert.rejects(blocked.load(), /owned by process/)
+    const exited = once(child, "exit")
+    child.kill()
+    await exited
+    assert.equal(await recovered.load(), undefined)
+    recovered.schedule({ version: 1, updatedAt: 1, runs: [] })
+    await recovered.flush()
+    assert.equal(recovered.status().state, "ready")
+  } finally {
+    child.kill()
+    await blocked.close().catch(() => undefined)
+    await recovered.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 function contract(options: {
   resource?: string

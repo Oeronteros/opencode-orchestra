@@ -129,6 +129,10 @@ With no argument, the newest unfinished run is resumed. Persistence can be disab
 
 The state file is local but contains worker results. Protect its directory like the repository when those results may contain sensitive data.
 
+Each checkpoint has one writer, identified by a process ID and a unique lease in `runs.json.lock`. A second plugin instance reports a conflict and cannot overwrite the owner's state or consume dashboard actions. Normal disposal releases the lease; a lease left by a dead process is reclaimed on restart. Save failures appear immediately in the log and in `orchestra_plugin_status`; corrupt checkpoints remain untouched after restore fails. An invalid lock or an interrupted lock reclamation requires inspection before removing the lock and restarting the plugin.
+
+OpenCode V2 event subscriptions reconnect with delays from 500 ms up to 30 seconds. On reconnect, Orchestra reconciles tracked sessions with their history, delivers only completed assistant responses, and restores terminal events from idle markers. Completed responses remain deduplicated beyond 2,048 messages.
+
 ### Verified completion
 
 Before final checks, `orch-lead` registers exact commands and expected artifacts through `orchestration_set_verification`. Commands run through the normal `bash` tool, so OpenCode permissions still apply. The runtime marks a command gate as passed only after the matching call succeeds, and checks artifact existence directly inside the workspace.
@@ -302,6 +306,10 @@ Budget modes affect model choice, paid-call limits, and escalation. They do not 
 An exact `models.agents` override has the highest priority. Retryable failures such as rate limits, timeouts, and provider 5xx errors may advance to the next compatible model. Authentication, permission, and invalid-request failures stop the chain.
 
 Runtime fallback and lifecycle accounting are performed directly for every Orchestra subagent. Editor dispatch creates an isolated Git worktree from the sealed base revision; the integrator runs in the primary checkout only after every editor commit passes validation. The primary lead remains on OpenCode's native path.
+
+Retryable failures apply an exponential delay starting at 500 ms and a provider cooldown shared by this plugin's workers. `Retry-After` accepts seconds or an HTTP date. A dispatch waits at most five seconds in total; models whose provider deadline exceeds that allowance are skipped so another provider in the configured chain can be tried. Cancellation interrupts the delay. Authentication and invalid-request failures remain terminal.
+
+Auto-discovery treats absent, partial, or invalid catalog tariffs as potentially paid. These models have no fabricated zero price, are excluded when paid calls are disallowed, and log a warning under `unknownPricing: "warn"`. With `unknownPricing: "block"`, they are excluded from discovered pools. An explicitly zero input and output tariff still qualifies as free; configured manual pools and explicit subscription declarations retain their existing semantics.
 
 ## Parallel editing
 

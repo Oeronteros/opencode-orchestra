@@ -92,21 +92,80 @@ test('reports a server that exits during startup instead of hanging', async () =
 
 test('aborting a request kills the busy server so the next call restarts it', async () => {
   const { spawnImpl, calls } = countedSpawn()
+  let inferenceStarted!: () => void
+  const started = new Promise<void>(resolve => { inferenceStarted = resolve })
   const server = new WhisperServer({
     serverPath: process.execPath,
     modelPath: 'ggml-base.bin',
     threads: 4,
     spawn: spawnImpl,
     args: (port) => [fixture, '--port', String(port)],
+    fetch: async (input, init) => {
+      const result = fetch(input, init)
+      if (String(input).endsWith('/inference')) inferenceStarted()
+      return result
+    },
   })
   try {
     const controller = new AbortController()
     const pending = server.transcribe(Buffer.from('slow audio'), 'slow', controller.signal)
+    await started
     controller.abort()
     await assert.rejects(pending, /cancelled/)
     assert.equal(calls(), 1)
     assert.equal(await server.transcribe(Buffer.from('fast audio'), 'ru'), 'Привет из тестового сервера')
     assert.equal(calls(), 2, 'the aborted server must be replaced, not reused')
+  } finally {
+    await server.dispose()
+  }
+})
+
+test('a crash during inference is recovered on the next request with the same model', async () => {
+  let calls = 0
+  let exited: Promise<void> = Promise.resolve()
+  const server = new WhisperServer({
+    serverPath: process.execPath, modelPath: 'ggml-base.bin', threads: 4,
+    args: port => [fixture, '--port', String(port)],
+    spawn: (command, args, options) => {
+      calls++
+      const child = spawn(command, args, options)
+      exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
+      return child
+    },
+  })
+  try {
+    await assert.rejects(server.transcribe(Buffer.from('audio'), 'crash'), /whisper-server недоступен/)
+    await exited
+    assert.equal(await server.transcribe(Buffer.from('tail'), 'ru'), 'Привет из тестового сервера')
+    assert.equal(calls, 2)
+  } finally {
+    await server.dispose()
+  }
+})
+
+test('startup can be cancelled before the readiness deadline and the next request restarts', { timeout: 5000 }, async () => {
+  let calls = 0
+  let spawned!: () => void
+  const started = new Promise<void>(resolve => { spawned = resolve })
+  const server = new WhisperServer({
+    serverPath: process.execPath, modelPath: 'ggml-base.bin', threads: 4,
+    args: port => calls === 0 ? ['-e', 'setTimeout(() => {}, 30000)'] : [fixture, '--port', String(port)],
+    spawn: (command, args, options) => {
+      calls++
+      const child = spawn(command, args, options)
+      child.once('spawn', () => spawned())
+      return child
+    },
+  })
+  try {
+    const controller = new AbortController()
+    const pending = server.transcribe(Buffer.from('audio'), 'ru', controller.signal)
+    await started
+    controller.abort()
+    await assert.rejects(pending, /cancelled/)
+    assert.equal(server.running, false)
+    assert.equal(await server.transcribe(Buffer.from('tail'), 'ru'), 'Привет из тестового сервера')
+    assert.equal(calls, 2)
   } finally {
     await server.dispose()
   }

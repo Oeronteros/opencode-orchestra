@@ -16,6 +16,32 @@ const testConfigDirectory = await mkdtemp(path.join(os.tmpdir(), "orchestra-test
 process.env.OPENCODE_CONFIG_DIR = testConfigDirectory
 test.after(async () => { await rm(testConfigDirectory, { recursive: true, force: true }) })
 
+test("plugin instances keep independent text policies and survive another instance disposal", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-isolation-"))
+  const initialize = OrchestraPlugin as unknown as (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, any>>
+  const client = { app: { log: async () => undefined } }
+  const first = await initialize({ directory: path.join(root, "first"), client }, { telemetry: { storeTexts: true } })
+  const second = await initialize({ directory: path.join(root, "second"), client }, { telemetry: { storeTexts: false } })
+  try {
+    await first["chat.message"]({ sessionID: "shared" }, { message: { id: "user" }, parts: [{ type: "text", text: "private prompt" }] })
+    await first.event({ event: { type: "message.part.delta", properties: {
+      sessionID: "shared", messageID: "answer", partID: "part", field: "text", delta: "private reply",
+    } } })
+    await second.dispose()
+    await first.event({ event: { type: "message.updated", properties: { info: {
+      id: "answer", sessionID: "shared", role: "assistant", time: { created: 1, completed: 2 }, finish: "stop",
+      cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    } } } })
+    const state = JSON.parse(await readFile(path.join(root, "first", ".orchestra", "state.json"), "utf8"))
+    assert.equal(state.sessions.shared.messages.answer.prompt, "private prompt")
+    assert.equal(state.sessions.shared.messages.answer.reply, "private reply")
+  } finally {
+    await first.dispose()
+    await second.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("entrypoint exposes a stable id and server", () => {
   assert.equal(pluginModule.id, "opencode-orchestra")
   assert.equal(pluginModule.server, OrchestraPlugin)
@@ -88,6 +114,32 @@ test("orchestra_dispatch retries a worker with its next configured model", async
   assert.equal(result.output, "secondary result")
   assert.deepEqual(promptModels, ["vendor/primary", "vendor/secondary"])
   assert.deepEqual(reliability.map((event) => event.outcome), ["failed", "retried"])
+})
+
+test("orchestra_dispatch preserves assistant Retry-After and shares provider cooldown across workers", async () => {
+  const config = withDefaults({ models: {
+    strategy: "manual", agents: { "orch-repo": "vendor/primary" },
+    fallback: { maxRetries: 1, agents: { "orch-repo": ["vendor/secondary"] } },
+  } })
+  const agents = createAgentSet(config, { lead: "lead", judge: "judge" })
+  let requests = 0
+  const client = { session: {
+    create: async () => ({ data: { id: "child" } }),
+    prompt: async () => {
+      requests++
+      return { data: { info: { error: { data: { message: "rate limited", statusCode: 429, responseHeaders: { "Retry-After": "60" } } } }, parts: [] } }
+    },
+  } } as unknown as DispatchContext["client"]
+  const ledger = { recordReliabilityEvent: async () => undefined } as unknown as Ledger
+  const dispatch = createOrchestraTools(config, ledger, undefined, undefined, { client, agents, directory: process.cwd() }).orchestra_dispatch!
+  for (const nodeId of ["first", "second"]) {
+    const output = await dispatch.execute({ agent: "orch-repo", task: "Inspect", nodeId }, { sessionID: `parent-${nodeId}` } as never)
+    assert.equal(typeof output, "string")
+    const result = JSON.parse(typeof output === "string" ? output : output.output)
+    assert.equal(result.ok, false)
+    assert.ok(result.retryAfterMs > 55_000, JSON.stringify(result))
+  }
+  assert.equal(requests, 1)
 })
 
 test("orchestra_dispatch treats an assistant error payload as failure and falls back", async () => {

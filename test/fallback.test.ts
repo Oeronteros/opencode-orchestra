@@ -1,5 +1,61 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { retryAfterMs } from "../src/routing/fallback-dispatch.js"
+
+test("Retry-After accepts seconds, case-insensitive headers, and HTTP dates", () => {
+  const now = Date.UTC(2026, 0, 1)
+  assert.equal(retryAfterMs({ headers: new Headers({ "retry-after": "2.5" }) }, now), 2500)
+  assert.equal(retryAfterMs({ responseHeaders: { "Retry-After": new Date(now + 3000).toUTCString() } }, now), 3000)
+  assert.equal(retryAfterMs({ headers: { "retry-after": "invalid" } }, now), undefined)
+})
+
+test("provider cooldown skips siblings with long Retry-After and tries another provider", async () => {
+  let clock = 0
+  const called: string[] = []
+  const cooldowns = new Map<string, number>()
+  const result = await dispatchWithFallback(["a/first", "a/second", "b/third"], async (model) => {
+    called.push(model)
+    if (model === "a/first") throw { status: 429, headers: { "retry-after": "60" } }
+    return "done"
+  }, undefined, { cooldowns, now: () => clock, wait: async (ms) => { clock += ms }, baseDelayMs: 100, maxWaitMs: 500 })
+  assert.equal(result.ok, true)
+  assert.deepEqual(called, ["a/first", "b/third"])
+  assert.equal(clock, 100)
+  assert.equal(cooldowns.get("a"), 60_000)
+  const second = await dispatchWithFallback(["a/other"], async () => { assert.fail("Cooling provider must not be called") }, undefined,
+    { cooldowns, now: () => clock, maxWaitMs: 500 })
+  assert.equal(second.ok, false)
+  assert.equal(!second.ok && second.retryAfterMs, 59_900)
+})
+
+test("same-provider fallback waits for the complete server deadline", async () => {
+  let clock = 0
+  const starts: number[] = []
+  await dispatchWithFallback(["a/first", "a/second"], async (_model, attempt) => {
+    starts.push(clock)
+    if (attempt === 1) throw { status: 503, headers: { "retry-after": "2" } }
+    return "done"
+  }, undefined, { now: () => clock, wait: async (ms) => { clock += ms } })
+  assert.deepEqual(starts, [0, 2000])
+})
+
+test("cancellation interrupts a cooldown without another provider request", async () => {
+  const controller = new AbortController()
+  let calls = 0
+  const promise = dispatchWithFallback(["a/first", "a/second"], async () => {
+    calls++
+    throw { status: 429, headers: { "retry-after": "3" } }
+  }, async (event) => { if (event.outcome === "failed") setTimeout(() => controller.abort(), 10) }, { signal: controller.signal })
+  await assert.rejects(promise, { name: "AbortError" })
+  assert.equal(calls, 1)
+})
+
+test("telemetry failure after success cannot execute another model", async () => {
+  let calls = 0
+  await assert.rejects(dispatchWithFallback(["a/first", "b/second"], async () => { calls++; return "done" },
+    async () => { throw { status: 503 } }))
+  assert.equal(calls, 1)
+})
 import type { ModelCandidateInput } from "../src/config/schema.js"
 import {
   buildFallbackChain,
