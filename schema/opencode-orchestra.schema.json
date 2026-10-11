@@ -8,13 +8,14 @@
     "$schema": { "type": "string" },
     "browser": {
       "type": "object", "additionalProperties": false,
-      "description": "Managed browser requires OpenCode V2 >=2.0.16. Existing configs default off; new installs explicitly scaffold auto.",
+      "description": "Managed browser requires OpenCode V2 >=2.0.16. Defaults to auto and downloads Chrome for Testing when system Chrome is absent.",
       "properties": {
-        "mode": { "enum": ["off", "auto", "playwright", "devtools"], "default": "off" },
+        "mode": { "enum": ["off", "auto", "playwright", "devtools"], "default": "auto" },
         "profile": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", "default": "default" },
         "profiles": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$" }, "default": ["default"] },
         "sharedProfiles": { "type": "array", "items": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$" }, "default": [] },
-        "executable": { "type": "string", "minLength": 1, "description": "Absolute Chrome executable; no browser binary is downloaded implicitly." },
+        "executable": { "type": "string", "minLength": 1, "description": "Explicit absolute Chrome executable; overrides automatic browser selection." },
+        "download": { "type": "boolean", "default": true, "description": "Download official Chrome for Testing if no system or cached browser is available." },
         "nodeExecutable": { "type": "string", "minLength": 1, "description": "Real Node >=22.12 executable, including for Bun hosts." },
         "headless": { "type": "boolean", "default": false },
         "startupTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 20000 },

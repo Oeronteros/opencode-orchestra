@@ -71,6 +71,7 @@
     "@opencode-ai/plugin": "^1.18.32",
     "@opencode/plugin": "^2.0.16",
     "@playwright/mcp": "0.0.83",
+    "@puppeteer/browsers": "3.2.4",
     "chrome-devtools-mcp": "1.10.1",
     "jsonc-parser": "^3.3.1",
     "zod": "4.1.8"

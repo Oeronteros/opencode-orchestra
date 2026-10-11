@@ -14,6 +14,7 @@ import { browserConfigSchema } from "../src/config/schema.js"
 import { BrowserManager } from "../src/browser/manager.js"
 import { OrchestrationRunState } from "../src/orchestration/run-state.js"
 import { install } from "../src/cli.js"
+import { parse as parseJsonc } from "jsonc-parser"
 
 function harness(userServers: Array<[string, Mcp.ServerConfig]> = []) {
   const mcpTransforms: Array<(editor: MCPEditor) => void> = []
@@ -99,7 +100,9 @@ test("installer scaffolds auto only for new config, preserves user MCPs and conf
   assert.equal(Object.keys(main.mcp).length, 1)
   await writeFile(path.join(directory, "orchestra.jsonc"), "{\n // user config\n \"budget\": \"eco\"\n}\n")
   await install({ ...options, browserMode: "devtools", force: true })
-  assert.equal(await readFile(path.join(directory, "orchestra.jsonc"), "utf8"), "{\n // user config\n \"budget\": \"eco\"\n}\n")
+  const migrated = parseJsonc(await readFile(path.join(directory, "orchestra.jsonc"), "utf8")) as { browser: { mode: string; download: boolean } }
+  assert.equal(migrated.browser.mode, "devtools")
+  assert.equal(migrated.browser.download, true)
   const disabled = await mkdtemp(path.join(os.tmpdir(), "orchestra-no-playwright-"))
   await install({ ...options, configDirectory: disabled, playwright: false })
   assert.equal(JSON.parse(await readFile(path.join(disabled, "orchestra.jsonc"), "utf8")).browser.mode, "off")

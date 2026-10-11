@@ -31,6 +31,9 @@ import { DEFAULT_CONFIG } from "./config/defaults.js"
 import { loadPrompts } from "./prompts/load.js"
 import type { BrowserConfig } from "./config/schema.js"
 import { runBrowserCommand, parseBrowserArguments, type BrowserCommandOptions } from "./browser/cli.js"
+import { migrateBrowserConfig } from "./browser/install-config.js"
+import { ensureBrowser } from "./browser/provision.js"
+import { browserConfigSchema } from "./config/schema.js"
 
 const PACKAGE_NAME = "@oeronteros-1/opencode-orchestra"
 // Entry written to `opencode.json`. Keeping `@latest` lets OpenCode re-resolve
@@ -91,6 +94,7 @@ export interface InstallResult {
     git: ProvisionedDependency
     astGrep: ProvisionedDependency
     voice: ProvisionedDependency
+    browser: ProvisionedDependency
   }
 }
 
@@ -708,10 +712,19 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     ...(options.dryRun ? { dryRun: true } : {}),
   })
 
+  let browserConfig = browserConfigSchema.parse({ mode: options.browserMode ?? (options.playwright === false ? "off" : "auto") })
   try {
     const orchestraOriginal = await readFile(orchestraConfig, "utf8")
     parseObject(orchestraOriginal, orchestraConfig)
-    preserved.push("orchestra.jsonc")
+    const migrated = migrateBrowserConfig(orchestraOriginal, { ...(options.browserMode ? { browserMode: options.browserMode } : {}), ...(options.playwright === false ? { playwright: false } : {}) })
+    browserConfig = migrated.browser
+    if (migrated.changed) {
+      changed.push("orchestra.jsonc")
+      if (!options.dryRun) {
+        await copyFile(orchestraConfig, `${orchestraConfig}.bak-${new Date().toISOString().replaceAll(":", "-")}`)
+        await atomicWrite(orchestraConfig, migrated.text)
+      }
+    } else preserved.push("orchestra.jsonc")
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     changed.push("orchestra.jsonc")
@@ -721,13 +734,21 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
           $schema: "https://unpkg.com/@oeronteros-1/opencode-orchestra@latest/schema/opencode-orchestra.schema.json",
           budget: "balanced",
           models: { strategy: "auto", agents: {} },
-          browser: { mode: options.browserMode ?? (options.playwright === false ? "off" : "auto"), profile: "default", profiles: ["default"] },
+          browser: { mode: options.browserMode ?? (options.playwright === false ? "off" : "auto"), profile: "default", profiles: ["default"], download: true },
         },
         null,
         2,
       )}\n`
       await atomicWrite(orchestraConfig, content)
     }
+  }
+
+  let browser: ProvisionedDependency = { command: "Chrome", status: "skipped", reason: "Browser disabled or dependency provisioning skipped" }
+  if (shouldProvision && browserConfig.mode !== "off") {
+    try {
+      const ready = await ensureBrowser(browserConfig)
+      browser = { command: ready.executable, status: ready.source === "managed" ? "installed" : "existing" }
+    } catch (error) { browser = { command: "Chrome", status: "failed", reason: failureReason(error) ?? "Browser provisioning failed" } }
   }
 
   return {
@@ -743,6 +764,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
       git,
       astGrep,
       voice,
+      browser,
     },
   }
 }

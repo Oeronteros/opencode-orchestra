@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 import path from "node:path"
 import type { BrowserConfig } from "../config/schema.js"
 import { ProfileLock, processAlive } from "./profile.js"
+import { ensureBrowser } from "./provision.js"
 
 const execute = promisify(execFile)
 export interface BrowserTarget { id: string; type: string; url: string }
@@ -47,6 +48,7 @@ export class BrowserManager {
   private starting: Promise<string> | undefined
   private endpointValue: string | undefined
   private socketPath: string | undefined
+  installation?: import("./discovery.js").BrowserInstallation
   readonly lock: ProfileLock
   lastFailure: string | undefined
   constructor(readonly profile: string, readonly config: BrowserConfig) { this.lock = new ProfileLock(profile) }
@@ -62,8 +64,13 @@ export class BrowserManager {
     return this.starting
   }
   private async launch(signal?: AbortSignal): Promise<string> {
-    const executable = await chromeExecutable(this.config.executable)
-    if (!executable) { this.lastFailure = "browser_chrome_missing"; throw new Error(this.lastFailure) }
+    try {
+      this.installation = await ensureBrowser(this.config, signal ? { signal } : {})
+    } catch (error) {
+      this.lastFailure = error instanceof Error ? error.message.split(":")[0] : "browser_chrome_missing"
+      throw new Error(this.lastFailure)
+    }
+    const executable = this.installation.executable
     signal?.throwIfAborted()
     await this.lock.acquire()
     try {

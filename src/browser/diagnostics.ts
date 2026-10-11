@@ -2,7 +2,7 @@ import { readFile, mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { BrowserConfig } from "../config/schema.js"
 import { backendEntry, browserNode } from "./packages.js"
-import { chromeExecutable } from "./manager.js"
+import { discoverBrowser } from "./discovery.js"
 import { profileDirectory, profileLocked } from "./profile.js"
 import type { BrowserStatus } from "./runtime.js"
 
@@ -28,5 +28,5 @@ export async function browserDiagnostics(directory: string, config: BrowserConfi
     installed: { playwright: Boolean(backendEntry("playwright")), devtools: Boolean(backendEntry("devtools")) },
     connected: { playwright: false, devtools: false }, browserRunning: false, profileBusy: await profileLocked(profile), activeScenario: false, runtimeAvailable: false,
   }
-  return { ...(snapshotFile ? await refreshBrowserStatus(base, snapshotFile) : base), chromeAvailable: Boolean(await chromeExecutable(config.executable)), nodeAvailable: Boolean(browserNode(config)) }
+  return { ...(snapshotFile ? await refreshBrowserStatus(base, snapshotFile) : base), chromeAvailable: Boolean(await discoverBrowser(config)), nodeAvailable: Boolean(browserNode(config)) }
 }

@@ -61,13 +61,13 @@ const fallbackChainSchema = z
 export const browserProfileNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)
   .refine((name) => !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(name), "Reserved profile name")
 export const browserConfigSchema = z.object({
-  // Omitted on an existing installation means off. The installer explicitly proposes auto.
-  mode: z.enum(["off", "playwright", "devtools", "auto"]).default("off"),
+  mode: z.enum(["off", "playwright", "devtools", "auto"]).default("auto"),
   profile: browserProfileNameSchema.default("default"),
   profiles: z.array(browserProfileNameSchema).min(1).default(["default"]),
   sharedProfiles: z.array(browserProfileNameSchema).default([]),
   executable: z.string().min(1).optional(),
   nodeExecutable: z.string().min(1).optional(),
+  download: z.boolean().default(true),
   headless: z.boolean().default(false),
   startupTimeoutMs: z.number().int().min(1000).max(120000).default(20000),
   operationTimeoutMs: z.number().int().min(1000).max(300000).default(60000),

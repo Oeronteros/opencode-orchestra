@@ -55,8 +55,9 @@ async function setup(overrides: Record<string, unknown> = {}) {
   return { directory, runtime, state, get manager() { return manager! }, calls }
 }
 
-test("config is opt-in for existing installs and validates profiles", () => {
-  assert.equal(orchestraConfigSchema.parse({}).browser.mode, "off")
+test("browser is enabled by default and validates profiles", () => {
+  assert.equal(orchestraConfigSchema.parse({}).browser.mode, "auto")
+  assert.equal(orchestraConfigSchema.parse({}).browser.download, true)
   assert.equal(browserConfigSchema.parse({ mode: "auto" }).mode, "auto")
   for (const input of [{ mode: "wrong" }, { profile: "../personal" }, { profile: "CON" }, { profile: "other" }, { sharedProfiles: ["unknown"] }]) assert.equal(browserConfigSchema.safeParse(input).success, false)
   assert.equal(browserTaskSchema.safeParse({ ...grant, origins: ["https://user:password@example.com"] }).success, false)
@@ -72,7 +73,7 @@ test("auto chooses sufficient backend, observes explicit modes, and avoids brows
   assert.equal(chooseBackend(auto, "e2e", all), undefined)
   assert.throws(() => chooseBackend(auto, "performance", { playwright: true, devtools: false }))
   assert.throws(() => chooseBackend(browserConfigSchema.parse({ mode: "playwright" }), "ui", { playwright: false, devtools: true }))
-  assert.throws(() => chooseBackend(browserConfigSchema.parse({}), "ui", all))
+  assert.equal(chooseBackend(browserConfigSchema.parse({}), "ui", all), "playwright")
 })
 test("shared browser policy reaches loaded worker prompts and retains file boundaries", async () => {
   const prompts = await loadPrompts()
