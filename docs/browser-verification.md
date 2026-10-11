@@ -57,3 +57,7 @@ Live OpenCode V2 integration, real Chrome lifecycle/CDP behavior, and actual Lin
 ## Out-of-box provisioning update (2026-10-11)
 
 This section records the changes that made managed browsing work without manual Chrome installation. Commands and results are appended below as they complete; anything not executed is labeled as such rather than assumed.
+
+- Full suite after the change (`npm test`, 2026-10-11, Windows, Node 26.7.0): **566 tests, 565 passed, 0 failed, 1 skipped** (the live MCP fixture remains opt-in). New suites: `browser-discovery` (3), `browser-provision` (2), `browser-install-config` (2), plus updated `browser`, `browser-v2`, `v2`, `plugin-status` coverage.
+- Regression evidence for the native tool registration fix: a failing test asserted that every Orchestra tool registers as plain JSON Schema (`V2 registers Orchestra tools as plain JSON Schema the host can consume`); it fails against a Zod instance and passes after pre-conversion. The earlier host log (`[toJSONSchema]: Non-representable type encountered`) is the production symptom this pins.
+- Regression evidence for user browser MCP isolation: `user-managed browser MCP tools stay untouched and callable` — reintroducing the old wrapper reproduces `browser_user_server_not_managed`; the fixed code leaves the executor and options untouched and the direct call succeeds.
