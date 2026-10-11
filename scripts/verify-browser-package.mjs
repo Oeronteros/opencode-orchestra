@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
@@ -21,7 +22,7 @@ assert.equal(typeof (await import(pathToFileURL(path.join(packageRoot, 'dist/bro
 const defaultConfig = browserConfigSchema.parse({})
 assert.equal(defaultConfig.mode, 'auto')
 assert.equal(defaultConfig.download, true)
-const installer = await import(pathToFileURL(path.join(packageRoot, 'node_modules/@puppeteer/browsers/package.json')).href, { with: { type: 'json' } })
+const installer = await import(pathToFileURL(createRequire(path.join(packageRoot, 'package.json')).resolve('@puppeteer/browsers/package.json')).href, { with: { type: 'json' } })
 assert.ok(installer.default.version, 'pinned @puppeteer/browsers resolves inside the installed package')
 // Offline discovery must not fetch anything; a missing browser is a legitimate local answer.
 const discovered = await discoverBrowser({}, { cacheRoot: path.join(root, 'no-browser-cache'), systemCandidates: [] })
