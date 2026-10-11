@@ -294,6 +294,35 @@ test("V2 setup registers legacy behavior on the new domains and adapts tool exec
   assert.equal(disposed, true)
 })
 
+test("V2 registers Orchestra tools as plain JSON Schema the host can consume", async () => {
+  const tools: Array<{ name: string; description?: string; input: any }> = []
+  const ctx = {
+    location: { directory: process.cwd() }, options: {},
+    agent: { transform: async (callback: (editor: any) => void) => { callback({ get: () => undefined, update: () => undefined }); return { dispose: async () => undefined } } },
+    command: { transform: async (callback: (editor: any) => void) => { callback({ add: () => undefined }); return { dispose: async () => undefined } } },
+    tool: { transform: async (callback: (editor: any) => void) => { callback({ add: (value: any) => tools.push(value), list: () => tools.map((tool) => ({ ...tool, id: tool.name })), get: (id: string) => tools.find((tool) => tool.name === id), update: (id: string, edit: (draft: any) => void) => { const tool = tools.find((item) => item.name === id); if (tool) edit(tool) }, remove: () => undefined }); return { dispose: async () => undefined } }, hook: async () => ({ dispose: async () => undefined }) },
+    permission: { hook: async () => ({ dispose: async () => undefined }) },
+    model: { list: async () => ({ data: [] }) },
+    mcp: { list: async () => ({ data: [] }), transform: async (callback: (editor: any) => void) => { callback({ list: () => [], get: () => undefined, set: () => undefined, update: () => undefined, remove: () => undefined }); return { dispose: async () => undefined } }, reload: async () => undefined },
+    session: { hook: async () => ({ dispose: async () => undefined }), context: async () => [], get: async () => ({ location: { directory: process.cwd() } }) },
+    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() { return } }) },
+  } as unknown as Context
+  const { OrchestraPlugin } = await import("../src/index.js")
+  const directory = process.cwd()
+  const cleanup = await setupV2(ctx, OrchestraPlugin as unknown as LegacyPlugin)
+  try {
+    assert.ok(tools.length >= 15, `expected the full tool set, got ${tools.length}`)
+    for (const tool of tools) {
+      // A plain JSON Schema object has a string `type`; a Zod instance does not.
+      assert.equal(typeof tool.input?.type, "string", `${tool.name} input is not a JSON Schema object`)
+      assert.equal(tool.input.type, "object", tool.name)
+      assert.equal(tool.input._zod, undefined, `${tool.name} leaked a Zod instance`)
+      assert.doesNotThrow(() => JSON.stringify(tool.input), tool.name)
+    }
+    const dispatch = tools.find((tool) => tool.name === "orchestra_dispatch")
+    assert.deepEqual([...(dispatch?.input?.required ?? [])].sort(), ["agent", "nodeId", "task"])
+  } finally { await cleanup() }
+})
 test("V2 event stream retries an assistant message after a handler failure", async () => {
   let resolveIdle!: () => void
   const idleProcessed = new Promise<void>((resolve) => { resolveIdle = resolve })

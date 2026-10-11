@@ -7,6 +7,7 @@ import type { BrowserManager } from "./manager.js"
 import { backendCommand, backendEntry } from "./packages.js"
 import { browserTool, managedServer, type BrowserBackend } from "./policy.js"
 import type { BrowserHost, BrowserRuntime } from "./runtime.js"
+import { toolInputJsonSchema } from "../schema/json-schema.js"
 
 const hosts = new WeakMap<object, NativeBrowserHost>()
 export function registerBrowserHost(client: object, ctx: Context): NativeBrowserHost {
@@ -64,7 +65,7 @@ export class NativeBrowserHost implements BrowserHost {
     this.registrations.push(await this.ctx.tool.transform((editor) => {
       editor.add({
         name: "orchestra_browser", description: "Prepare a sealed browser scenario, switch backend with a reason, inspect safe status, release after verification, or restart after release. First login happens in the visible managed window. No credentials in chat.",
-        input: controlSchema, options: { codemode: false },
+        input: toolInputJsonSchema(controlSchema), options: { codemode: false },
         execute: async (input, context) => {
           const args = controlSchema.parse(input)
           if (args.action === "prepare") await runtime.prepare(context, args.profile, args.task, args.reason)
@@ -80,6 +81,10 @@ export class NativeBrowserHost implements BrowserHost {
           if (info.id.startsWith(prefix)) identified = { backend, name: info.id.slice(prefix.length), managed: false }
         }
         if (!identified) continue
+        // User-managed browser servers stay their owner's: never wrap their
+        // executor or rewrite their options. Only Orchestra's own managed
+        // tools receive the scenario lease gate.
+        if (!identified.managed) continue
         const original = info.execute
         const tool = identified
         this.originals.set(info.id, info)
@@ -87,7 +92,6 @@ export class NativeBrowserHost implements BrowserHost {
           // Keep browser operations outside Code Mode until end-to-end permission attribution is verified.
           draft.options = { ...(draft.options?.namespace ? { namespace: draft.options.namespace } : {}), ...(draft.options?.permission ? { permission: draft.options.permission } : {}), codemode: false }
           draft.execute = async (input, context) => {
-            if (!tool.managed) throw new Error("browser_user_server_not_managed")
             return runtime.execute(tool.backend, tool.name, input, context, (signal) => original(input, { ...context, signal }))
           }
         })

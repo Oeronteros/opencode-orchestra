@@ -1,8 +1,9 @@
 {
   "$schema": "../../schema/opencode-orchestra.schema.json",
   "budget": "balanced",
-  // Opt in explicitly on existing installations. Chrome + real Node >=22.12 are required.
-  "browser": { "mode": "auto", "profile": "default", "profiles": ["default", "work-account"] },
+  // Enabled by default for new and existing installations. Chrome + real Node >=22.12 are required.
+  // Without system Chrome, official Chrome for Testing is downloaded unless "download": false.
+  "browser": { "mode": "auto", "profile": "default", "profiles": ["default", "work-account"], "download": true },
   "models": {
     // "auto" discovers connected OpenCode providers. Any non-empty pool below wins.
     "strategy": "auto",

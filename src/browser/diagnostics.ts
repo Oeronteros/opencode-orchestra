@@ -24,9 +24,13 @@ export async function refreshBrowserStatus(base: BrowserStatus, file: string): P
 /** Local files and executable probes only; never launch Chrome, connect CDP, or fetch packages. */
 export async function browserDiagnostics(directory: string, config: BrowserConfig, snapshotFile?: string): Promise<BrowserStatus & { chromeAvailable: boolean; nodeAvailable: boolean }> {
   const profile = await profileDirectory(directory, config.profile, config.sharedProfiles.includes(config.profile))
+  const installation = await discoverBrowser(config.executable ? { executable: config.executable } : {}).catch(() => undefined)
   const base: BrowserStatus = { configured: config.mode !== "off", mode: config.mode, profile: config.profile,
     installed: { playwright: Boolean(backendEntry("playwright")), devtools: Boolean(backendEntry("devtools")) },
     connected: { playwright: false, devtools: false }, browserRunning: false, profileBusy: await profileLocked(profile), activeScenario: false, runtimeAvailable: false,
+    source: installation?.source ?? "missing",
+    provisioning: config.mode === "off" ? "not-started" : installation ? "ready" : config.download ? "not-started" : "failed",
+    ...(installation?.buildId ? { buildId: installation.buildId } : {}),
   }
-  return { ...(snapshotFile ? await refreshBrowserStatus(base, snapshotFile) : base), chromeAvailable: Boolean(await discoverBrowser(config)), nodeAvailable: Boolean(browserNode(config)) }
+  return { ...(snapshotFile ? await refreshBrowserStatus(base, snapshotFile) : base), chromeAvailable: Boolean(installation), nodeAvailable: Boolean(browserNode(config)) }
 }

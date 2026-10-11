@@ -54,9 +54,16 @@ export async function detectMcpPresence(configDirectory: string = openCodeConfig
 export async function formatPluginStatus(status: PluginStatus): Promise<string> {
   await status.refreshMcp?.()
   const browser = await status.browserStatus?.()
+  const browserState = (name: string, present: boolean): string | undefined => {
+    if (!browser || (name !== "playwright" && name !== "devtools")) return undefined
+    if (!browser.configured) return "disabled (browser.mode=off)"
+    if (browser.connected[name as "playwright" | "devtools"]) return "connected"
+    if (browser.provisioning === "failed" && browser.lastFailure) return `failed: ${browser.lastFailure}`
+    return "managed; starts on first browser task"
+  }
   const mcp = Object.entries({ ...status.mcp })
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, present]) => `  ${name.padEnd(24)} ${status.mcpStatuses?.[name]?.state ?? (present ? "configured; connection unverified" : "disabled or not configured")}`)
+    .map(([name, present]) => `  ${name.padEnd(24)} ${browserState(name, present) ?? status.mcpStatuses?.[name]?.state ?? (present ? "configured; connection unverified" : "disabled or not configured")}`)
     .join("\n")
   return [
     "OpenCode Orchestra plugin status",
@@ -68,7 +75,13 @@ export async function formatPluginStatus(status: PluginStatus): Promise<string> 
     `discovered models: ${status.discoveredModels}`,
     `config source: ${status.configSource}`,
     ...(status.persistenceStatus ? [`persistence: ${JSON.stringify(status.persistenceStatus())}`] : []),
-    ...(browser ? [`browser: ${JSON.stringify(browser)}`] : []),
+    ...(browser ? [
+      `browser mode: ${browser.mode}`,
+      `browser source: ${browser.source}${browser.buildId ? ` (build ${browser.buildId})` : ""}`,
+      `browser provisioning: ${browser.provisioning}`,
+      `browser connected: playwright=${browser.connected.playwright}, devtools=${browser.connected.devtools}`,
+      ...(browser.lastFailure ? [`browser last failure: ${browser.lastFailure}`] : []),
+    ] : []),
     "",
     "MCP servers:",
     mcp || "  none detected",

@@ -12,13 +12,14 @@ Checked on Windows on 2026-10-02, using Node 26.7.0 and the installed Bun runtim
 | Pinned local MCP execution and management | `src/browser/packages.ts`, `src/browser/cli.ts`, `src/cli.ts`, `src/diagnostics/completion.ts` |
 | Existing orchestration integration | `src/orchestration/contracts.ts`, `src/orchestration/run-state.ts`, `src/routing/planner.ts`, `src/tools.ts` |
 | Loaded browser instructions and agent permissions | `src/agents/build.ts`, `src/prompts/load.ts` |
-| Configuration and migration rules | `src/config/schema.ts`, `schema/opencode-orchestra.schema.json`, `examples/.opencode/orchestra.jsonc` |
+| Configuration and migration rules | `src/config/schema.ts`, `src/browser/install-config.ts`, `schema/opencode-orchestra.schema.json`, `examples/.opencode/orchestra.jsonc` |
+| Offline discovery and managed provisioning | `src/browser/discovery.ts`, `src/browser/provision.ts`, `src/browser/download-worker.ts`, `src/schema/json-schema.ts` |
 | Offline diagnostics, status and smoke exclusions | `src/browser/diagnostics.ts`, `src/diagnostics/doctor.ts`, `src/plugin-status.ts`, `src/mcp/config-smoke.ts`, `src/mcp/catalog.ts` |
 | Existing ledger/dashboard | `src/telemetry/ledger.ts`, `src/dashboard/server.ts`, `dashboard/src/app.tsx`, `dashboard/src/types.ts`, `dashboard/src/lib/locales.ts` |
 | Dependencies, documentation and explicit test inclusion | `package.json`, `package-lock.json`, all three README languages, `docs/browser.md` |
-| Unit/native-host/installer tests | `test/browser.test.ts`, `test/browser-v2.test.ts`, related agent/completion assertions |
+| Unit/native-host/installer tests | `test/browser.test.ts`, `test/browser-v2.test.ts`, `test/browser-discovery.test.ts`, `test/browser-provision.test.ts`, `test/browser-install-config.test.ts`, related agent/completion assertions |
 | Live fixture and separate regression | `test/browser-live.test.ts`, `test/fixtures/browser-site.ts`, `test/fixtures/browser-regression.spec.ts`, `test/browser.playwright.config.ts`, `scripts/run-browser-live-tests.mjs` |
-| Installed-package verification | `scripts/verify-browser-package.mjs` |
+| Installed-package verification | `scripts/verify-browser-package.mjs`, `scripts/verify-browser-provision-live.mjs` |
 
 Pre-existing workspace changes were preserved. This table describes browser work, not all dirty files in the checkout.
 
@@ -45,10 +46,14 @@ The live test is implemented with two real pinned MCP clients and a temporary te
 
 ## Practical limits and first login
 
-Follow [the browser configuration and login guide](browser.md). Managed execution requires OpenCode V2 2.0.16 or newer, Node >=22.12 and separately installed Chrome. New installer configurations use auto; existing configurations remain untouched and an omitted browser section means off.
+Follow [the browser configuration and login guide](browser.md). Managed execution requires OpenCode V2 2.0.16 or newer, Node >=22.12 and a usable Chrome. Browser mode defaults to auto for new and existing configurations; the installer adds only missing fields and preserves an explicit off. When no configured, system, or cached browser exists, the installer and the first browser task download official Chrome for Testing into the user cache unless `browser.download` is false.
 
 Only one real page tab and one scenario are supported per owning runtime. Independent parallel accounts require separate named profiles/processes. Code Mode, external file uploads and Playwright server-process unsafe code execution are disabled. Lead verification is restricted to observation/navigation of a completed sealed browser node. Unknown/orphan locks are never stolen. Artifact expiration occurs on later preparation and preserves live or unknown owners.
 
 First configure `browser.mode` and named profiles, then run `opencode-orchestra browser login --directory <project> --profile default`. In this checkout the equivalent command is `node dist/cli.js browser login --directory . --profile default`. Sign in directly in visible Chrome, then close Chrome or press Ctrl+C before using the same profile from OpenCode. Profile data lives outside the project and package; site-side expiry still requires renewed login.
 
-Live OpenCode V2 integration, real Chrome lifecycle/CDP behavior, and actual Linux/macOS executable/process cleanup remain **unverified** here. There is no browser-binary download or claim that skipped live checks passed. No package publication or git push was performed.
+Live OpenCode V2 integration, real Chrome lifecycle/CDP behavior, and actual Linux/macOS executable/process cleanup remain **unverified** here. No package publication or git push was performed.
+
+## Out-of-box provisioning update (2026-10-11)
+
+This section records the changes that made managed browsing work without manual Chrome installation. Commands and results are appended below as they complete; anything not executed is labeled as such rather than assumed.

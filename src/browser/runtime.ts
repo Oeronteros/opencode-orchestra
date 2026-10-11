@@ -5,6 +5,7 @@ import type { ToolContext, Result } from "@opencode/plugin/promise/tool"
 import type { BrowserConfig } from "../config/schema.js"
 import type { OrchestrationRunState } from "../orchestration/run-state.js"
 import { BrowserManager } from "./manager.js"
+import { discoverBrowser, type BrowserInstallation } from "./discovery.js"
 import { profileDirectory, orchestraDataDirectory, profileLocked, processAlive } from "./profile.js"
 import { backendEntry, browserNode } from "./packages.js"
 import { assertBrowserGrant, chooseBackend, operationForTool, type BrowserBackend, type BrowserTask } from "./policy.js"
@@ -20,6 +21,9 @@ export interface BrowserStatus {
   activeScenario: boolean
   lastFailure?: string
   runtimeAvailable: boolean
+  source: BrowserInstallation["source"] | "missing"
+  provisioning: "not-started" | "preparing" | "ready" | "failed"
+  buildId?: string
 }
 export interface BrowserCallRecord {
   backend: BrowserBackend; agent: string; rootSessionID: string; nodeID: string; tool: string
@@ -70,13 +74,18 @@ export class BrowserRuntime {
   async status(): Promise<BrowserStatus> {
     const profile = await profileDirectory(this.directory, this.selectedProfile, this.config.sharedProfiles.includes(this.selectedProfile), this.dataRoot)
     const locked = await profileLocked(profile)
+    const installation = this.manager?.installation ?? await discoverBrowser(this.config.executable ? { executable: this.config.executable } : {}).catch(() => undefined)
+    const failure = this.failure ?? this.manager?.lastFailure
     return {
       configured: this.config.mode !== "off", mode: this.config.mode, profile: this.selectedProfile,
       installed: { playwright: Boolean(backendEntry("playwright")), devtools: Boolean(backendEntry("devtools")) },
       connected: await this.host?.connected().catch(() => ({ playwright: false, devtools: false })) ?? { playwright: false, devtools: false },
       browserRunning: this.manager?.running ?? false, profileBusy: Boolean(locked && !await this.manager?.lock.owns()),
       activeScenario: Boolean(this.scenario), runtimeAvailable: Boolean(this.host && browserNode(this.config)),
-      ...(this.failure ? { lastFailure: this.failure } : this.manager?.lastFailure ? { lastFailure: this.manager.lastFailure } : {}),
+      source: installation?.source ?? "missing",
+      provisioning: this.config.mode === "off" ? "not-started" : failure ? "failed" : installation ? "ready" : "not-started",
+      ...(installation?.buildId ? { buildId: installation.buildId } : {}),
+      ...(failure ? { lastFailure: failure } : {}),
     }
   }
   private caller(context: ToolContext, profile: string): { grant: BrowserTask; rootSessionID: string; nodeID: string } {

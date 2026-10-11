@@ -192,7 +192,7 @@ The default installer configures the Orchestra plugin and attempts to provision 
 - pinned Playwright MCP and Chrome DevTools MCP packages for managed browsing
 - the local voice overlay and Whisper model on supported platforms
 
-Provisioning failures for optional companions do not prevent the core plugin from being configured. Failed Codebase Memory or MemoryGraph provisioning does not write a dead local command. Git and ast-grep entries can still be configured after a failed warmup because `uvx` retries when they launch. Browser MCPs are package dependencies, registered lazily by the OpenCode v2 runtime; Chrome itself is not downloaded by the installer.
+Provisioning failures for optional companions do not prevent the core plugin from being configured. Failed Codebase Memory or MemoryGraph provisioning does not write a dead local command. Git and ast-grep entries can still be configured after a failed warmup because `uvx` retries when they launch. Browser MCPs are package dependencies, registered lazily by the OpenCode v2 runtime. Managed browsing uses a configured Chrome path, then an installed system Chrome, then a cached Chrome for Testing; when none exists, the installer downloads official Chrome for Testing from Google's distribution into the user cache. Set `browser.download` to `false` to require an existing browser, and install-time failures degrade to a warning with an automatic retry on the first browser task.
 
 To connect GitHub MCP once, install [GitHub CLI](https://cli.github.com/) and enter this command **inside OpenCode**:
 
@@ -227,13 +227,15 @@ Inspect changes without writing files or downloading dependencies:
 bunx @oeronteros-1/opencode-orchestra@latest install --dry-run
 ```
 
-`--browser-mode` accepts `off`, `auto`, `playwright`, or `devtools` and only affects a newly created Orchestra configuration. `--no-playwright` scaffolds `off`; combine it with `--browser-mode devtools` for DevTools only. Combining it with `auto` or `playwright` is an error. `--no-deps` skips companion provisioning but does not remove the browser MCP dependencies from the npm package.
+`--browser-mode` accepts `off`, `auto`, `playwright`, or `devtools` and writes the selected mode to the chosen Orchestra configuration. `--no-playwright` writes `off`; combine it with `--browser-mode devtools` for DevTools only. Combining it with `auto` or `playwright` is an error. Existing explicit modes are preserved on a default reinstall. `--no-deps` skips install-time provisioning, including the browser download; the first browser task then provisions Chrome on demand unless `browser.download` is `false`.
 
 ## Managed browser
 
-Orchestra uses its own Chrome profiles without a browser extension. In `auto` mode, UI navigation and forms prefer Playwright; deep diagnostics and performance use Chrome DevTools. Both backends attach to the same managed browser. Ordinary documentation research continues to use web search, webfetch, and Context7.
+Orchestra uses its own Chrome profiles without a browser extension. New and existing configurations default to `browser.mode: "auto"`; an explicit `off` disables the browser entirely. In `auto` mode, UI navigation and forms prefer Playwright; deep diagnostics and performance use Chrome DevTools. Both backends attach to the same managed browser. Ordinary documentation research continues to use web search, webfetch, and Context7.
 
-For an existing installation, add this to global or project `orchestra.jsonc` to enable browsing:
+Browser resolution order: an explicit `browser.executable`, then an installed system Chrome, then a cached Chrome for Testing, then an automatic download of official Chrome for Testing into the user cache (%LOCALAPPDATA%\opencode-orchestra\chrome-for-testing on Windows, ~/Library/Application Support/opencode-orchestra/chrome-for-testing on macOS, ~/.local/share/opencode-orchestra/chrome-for-testing on Linux). The installer provisions Chrome up front; transient failures retry on the first browser task. No browser window opens until a browser task actually prepares a scenario.
+
+To keep an existing configuration explicit:
 
 ```jsonc
 {
@@ -242,10 +244,13 @@ For an existing installation, add this to global or project `orchestra.jsonc` to
     "profile": "default",
     "profiles": ["default", "work-account"],
     "sharedProfiles": [],
-    "headless": false
+    "headless": false,
+    "download": true
   }
 }
 ```
+
+Set `"download": false` to forbid downloads and use only an existing system or configured browser.
 
 Restart OpenCode after editing the configuration. Run these commands from the project directory:
 
@@ -258,7 +263,7 @@ bunx @oeronteros-1/opencode-orchestra@latest browser select --directory . --prof
 
 Sign in directly in the Chrome window opened by `browser login`, then close Chrome or press Ctrl+C before using that profile in OpenCode. Cookies and localStorage persist across browser restarts; sites may still expire authentication. Profiles are scoped to the repository, with Git worktrees sharing its identity. Account names must be listed in `browser.profiles`; cross-project sharing requires an explicit `sharedProfiles` entry. `browser select` writes a project override that takes effect after restarting OpenCode.
 
-Browser scenarios are serialized and require one page tab. Sealed task contracts limit origins and operations, and OpenCode permissions still apply. Existing user-managed browser MCPs block duplicate managed servers. Browser Code Mode is disabled. Missing Chrome or a busy profile produces a browser failure while repository orchestration remains available.
+Browser scenarios are serialized and require one page tab. Sealed task contracts limit origins and operations, and OpenCode permissions still apply. Existing user-managed browser MCPs keep working and block duplicate managed servers; their tools are never rewrapped by Orchestra. Browser Code Mode is disabled. Missing Chrome or a busy profile produces a browser failure while repository orchestration remains available.
 
 Use `browser.executable` for an absolute Chrome path and `browser.nodeExecutable` for real Node when OpenCode runs under Bun. See [docs/browser.md](docs/browser.md) for profile storage, permissions, backend handoff, artifacts, and troubleshooting.
 

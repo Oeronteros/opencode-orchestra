@@ -1,6 +1,5 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process"
-import { access, readFile, stat, readdir, readlink } from "node:fs/promises"
-import { constants } from "node:fs"
+import { readFile, stat, readdir, readlink } from "node:fs/promises"
 import { promisify } from "node:util"
 import path from "node:path"
 import type { BrowserConfig } from "../config/schema.js"
@@ -10,15 +9,8 @@ import { ensureBrowser } from "./provision.js"
 const execute = promisify(execFile)
 export interface BrowserTarget { id: string; type: string; url: string }
 export async function chromeExecutable(configured?: string): Promise<string | undefined> {
-  const candidates = configured ? [configured] : process.platform === "win32"
-    ? [path.join(process.env.PROGRAMFILES ?? "C:\\Program Files", "Google/Chrome/Application/chrome.exe"), path.join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google/Chrome/Application/chrome.exe"), path.join(process.env.LOCALAPPDATA ?? "", "Google/Chrome/Application/chrome.exe")]
-    : process.platform === "darwin" ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"]
-      : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"]
-  for (const candidate of candidates) {
-    if (!path.isAbsolute(candidate)) continue
-    try { await access(candidate, constants.X_OK); return candidate } catch { /* Next candidate. */ }
-  }
-  return undefined
+  const { discoverBrowser } = await import("./discovery.js")
+  return (await discoverBrowser(configured ? { executable: configured } : {}).catch(() => undefined))?.executable
 }
 
 /** Verify the listener belongs to our spawned browser, not a reused local endpoint. */

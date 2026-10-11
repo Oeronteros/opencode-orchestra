@@ -40,7 +40,7 @@ bunx @oeronteros-1/opencode-orchestra@latest install
 /orchestra-resume
 ```
 
-安装程序是幂等的。修改 OpenCode 配置前会创建备份，并保留已有的插件和 MCP 配置。`--force` 会替换安装程序管理的配套 MCP 条目；现有浏览器 MCP 和 `orchestra.jsonc` 仍会保留。新配置通过 `browser.mode: "auto"` 启用托管浏览器；现有配置未包含浏览器部分时，浏览器保持关闭。
+安装程序是幂等的。修改 OpenCode 配置前会创建备份，并保留已有的插件和 MCP 配置。`--force` 会替换安装程序管理的配套 MCP 条目；现有浏览器 MCP 仍会保留。无论新配置还是现有配置，浏览器默认启用（`browser.mode: "auto"`）；安装程序只补齐缺失字段，显式 `off` 保持不变。若未找到系统 Chrome，安装程序会下载官方 Chrome for Testing 到用户缓存；可用 `browser.download` 控制。
 
 ### OpenCode v2 支持与迁移
 
@@ -175,7 +175,7 @@ Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展�
 - 固定版本的 Playwright MCP 和 Chrome DevTools MCP 包，用于托管浏览器；
 - 在支持的平台上安装本地语音浮窗和 Whisper 模型。
 
-可选配套工具安装失败不会阻止核心插件配置。Codebase Memory 或 MemoryGraph 准备失败时，不会写入无法工作的命令。Git 和 ast-grep 即使预热失败也可能被配置，因为 `uvx` 会在启动时重试。浏览器 MCP 是包依赖，由 OpenCode v2 运行时按需注册；安装程序不会下载 Chrome 本身。
+可选配套工具安装失败不会阻止核心插件配置。Codebase Memory 或 MemoryGraph 准备失败时，不会写入无法工作的命令。Git 和 ast-grep 即使预热失败也可能被配置，因为 `uvx` 会在启动时重试。浏览器 MCP 是包依赖，由 OpenCode v2 运行时按需注册。托管浏览器的查找顺序：显式 `browser.executable`、系统 Chrome、Chrome for Testing 缓存，最后自动下载官方 Chrome for Testing 到用户缓存。设置 `browser.download: false` 可禁止下载；安装时下载失败只产生警告，并会在首次浏览器任务时重试。
 
 只需连接 GitHub MCP 一次：安装 [GitHub CLI](https://cli.github.com/)，然后**在 OpenCode 内**输入：
 
@@ -210,13 +210,15 @@ Bounded loop 依据成功节点、已验证提交和通过的 gate 判断进展�
 bunx @oeronteros-1/opencode-orchestra@latest install --dry-run
 ```
 
-`--browser-mode` 接受 `off`、`auto`、`playwright` 或 `devtools`，仅影响新创建的 Orchestra 配置。`--no-playwright` 将新配置设为 `off`；与 `--browser-mode devtools` 组合时仅启用 DevTools。与 `auto` 或 `playwright` 组合会报错。`--no-deps` 跳过配套工具的准备，但浏览器 MCP 仍是 npm 包的依赖项。
+`--browser-mode` 接受 `off`、`auto`、`playwright` 或 `devtools`，并写入所选 Orchestra 配置。`--no-playwright` 写入 `off`；与 `--browser-mode devtools` 组合时仅启用 DevTools。与 `auto` 或 `playwright` 组合会报错。重新安装时保留已有的显式模式。`--no-deps` 跳过安装期准备（包括浏览器下载）；除非 `browser.download` 为 `false`，首次浏览器任务会按需准备 Chrome。
 
 ## 托管浏览器
 
-Orchestra 使用自己的 Chrome 配置文件，无需浏览器扩展。在 `auto` 模式下，UI 导航和表单优先使用 Playwright；深度诊断和性能分析使用 Chrome DevTools。两个后端连接到同一个托管浏览器。普通文档研究继续使用网页搜索、webfetch 和 Context7。
+Orchestra 使用自己的 Chrome 配置文件，无需浏览器扩展。新配置和现有配置都默认使用 `browser.mode: "auto"`；显式 `off` 会完全禁用浏览器。在 `auto` 模式下，UI 导航和表单优先使用 Playwright；深度诊断和性能分析使用 Chrome DevTools。两个后端连接到同一个托管浏览器。普通文档研究继续使用网页搜索、webfetch 和 Context7。
 
-对于现有安装，请在全局或项目 `orchestra.jsonc` 中加入以下配置以启用浏览器：
+浏览器解析顺序：显式 `browser.executable`，然后系统 Chrome，然后 Chrome for Testing 缓存，最后自动下载官方 Chrome for Testing（Windows：%LOCALAPPDATA%\opencode-orchestra\chrome-for-testing；macOS：~/Library/Application Support/opencode-orchestra/chrome-for-testing；Linux：~/.local/share/opencode-orchestra/chrome-for-testing）。安装程序会预先准备 Chrome，临时失败会在首次浏览器任务时重试。在任务准备场景之前不会打开任何浏览器窗口。
+
+显式配置：
 
 ```jsonc
 {
@@ -225,10 +227,13 @@ Orchestra 使用自己的 Chrome 配置文件，无需浏览器扩展。在 `aut
     "profile": "default",
     "profiles": ["default", "work-account"],
     "sharedProfiles": [],
-    "headless": false
+    "headless": false,
+    "download": true
   }
 }
 ```
+
+`"download": false` 禁止下载，仅使用现有的系统或显式指定的浏览器。
 
 修改配置后重启 OpenCode。在项目目录中运行：
 
@@ -241,7 +246,7 @@ bunx @oeronteros-1/opencode-orchestra@latest browser select --directory . --prof
 
 在 `browser login` 打开的 Chrome 窗口中直接登录，然后关闭 Chrome 或按 Ctrl+C，再在 OpenCode 中使用该配置文件。Cookie 和 localStorage 会跨浏览器重启保留，但网站仍可能使登录失效。配置文件按仓库隔离，Git worktree 共享仓库身份。账户名称必须列在 `browser.profiles` 中；跨项目共享需要显式配置 `sharedProfiles`。`browser select` 写入项目覆盖配置，重启 OpenCode 后生效。
 
-浏览器场景串行执行，并要求只有一个页面标签。密封任务合同限制 origins 和操作，OpenCode 权限仍然生效。现有用户浏览器 MCP 会阻止创建重复的托管服务器。浏览器 Code Mode 已禁用。缺少 Chrome 或配置文件被占用时，浏览器场景会失败，但仓库编排仍然可用。
+浏览器场景串行执行，并要求只有一个页面标签。密封任务合同限制 origins 和操作，OpenCode 权限仍然生效。现有用户浏览器 MCP 继续可用，并阻止创建重复的托管服务器；其工具不会被 Orchestra 改写。浏览器 Code Mode 已禁用。缺少 Chrome 或配置文件被占用时，浏览器场景会失败，但仓库编排仍然可用。
 
 可通过 `browser.executable` 指定 Chrome 的绝对路径；OpenCode 在 Bun 下运行时，可通过 `browser.nodeExecutable` 指定真正的 Node。配置文件存储、权限、后端切换、产物和故障排除请参阅 [docs/browser.md](docs/browser.md)。
 

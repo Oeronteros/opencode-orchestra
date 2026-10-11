@@ -3,7 +3,8 @@ import path from "node:path"
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import { loadConfig } from "../config/load.js"
 import { browserProfileNameSchema } from "../config/schema.js"
-import { BrowserManager, chromeExecutable } from "./manager.js"
+import { BrowserManager } from "./manager.js"
+import { discoverBrowser } from "./discovery.js"
 import { backendEntry, browserNode } from "./packages.js"
 import { orchestraDataDirectory, profileDirectory, profileLocked } from "./profile.js"
 
@@ -35,8 +36,12 @@ export async function runBrowserCommand(options: BrowserCommandOptions): Promise
   const profile = await profileDirectory(options.directory, name, config.sharedProfiles.includes(name))
   if (options.action === "profiles") { console.log(JSON.stringify({ selected: config.profile, profiles: config.profiles, sharedProfiles: config.sharedProfiles })); return }
   if (options.action === "status") {
+    const installation = await discoverBrowser(config.executable ? { executable: config.executable } : {}).catch(() => undefined)
     console.log(JSON.stringify({ configured: config.mode !== "off", mode: config.mode, profile: name, profileDirectory: profile,
-      installed: { playwright: Boolean(backendEntry("playwright")), devtools: Boolean(backendEntry("devtools")) }, nodeAvailable: Boolean(browserNode(config)), chromeAvailable: Boolean(await chromeExecutable(config.executable)), profileBusy: await profileLocked(profile), connected: "query orchestra_browser status in OpenCode", browserRunning: "query orchestra_browser status in OpenCode" }, null, 2))
+      installed: { playwright: Boolean(backendEntry("playwright")), devtools: Boolean(backendEntry("devtools")) }, nodeAvailable: Boolean(browserNode(config)),
+      chromeAvailable: Boolean(installation), browserSource: installation?.source ?? "missing", ...(installation?.buildId ? { buildId: installation.buildId } : {}),
+      downloadEnabled: config.download, provisioning: config.mode === "off" ? "not-started" : installation ? "ready" : "pending-first-use",
+      profileBusy: await profileLocked(profile), connected: "query orchestra_browser status in OpenCode", browserRunning: "query orchestra_browser status in OpenCode" }, null, 2))
     return
   }
   if (options.action === "select") {

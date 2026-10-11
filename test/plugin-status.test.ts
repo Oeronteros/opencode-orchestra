@@ -63,6 +63,32 @@ test("formatPluginStatus renders the plugin identity and runtime fields", async 
   assert.ok(report.includes("configured"))
 })
 
+test("formatPluginStatus distinguishes lazy browser backends from disabled ones", async () => {
+  const browserStatus = {
+    configured: true, mode: "auto" as const, profile: "default", installed: { playwright: true, devtools: true },
+    connected: { playwright: false, devtools: false }, browserRunning: false, profileBusy: false, activeScenario: false,
+    runtimeAvailable: true, source: "managed" as const, provisioning: "ready" as const, buildId: "155.0.8059.39",
+  }
+  const report = await formatPluginStatus({
+    name: "@oeronteros-1/opencode-orchestra", version: "3.0.0", budget: "quality", modelStrategy: "manual",
+    configuredModels: 1, discoveredModels: 2, configSource: "/tmp/orchestra.jsonc",
+    mcp: { playwright: false, devtools: false, context7: true },
+    browserStatus: async () => browserStatus,
+  })
+  assert.match(report, /browser source: managed/)
+  assert.match(report, /browser provisioning: ready/)
+  assert.match(report, /playwright\s+managed; starts on first browser task/)
+  assert.doesNotMatch(report, /playwright\s+disabled or not configured/)
+})
+test("formatPluginStatus marks browser backends disabled when mode is off", async () => {
+  const report = await formatPluginStatus({
+    name: "@oeronteros-1/opencode-orchestra", version: "3.0.0", budget: "quality", modelStrategy: "manual",
+    configuredModels: 1, discoveredModels: 2, configSource: "/tmp/orchestra.jsonc",
+    mcp: { playwright: false },
+    browserStatus: async () => ({ configured: false, mode: "off", profile: "default", installed: { playwright: true, devtools: true }, connected: { playwright: false, devtools: false }, browserRunning: false, profileBusy: false, activeScenario: false, runtimeAvailable: false, source: "missing", provisioning: "not-started" }),
+  })
+  assert.match(report, /playwright\s+disabled \(browser.mode=off\)/)
+})
 test("detectMcpPresence maps git and ast-grep keys", async () => {
   const { detectMcpPresence } = await import("../src/plugin-status.js")
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-mcp-presence-"))

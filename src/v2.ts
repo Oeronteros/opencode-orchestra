@@ -4,6 +4,7 @@ import { z } from "zod"
 import { registerBrowserHost } from "./browser/v2.js"
 import type { RuntimeAgentConfig } from "./agents/types.js"
 import { abortableDelay } from "./routing/retry.js"
+import { toolInputJsonSchema } from "./schema/json-schema.js"
 
 type LegacyClient = PluginInput["client"]
 type LegacyAssistant = { id: string; type: "assistant"; agent: string; model: { providerID: string; id: string }; content: Array<{ type: string; text?: string; id?: string; name?: string; state?: { status: string; error?: unknown } }>; time: { created: number; completed?: number }; finish?: string; cost?: number; tokens?: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } }; error?: unknown }
@@ -165,28 +166,38 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin, retry: { b
   })
 
   await ctx.tool.transform((editor) => {
-    for (const [name, tool] of Object.entries(hooks.tool ?? {})) editor.add({
-      name,
-      description: tool.description,
-      input: z.object(tool.args),
-      execute: async (input, context) => {
-        const current = await ctx.session.get({ sessionID: context.sessionID })
-        const directory = current.location.directory
-        const result = await tool.execute(input as never, {
-          sessionID: context.sessionID,
-          messageID: context.messageID,
-          agent: context.agent,
-          directory,
-          worktree: directory,
-          abort: context.signal,
-          metadata: () => undefined,
-          ask: async () => { throw new Error("Tool permission requests are unavailable through the V2 adapter") },
-        })
-        return typeof result === "string"
-          ? { content: result }
-          : { content: result.output, ...(result.metadata ? { metadata: result.metadata } : {}) }
-      },
-    })
+    for (const [name, tool] of Object.entries(hooks.tool ?? {})) {
+      const args = tool.args as unknown as Record<string, z.ZodType>
+      const schema = typeof (tool.args as unknown as { safeParse?: unknown })?.safeParse === "function"
+        ? tool.args as unknown as z.ZodType
+        : z.object(args)
+      editor.add({
+        name,
+        description: tool.description,
+        input: toolInputJsonSchema(schema),
+        execute: async (input, context) => {
+          const parsed = schema.safeParse(input)
+          if (!parsed.success) {
+            return { content: JSON.stringify({ ok: false, error: "Invalid tool input.", issues: parsed.error.issues.slice(0, 5).map((issue) => ({ path: issue.path.join("."), message: issue.message })) }) }
+          }
+          const current = await ctx.session.get({ sessionID: context.sessionID })
+          const directory = current.location.directory
+          const result = await tool.execute(parsed.data as never, {
+            sessionID: context.sessionID,
+            messageID: context.messageID,
+            agent: context.agent,
+            directory,
+            worktree: directory,
+            abort: context.signal,
+            metadata: () => undefined,
+            ask: async () => { throw new Error("Tool permission requests are unavailable through the V2 adapter") },
+          })
+          return typeof result === "string"
+            ? { content: result }
+            : { content: result.output, ...(result.metadata ? { metadata: result.metadata } : {}) }
+        },
+      })
+    }
   })
 
   await ctx.permission.hook("evaluate", async (event) => {

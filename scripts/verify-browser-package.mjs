@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
@@ -11,6 +12,21 @@ assert.equal(typeof plugin.server, 'function')
 assert.equal(typeof plugin.default.setup, 'function')
 const { backendEntry, backendCommand } = await import(pathToFileURL(path.join(packageRoot, 'dist/browser/packages.js')).href)
 const { browserConfigSchema } = await import(pathToFileURL(path.join(packageRoot, 'dist/config/schema.js')).href)
+const { discoverBrowser, browserCacheRoot } = await import(pathToFileURL(path.join(packageRoot, 'dist/browser/discovery.js')).href)
+// Managed provisioning modules ship with the package and never execute at import time.
+assert.ok(existsSync(path.join(packageRoot, 'dist/browser/provision.js')), 'provision module is packaged')
+assert.ok(existsSync(path.join(packageRoot, 'dist/browser/download-worker.js')), 'download worker is packaged')
+assert.equal(typeof (await import(pathToFileURL(path.join(packageRoot, 'dist/browser/provision.js')).href)).ensureBrowser, 'function')
+// The default browser mode is enabled and the downloader dependency resolves inside the installation.
+const defaultConfig = browserConfigSchema.parse({})
+assert.equal(defaultConfig.mode, 'auto')
+assert.equal(defaultConfig.download, true)
+const installer = await import(pathToFileURL(path.join(packageRoot, 'node_modules/@puppeteer/browsers/package.json')).href, { with: { type: 'json' } })
+assert.ok(installer.default.version, 'pinned @puppeteer/browsers resolves inside the installed package')
+// Offline discovery must not fetch anything; a missing browser is a legitimate local answer.
+const discovered = await discoverBrowser({}, { cacheRoot: path.join(root, 'no-browser-cache'), systemCandidates: [] })
+assert.equal(discovered, undefined)
+assert.ok(browserCacheRoot({ cacheRoot: path.join(root, 'cache with space') }).includes('cache with space'))
 for (const backend of ['playwright', 'devtools']) {
   const entry = backendEntry(backend)
   assert.ok(entry?.startsWith(path.join(root, 'node_modules')))

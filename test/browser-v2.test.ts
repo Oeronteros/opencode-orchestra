@@ -88,6 +88,19 @@ test("native bridge detects user MCPs under arbitrary names and never rewires or
   await assert.rejects(host.connect("playwright", new EndpointManager(directory, config), directory), /browser_user_mcp_conflict/)
   assert.equal(fake.configs().size, 1)
 })
+test("user-managed browser MCP tools stay untouched and callable", async () => {
+  const user = new Mcp.LocalConfig({ type: "local", command: ["node", "/custom/@playwright/mcp/cli.js", "--user-data-dir", "/custom/account"] })
+  const fake = harness([["customaccount", user]])
+  await fake.ctx.mcp.reload()
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-user-tools-"))
+  const config = browserConfigSchema.parse({ mode: "auto" })
+  const host = new NativeBrowserHost(fake.ctx)
+  new BrowserRuntime(config, directory, new OrchestrationRunState({ maxWorkers: 4, parallelWorkers: 2, maxDelegationDepth: 2 }), host, undefined, directory)
+  await host.install()
+  const after = fake.tools().get("customaccount_browser_snapshot")!
+  assert.equal(after.options, undefined, "user tool options must not be rewritten")
+  assert.deepEqual(await after.execute({}, {} as never), { content: "snapshot" })
+})
 test("installer scaffolds auto only for new config, preserves user MCPs and config, and honors no-playwright", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-browser-install-"))
   const options = { configDirectory: directory, context7: false, github: false, codebaseMemory: false, memoryGraph: false, git: false, astGrep: false, superpowers: false, voice: false, provisionDependencies: false, force: false, dryRun: false, pluginCacheDirectory: path.join(directory, "packages") }
