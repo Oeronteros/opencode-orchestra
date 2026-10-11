@@ -7,6 +7,18 @@ import { ProfileLock, processAlive } from "./profile.js"
 import { ensureBrowser } from "./provision.js"
 
 const execute = promisify(execFile)
+
+/**
+ * Wait for a process to exit on its own. Chrome needs this grace window to
+ * flush its profile (cookies, storage) before any forced termination; Node's
+ * SIGTERM on Windows is an abrupt TerminateProcess and must not race it.
+ */
+export async function waitForGracefulExit(pid: number, timeoutMs: number, pollMs = 50): Promise<boolean> {
+  const until = Date.now() + timeoutMs
+  while (processAlive(pid) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, pollMs))
+  return !processAlive(pid)
+}
+
 export interface BrowserTarget { id: string; type: string; url: string }
 export async function chromeExecutable(configured?: string): Promise<string | undefined> {
   const { discoverBrowser } = await import("./discovery.js")
@@ -14,8 +26,7 @@ export async function chromeExecutable(configured?: string): Promise<string | un
 }
 
 /** Verify the listener belongs to our spawned browser, not a reused local endpoint. */
-export async function ownsListener(pid: number, port: number): Promise<boolean> {
-  if (process.platform === "win32") {
+export async function ownsListener(pid: number, port: number): Promise<boolean> {  if (process.platform === "win32") {
     const { stdout } = await execute("netstat.exe", ["-ano", "-p", "tcp"], { windowsHide: true, timeout: 5000 })
     return stdout.split(/\r?\n/).some((line) => {
       const parts = line.trim().split(/\s+/)
@@ -132,6 +143,9 @@ export class BrowserManager {
         } catch { /* Fallback only to the owned ChildProcess below. */ }
       }
       // Only this instance's ChildProcess is eligible for termination.
+      // The subprocess must complete its crash-safe profile flush, so hold the
+      // graceful window before the abrupt Windows fallback below.
+      await waitForGracefulExit(child.pid, 15000)
       if (processAlive(child.pid)) child.kill("SIGTERM")
       const until = Date.now() + 5000
       while (processAlive(child.pid) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 50))

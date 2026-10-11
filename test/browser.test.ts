@@ -98,6 +98,18 @@ test("permissions require role, sealed grant, and exclusive profile; JS is never
   assert.equal(operationForTool("unknown_future_tool"), undefined)
   assert.equal(operationForTool("browser_run_code_unsafe"), undefined)
 })
+test("graceful exit waits for a process to finish on its own before force-kill", async () => {
+  const { spawn } = await import("node:child_process")
+  const { waitForGracefulExit } = await import("../src/browser/manager.js")
+  // A short-lived process exits during the graceful window.
+  const quick = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 150)"])
+  assert.equal(await waitForGracefulExit(quick.pid!, 5_000), true)
+  // A long-lived process is not terminated by the wait itself; the caller must decide.
+  const slow = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 60_000)"])
+  assert.equal(await waitForGracefulExit(slow.pid!, 300), false)
+  assert.equal(slow.exitCode, null)
+  slow.kill("SIGKILL")
+})
 test("persistent identity unifies Git worktrees but separates unrelated repositories", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-project-"))
   const repo = path.join(root, "repo Unicode пробел")
