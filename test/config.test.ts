@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 import { loadConfig } from "../src/config/load.js"
 import { orchestraConfigSchema } from "../src/config/schema.js"
+import { install } from "../src/cli.js"
 
 test("config discovery layers global, preferred project JSONC, and options", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "orchestra-config-"))
@@ -72,6 +73,16 @@ test("orchestration agent limits have shared defaults and strict bounds", () => 
   assert.throws(() => orchestraConfigSchema.parse({ orchestration: { maxDelegationDepth: 2.5 } }))
 })
 
+test("invalid existing browser section is preserved instead of failing the install", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "orchestra-invalid-browser-"))
+  const file = path.join(directory, "orchestra.jsonc")
+  const original = '{\n // keep\n "budget": "eco",\n "browser": { "mode": "wrong" }\n}\n'
+  await writeFile(file, original)
+  const options = { configDirectory: directory, context7: false, github: false, codebaseMemory: false, memoryGraph: false, git: false, astGrep: false, superpowers: false, voice: false, provisionDependencies: false, force: false, dryRun: false, pluginCacheDirectory: path.join(directory, "packages") }
+  const result = await install(options)
+  assert.equal(await readFile(file, "utf8"), original)
+  assert.ok(result.preserved.includes("orchestra.jsonc"))
+})
 test("published JSON schema mirrors orchestration defaults and bounds", async () => {
   type NumericSchema = { type: "integer"; minimum: number; maximum: number; default: number }
   const published = JSON.parse(

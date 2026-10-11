@@ -718,6 +718,7 @@ export async function install(options: InstallOptions): Promise<InstallResult> {
     parseObject(orchestraOriginal, orchestraConfig)
     const migrated = migrateBrowserConfig(orchestraOriginal, { ...(options.browserMode ? { browserMode: options.browserMode } : {}), ...(options.playwright === false ? { playwright: false } : {}) })
     browserConfig = migrated.browser
+    if (migrated.invalid) console.warn(`orchestra.jsonc browser section is invalid and was preserved unchanged: ${migrated.invalid}`)
     if (migrated.changed) {
       changed.push("orchestra.jsonc")
       if (!options.dryRun) {
