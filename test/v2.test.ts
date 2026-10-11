@@ -77,6 +77,51 @@ test("V2 restores a missed idle event from the session history", { timeout: 3000
   finally { await cleanup() }
 })
 
+test("V2 finalizes a session when the execution succeeds without an idle event", { timeout: 3000 }, async () => {
+  const events: string[] = []
+  let notify!: () => void
+  const processed = new Promise<void>((resolve) => { notify = resolve })
+  const ctx = eventContext(async () => [answer("done", 1), { id: "idle", type: "idle", outcome: "succeeded", time: { created: 3 } }],
+    (signal) => ({ async *[Symbol.asyncIterator]() {
+      yield { type: "session.text.delta", data: { sessionID: "session", assistantMessageID: "done", ordinal: 0, delta: "hello" } }
+      // OpenCode 2.x emits session.execution.succeeded when a turn completes;
+      // a follow-up session.idle event is not guaranteed. The bridge must treat
+      // a successful execution as terminal or live rows (and ledger records)
+      // for the finished session never finalize.
+      yield { type: "session.execution.succeeded", data: { sessionID: "session" } }
+      await untilAborted(signal)
+    } }))
+  const cleanup = await setupV2(ctx, (async () => ({ event: async ({ event }: any) => {
+    events.push(event.type)
+    if (event.type === "session.idle") notify()
+  } })) as LegacyPlugin)
+  try { await processed; assert.deepEqual(events, ["message.part.delta", "message.updated", "session.idle"]) }
+  finally { await cleanup() }
+})
+
+test("V2 forwards session deletion so live state can be finalized", { timeout: 3000 }, async () => {
+  const events: Array<{ type: string; sessionID?: string }> = []
+  let notify!: () => void
+  const processed = new Promise<void>((resolve) => { notify = resolve })
+  const ctx = eventContext(async () => [answer("done", 1)],
+    (signal) => ({ async *[Symbol.asyncIterator]() {
+      yield { type: "session.text.delta", data: { sessionID: "session", assistantMessageID: "done", ordinal: 0, delta: "hello" } }
+      yield { type: "session.deleted", data: { sessionID: "session" } }
+      await untilAborted(signal)
+    } }))
+  const cleanup = await setupV2(ctx, (async () => ({ event: async ({ event }: any) => {
+    events.push({ type: event.type, sessionID: event.properties?.sessionID })
+    if (event.type === "session.deleted") notify()
+  } })) as LegacyPlugin)
+  try {
+    await processed
+    assert.deepEqual(events, [
+      { type: "message.part.delta", sessionID: "session" },
+      { type: "session.deleted", sessionID: "session" },
+    ])
+  } finally { await cleanup() }
+})
+
 test("V2 deduplication survives histories longer than 2048 responses", { timeout: 3000 }, async () => {
   let finals = 0
   let idles = 0

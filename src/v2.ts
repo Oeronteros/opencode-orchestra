@@ -276,14 +276,23 @@ export async function setupV2(ctx: Context, initialize: LegacyPlugin, retry: { b
     } else if (event.type === "session.text.delta") {
       sessions.add(event.data.sessionID)
       await hooks.event?.({ event: { type: "message.part.delta", properties: { sessionID: event.data.sessionID, messageID: event.data.assistantMessageID, partID: `${event.data.assistantMessageID}:${event.data.ordinal}`, field: "text", delta: event.data.delta } } as never })
-    } else if (event.type === "session.idle" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+    } else if (event.type === "session.idle" || event.type === "session.execution.succeeded" || event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
       const sessionID = event.data.sessionID
       sessions.add(sessionID)
       await synchronize(sessionID)
-      await hooks.event?.({ event: { type: event.type === "session.idle" ? "session.idle" : "session.error", properties: { sessionID } } as never })
+      // OpenCode 2.x marks the end of a normal turn with
+      // session.execution.succeeded and does not guarantee a follow-up
+      // session.idle event. Both terminals mean the session can no longer be
+      // mid-generation; failures and interruptions map to the error terminal
+      // so orchestration stops the affected session.
+      const failed = event.type === "session.execution.failed" || event.type === "session.execution.interrupted"
+      await hooks.event?.({ event: { type: failed ? "session.error" : "session.idle", properties: { sessionID } } as never })
     } else if (event.type === "session.deleted") {
       sessions.delete(event.data.sessionID)
       completed.delete(event.data.sessionID)
+      // Forward the deletion so consumers can finalize per-session state
+      // (live rows); the session cannot produce further events.
+      await hooks.event?.({ event: { type: "session.deleted", properties: { sessionID: event.data.sessionID } } as never })
     }
   }
   const stream = (async () => {

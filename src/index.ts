@@ -793,15 +793,16 @@ export const OrchestraPlugin: Plugin = async ({ client, directory, experimental_
     },
     event: async ({ event }) => {
       const eventRecord = event as unknown as { type?: string; properties?: { sessionID?: string; error?: unknown } }
-      if (eventRecord.type === "session.error" || eventRecord.type === "session.idle") {
+      if (eventRecord.type === "session.error" || eventRecord.type === "session.idle" || eventRecord.type === "session.deleted") {
         const sessionID = eventRecord.properties?.sessionID
         if (sessionID && eventRecord.type === "session.idle" && loop.get(sessionID)) { loopIdle.add(sessionID); setTimeout(() => { void loop.tick(sessionID) }, 0) }
         if (sessionID && eventRecord.type === "session.error") { browser.releaseSession(sessionID); loopInputs.delete(sessionID); loop.stop(sessionID, "failed", "Session error or cancellation") }
         // The session can no longer be mid-generation: finalize any live rows
         // whose completing message.updated never arrived (abort / pre-token
-        // error), or they linger as phantom agents on the live panel.
+        // error / deleted session), or they linger as phantom agents on the
+        // live panel.
         if (sessionID) live.dropSession(sessionID, eventRecord.type.replace("session.", "session-"))
-        if (sessionID && !loop.get(sessionID) && !recoveryNotices.has(`${sessionID}:${eventRecord.type}`)) {
+        if (sessionID && eventRecord.type !== "session.deleted" && !loop.get(sessionID) && !recoveryNotices.has(`${sessionID}:${eventRecord.type}`)) {
           recoveryNotices.add(`${sessionID}:${eventRecord.type}`)
           await client.app.log({ body: {
             service: "opencode-orchestra",
